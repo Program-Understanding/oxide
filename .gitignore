@@ -1,0 +1,31 @@
+# these files are ignored by git
+
+# residual oxide directories and files
+!datastore/sample_datasets
+__pycache__/
+scratch
+datasets/*
+db/*
+localstore/*
+.config.txt
+.log.txt
+.history.txt
+.context.save
+
+# Ignore these file extentions
+*.o
+*.obj
+*.a
+# *.so
+*.pyc
+*.pyo
+*~
+*.swp
+.DS_Store
+.blot
+.replay.sh
+
+# override these in the sample_dataset directory
+*.exe
+*.dll
+*.sys
