@@ -1,0 +1,308 @@
+
+
+This document assumes the reader is familiar with PE files and reverse-engineering concepts.
+
+*********************************
+
+OXIDE SUMMARY
+Oxide is an interface for analyzing files. Oxide is also a platform for managing analysis programs.  Oxide's strength is in applying analysis tools to large collections of files.  Oxide makes it possible to run many tools, in concert with each other, over many files, with very few commands from the analyst.  Oxide requires that the analysis programs, and the files to be analyzed, be "imported" or "plugged in" to the Oxide system. 
+ 
+NATIVE OXIDE COMMANDS 
+Both plugins and files to be analyzed are managed using commands "native" to the oxide shell.  There are 15 native commands, and the pipe symbol "|" which has the same meaning that it has in the bash shell.  The native commands fall into roughly 5 categories.  File management, plugin management, and the first 3 shell management commands will be needed by the typical user quite often.  The rest are for more advanced operation of oxide.In the list below, the commands followed by a numeral in square brackets indicate the number of variations of the command. For example, there are 4 verbs that may follow the word "collection" in the collection command: 
+    collection create 
+    collection delete 
+    collection rename 
+    collection remove 
+ 
+ 
+ 
+ 
+3 native commands are for managing files to be analyzed 
+    -import                 # verb # 
+    -collection [5]         # noun # 
+    -context [6]            # noun # 
+ 
+The plugin command is for managing plugins 
+    -plugin                 # noun # 
+ 
+The following 9 commands manage: the oxide shell, bash shell, python shell, and oxide scripts 
+    -show [12]              # verb # 
+    -help                   # interjection # 
+    -exit                   # verb # 
+    -example                # noun - this is not really a command like the others.  The doc string needs to show the command use. # 
+    -history                # noun # 
+    -configure              # verb # 
+    -bash                   # proper noun # 
+    -py                     # abbrev for proper noun # 
+    -load                   # verb # 
+ 
+The "tag" command does... 
+    -tag [3]                # noun # 
+ 
+The "run" command is for managing modules 
+    -run                    # verb # 
+ 
+ 
+MANAGING ANALYSIS PROGRAMS/TOOLS 
+Analysis programs in Oxide are called "plugins" (and sometimes, "modules", but that is for another discussion).  A plugin contains one or more related functions.  A plugin must be "plugged in" to the system before its functions may be called.  Plug in the plugin using the command "plugin". 
+example     oxide > plugin re_tools   
+ 
+There is a default plugin, called "default" that is automatically plugged-in when oxide starts.  The functions in the default plugin are used to manage the files to be analyzed. 
+ 
+MANAGING FILES TO BE ANALYZED 
+Files to be analyzed must be "imported" to the Oxide system (framework?).  Oxide contains a data store where files are stored indefinitely, once they are imported.  In the data store, files to be analyzed are hashed and uniquely identified by their file hashes.  Because file hashes are not 'human readable' another way to refer to individual files, or groups of files, is needed.  The concept of collections is the mechanism that manages files without need to refer to them by file hash.  
+ 
+	COLLECTIONS ARE CONTAINERS USED TO MANAGE FILES 
+    Every time a file or group of files is imported, it should be wrapped in a collection.  To do this, pipe the output of the "import" command to the "collection create" command. 
+    	
+    	oxide > import my_binary_file.exe  |  collection create my_binary_collection 
+ 
+    If a file is imported to Oxide without a collection, the only way to refer to it is by its file hash. Typing in the file hash is a cumbersome way to refer to the file.  The example below shows the strings function called on a file using its file hash.  It produces the "strings" output, but takes 2 minutes to type. The next section shows an easier way.
+ 	 
+
+    	oxide > import firefox.exe 									# import the file to be analyzed 
+        oxide > plugin re_tools 									# plugin containing the "strings" function 
+        oxide > strings %138b238aa35f66948e4b85070b8b4158618c9509   # run "strings" on the file by referring to its file hash 
+ 																	# the purpose of the "$" character is described in a later chapter
+ 
+    CONTEXT + COLLECTION PROVIDES A SIMPLE FILE HANDLE 
+    The context command sets a particular collection as the current working set (context).  Once in the context, each unique file in the collection an ordinal that can be used as a file handle.  The example below produces the same output as the example above, but has the advantage of leaving much more "analysis context" in the system, and is thus more repeatable and memorable.   
+ 
+    	oxide > import firefox.exe | collection create ffoxCollect	# import the file wrapped in a collection 
+        oxide > context set &ffoxCollect 							# set the collection as the current working set(context)  
+        oxide > plugin re_tools 									# plugin containing the "strings" function 
+        oxide > strings $0 											# Run "strings" on the file, referring to it by index number
+        															# we know the file's index is 0, because there is only one file in the collection/context
+        															# the purpose of the "$" character is described in a later chapter
+ 
+    The primary advantage of using collections is that it simplifies processing many files at once.  The first example runs the strings function on a file.  Running strings on 1000 files this way would require typing in 1000 file hashes.  Using "collection" and "context" we can run the strings function on 1000 files with this command: 
+ 
+    	oxide > strings $0:999  									# the purpose of the "$" character is reserved for a later section
+ 
+    FILE HASHES, FILE NAMES, AND OIDs
+    In Oxide, the 'unique key' for a file object is its cryptographic hash.  Oxide refers to the cryptographic hash as the "oid" (short for "object id").  This tutorial refers to the hash as the oid from this point.
+
+    The imported file's name is stored as a property of the file object.  Multiple file objects in oxide may contain the same file name. For example, files named temp.txt may be imported many times, yet have different contents and therefore, have different oids.  
+
+    Also, a file might be imported by the user many times under many different names. Oxide does not duplicate the file in the datastore, it simply adds any new properties (names) to the existing object. For example, a malware may be imported under the name malware.exe with a filehash of 123456abcdef.  The same malware may later be imported as harmless.exe, systemfile.exe, nodanger.exe, and kittens.exe.  The Oxide datastore will contain only one file object with the oid 123456abcdef.  When we import the same file under different filenames, oxide shows the following output:
+       	oxide > import malware.exe
+  		 - 1 file(s) imported, 1 are new  
+     	oxide > import harmless.exe
+  		 - 1 file(s) imported, 0 are new
+  		oxide > import systemfile.exe
+  		 - 1 file(s) imported, 0 are new
+  		oxide > import nodanger.exe
+  		 - 1 file(s) imported, 0 are new
+  		oxide > import kittens.exe
+  		 - 1 file(s) imported, 0 are new  		
+
+
+    The object for this file will contain all the names that Oxide has imported it under.  For each time that the same file is imported to Oxide with a different filename, the filename is added to the object.  If we view the object and its properties, it looks like:
+
+    	oxide > show ^kittens.exe
+    	 ---------- Metadata 123456abcdef
+    	 - Names: harmless.exe, systemfile.exe, nodanger.exe, kittens.exe, malware.exe
+     	 - Size: 1050 bytes
+
+ 
+    A file may belong to many collections at one time just as a person may belong to many clubs at one time.  
+
+    The file object is generally referred to by an alias of its oid, but can be accessed by its oid.
+    The file object may be accessed by ordinal number when it is in the current context. (this is an alias of its oid)
+    You may ask Oxide for a file by name, but this is slow, and returns all oids containing that name as a property.
+
+
+OXIDE SPECIAL CHARACTERS
+Oxide reserves 5 special characters for manipulating data structures (not the right word..) in the shell
+	% prefixes an oid
+	& prefixes a collection
+	$ prefixes a context
+	@ prefixes a variable
+	^ prefixes a filename
+
+ERROR MESSAGES YOU MAY ENCOUNTER 
+	If you make a mistake and choose the wrong decorator character, you will see one of these messages: 
+	oxide > header %0 
+						ShellSyntaxError:   oid 0 does not exist 
+	oxide > header $0			 
+						ShellRuntimeError:  Context index 0 out of range 
+ 
+	If the plugin is not loaded and you try to call a function from it, you will see this message: 
+	oxide > header %0	 
+						ShellSyntaxError:   Command header not found.                  # Sam/David - put the command name in quotes # 
+
+
+
+
+********************************   QUICKSTART   ********************************
+The point of this section is to be a step-by-step example of processing a single file in Oxide with some functions from the re_tools plugin.  You do not need to understand the behind-the-scenes workings of Oxide to follow these instructions.
+ 
+Start Oxide.  In Oxide directory do:
+	cd oxide 
+open Oxide 
+	sudo python shell.py 
+plug in the plugin "re_tools"  
+	oxide > plugin re_tools 
+import the file into oxide's datastore and create a collection (container) for it  
+	oxide > import   /home/analyst/PEfiles/PEfile.exe   |   collection  create  PE_files_August 
+verify the presence of your new collection within the datastore with the command 
+	oxide > show collections 
+verify the presence of your files within the collection with the command	
+	oxide > show &PE_files_August
+Set the new collection as the current working set (context) 
+	oxide > context  set  &PE_files_August 
+verify that this collection is the current working set (context), and that your files are present
+	oxide > show context 
+						oxide > show context 
+						---------------- Context ---------------- 
+						0:PEfile.exe  ( PE   273793 bytes  ) 
+						-------------------------------------------- 
+				The 0 above is the context number of the file.  It is used to identify this file in commands 
+ 
+
+Use a function from the re_tools plugin -   
+to view the file header
+	oxide > header $0 
+						PE header for PEfile.exe  6cea7366fdc81365f75d44c6646bb360615f3547 
+						- File Size:		273793 bytes 
+						- Addr Size: 		32 bit 
+						- Image Base: 	0x400000  (4194304) 
+						- Image Size: 	73728 
+						- Code Size: 		24576 
+						- Code Base: 	ox1000 (4096) 
+						- Data Base: 		0x7000 (28762) 
+						- File Alignment: 	4096 
+						- Image Version: 	0.0 
+						- Linker Version: 	7.0 
+						- OS Version: 	4.0 
+						- Entry points: 	0x4041 (16449) 
+						  -------------------------- 
+						  - Number of Sections: 4   
+						  - Sections: .data, .rdata, .rsrc, .text 
+						  -------------------------- 
+						  - Import Address Table : 
+						    - DLL:  GDI32.dll 
+						    - DLL:  ADVAPI32.dll 
+						    - DLL:  KERNEL32.dll 
+						    - DLL:  SHELL32.dll 
+						    - DLL:  USER32.dll 
+						    - DLL:  COMCTL32.dll 
+						  -------------------------- 
+						  - Delay Import Address Table: 
+						    + No delay import table 
+						oxide >  
+ 
+The header function of the re_tools plugin includes several capabilities from other plugin functions.  The import address table shown in the "header" command above, is the same displayed by the "import_table" function.  The entry poit shown in the "header" command above is the same entry point as displayed in the entry_point function, but also shows the assembled code at the entry point, so that you can evaluate the correctness of Oxide's choice for yourself. 
+ 
+ 
+ 
+COMMON ERROR MESSAGES 
+	If you make a mistake and choose the wrong decorator character, you will see one of these messages: 
+	oxide > header %0 
+						ShellSyntaxError:   oid 0 does not exist 
+	oxide > header $0			 
+						ShellRuntimeError:  Context index 0 out of range 
+ 
+	If the plugin is not loaded and you try to call a function from it, you will see this message: 
+	oxide > header %0	 
+						ShellSyntaxError:   Command header not found.                         # put the command name in quotes # 
+ 
+MORE RE_TOOLS FUNCTIONS
+Display the other functions of the re_tools plugin (all plugins) because you probably forgot some of the functions available
+	oxide > show plugins						 
+						  ---------- Plugins -------------------		 
+						  - 'default':  
+						          -  membership 
+						          -  summarize 
+						          -  intersection 
+						          -  file_io 
+						          -  clean 
+						          -  expand 
+						          -  random_sample 
+						          -  random_shuffle 
+						          -  top_n 
+						          -  count 
+						          -  select 
+						          -  export_file 
+						          -  cat 
+						  - 're_tools':  
+						          -  re_init 
+						          -  header 
+						          -  sections 
+						          -  import_table 
+						          -  entry_point 
+						          -  disassembly 
+						          -  rva_offset 
+						          -  strings 
+						          -  offset_rva 
+						          -  hex_dec 
+						          -  dec_hex 
+						          -  get_val 
+						          -  hex_view 
+						          -  calls 
+						          -  function_view 
+						  ------------------------------------- 
+ 
+	 
+Display the entry point for this file, with disassembly : 
+	oxide > entry_point   $0 
+						    Entry point disassembly for 3411xH02_V214.exe 6cea7366fdc81365f75d44c6646bb360615f3547 
+						    ------------------------------------- 
+						  0x4041  :   push ebx 
+						  0x4042  :   call [4223064 * 1] 
+						  0x4048  :   mov bl,34 
+						  0x404a  :   cmp [eax * 1],bl 
+						  0x404c  :   jz 16465 
+						  0x404e  :   add bl,-2 
+						  0x4051  :   inc eax 
+						  0x4052  :   xor edx,edx 
+						  0x4054  :   mov cl,[eax * 1] 
+						  0x4056  :   cmp cl,dl 
+						  0x4058  :   jz 16490 
+						  0x405a  :   cmp cl,bl 
+						  0x405c  :   jz 16485 
+						  0x405e  :   inc eax 
+						  0x405f   :   mov cl,[eax * 1] 
+						  0x4061  :   cmp cl,dl 
+						  0x4063  :   jnz 16474 
+						  0x4065  :   cmp [eax * 1],dl 
+						  0x4067  :   jz 16490 
+						  0x4069  :   inc eax						  
+
+
+Display the file in hex, in 160-byte chunks
+	oxide > hex_view $0
+	0        4d 5a 90 00 03 00 00 00  |  MZ......
+	8        04 00 00 00 ff ff 00 00  |  ........
+	16       b8 00 00 00 00 00 00 00  |  ........
+	24       40 00 00 00 00 00 00 00  |  @.......
+	32       00 00 00 00 00 00 00 00  |  ........
+	40       00 00 00 00 00 00 00 00  |  ........
+	48       00 00 00 00 00 00 00 00  |  ........
+	56       00 00 00 00 e8 00 00 00  |  ........
+	64       0e 1f ba 0e 00 b4 09 cd  |  ........
+	72       21 b8 01 4c cd 21 54 68  |  !..L.!Th
+	80       69 73 20 70 72 6f 67 72  |  is progr
+	88       61 6d 20 63 61 6e 6e 6f  |  am canno
+	96       74 20 62 65 20 72 75 6e  |  t be run
+	104      20 69 6e 20 44 4f 53 20  |   in DOS 
+	112      6d 6f 64 65 2e 0d 0d 0a  |  mode....
+	120      24 00 00 00 00 00 00 00  |  $.......
+	128      6e 20 13 0c 2a 41 7d 5f  |  n ..*A}_
+	136      2a 41 7d 5f 2a 41 7d 5f  |  *A}_*A}_
+	144      0d 87 10 5f 3e 41 7d 5f  |  ..._>A}_
+	152      0d 87 00 5f 2b 41 7d 5f  |  ..._+A}_
+
+Display the function calls in the file, separated into internal calls and system calls
+	oxide > calls $0
+Display the sections in the file
+ 	oxide > sections $0
+
+A DIFFERENT WAY TO CALL RE_TOOLS FUNCTIONS
+If we continue in this way, eventually we will try to run the function_view function, and we will get an error:
+	oxide > function_view $0
+	 ShellSyntaxError:  Must set a file. Run re_init <oid>
+
+The function_view function requires a different kind of call.  We are required to "set a file" as the current context, because setting a collection as the current context doesn't work with this function.
+
+

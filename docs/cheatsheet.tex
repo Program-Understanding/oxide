@@ -1,0 +1,166 @@
+\documentclass[10pt,landscape]{article}
+\usepackage{multicol}
+\usepackage{calc}
+\usepackage{ifthen}
+\usepackage[landscape]{geometry}
+\usepackage{amsmath,amsthm,amsfonts,amssymb}
+\usepackage{color,graphicx,overpic}
+\usepackage{hyperref}
+
+% This sets page margins to .5 inch if using letter paper, and to 1cm
+% if using A4 paper. (This probably isn't strictly necessary.)
+% If using another size paper, use default 1cm margins.
+\ifthenelse{\lengthtest { \paperwidth = 11in}}
+    { \geometry{top=.5in,left=.5in,right=.5in,bottom=.5in} }
+    {\ifthenelse{ \lengthtest{ \paperwidth = 297mm}}
+        {\geometry{top=1cm,left=1cm,right=1cm,bottom=1cm} }
+        {\geometry{top=1cm,left=1cm,right=1cm,bottom=1cm} }
+    }
+
+% Turn off header and footer
+\pagestyle{empty}
+
+% Redefine section commands to use less space
+\makeatletter
+\renewcommand{\section}{\@startsection{section}{1}{0mm}%
+                                {-1ex plus -.5ex minus -.2ex}%
+                                {0.5ex plus .2ex}%x
+                                {\normalfont\large\bfseries}}
+\renewcommand{\subsection}{\@startsection{subsection}{2}{0mm}%
+                                {-1explus -.5ex minus -.2ex}%
+                                {0.5ex plus .2ex}%
+                                {\normalfont\normalsize\bfseries}}
+\renewcommand{\subsubsection}{\@startsection{subsubsection}{3}{0mm}%
+                                {-1ex plus -.5ex minus -.2ex}%
+                                {1ex plus .2ex}%
+                                {\normalfont\small\bfseries}}
+\makeatother
+
+% Don't print section numbers
+\setcounter{secnumdepth}{0}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt plus 0.5ex}
+
+\begin{document}
+\raggedright
+\footnotesize
+\begin{multicols}{3}
+
+
+% multicol parameters
+% These lengths are set only within the two main columns
+%\setlength{\columnseprule}{0.25pt}
+\setlength{\premulticols}{1pt}
+\setlength{\postmulticols}{1pt}
+\setlength{\multicolsep}{1pt}
+\setlength{\columnsep}{2pt}
+
+\begin{center}
+     \Large{\underline{Oxide Usage}} \\
+\end{center}
+
+\section{Definitions}
+\begin{description}
+  \item[OID] \hfill \\
+  (Oxide ID) refers to a unique object in the system, usually a file. 
+  \item[Collection] \hfill \\
+  a permanent set of objects that are assigned a name by the user and have an ID. 
+  \item[CID] \hfill \\
+  (Collection ID) a type of OID that refers to a collection.
+  \item[Context] \hfill \\
+  a temporary, non-persistant set of objects that are easy to reference in the shell.
+  \item[Module] \hfill \\
+  a function that can be run over an OID or set of OIDs and caches the results in the datastore.
+  \item[Plugin] \hfill \\
+  a set of functions called from the shell that interact with the user.
+  \item[Scratch Directory] \hfill \\
+  the directory /scratch off of the Oxide root directory, frequently used when outputting files or for temporary files.
+\end{description}
+
+\section{Referring to Objects in the System}
+Use special characters to tell the Oxide shell what you are referring to: \\
+\% oid \\
+\& collection\_name \\
+\$ context\_item \\
+@ variable\_name \\
+\textasciicircum file\_name
+
+\section{Using Help}
+\verb!help! by itself shows the built-in commands and the special reference characters.  \\
+\verb!help! followed by a command name gives help for that command. \\
+\verb!help! followed by a loaded plugin name (use \verb!show plugins! to see loaded plugins) gives help for the entire plugin. \\
+\verb!help! followed by a plugin function name provides help for that function. \\
+If this is a serious emergency, call 911.
+
+\section{Using Show}
+Pipe the output of plugin functions or modules to \verb!show! to display whatever they return.  \verb!show! has a few additional
+built-in features:
+\begin{verbatim}
+show collections
+show collections --verbose
+\end{verbatim}
+shows a list of all the collections and some information about them.
+\begin{verbatim}
+show context
+show context --verbose
+\end{verbatim}
+shows the current context with numbering and some meta-data.
+\begin{verbatim}
+show plugins
+\end{verbatim}
+shows the currently installed plugins.
+\begin{verbatim}
+show modules
+\end{verbatim}
+shows the currently available modules.
+
+\section{Importing Files and Making Collections}
+When importing files or a directory, always make a collection, so that you have an easy way to refer to the files. \\
+Example: 
+\begin{verbatim}
+import datasets/sample | collection create sample 
+\end{verbatim}
+imports all of the files in the datasets/sample directory and creates a collection named sample.
+\section{Working with Contexts}
+Contexts are temporary sets of files that you want to work with.  Collections are permanent objects in the system that are have a unique ID. \\
+To create a context, you can use the \verb!set! subcommand and pass it a collection.  For example:
+\begin{verbatim}
+context set &sample
+\end{verbatim}
+You can then use \verb!show! to see the numbers assigned to the context and use the \$ to refer to individual items in the context. 
+Contexts also support slicing.
+
+\section{Piping}
+Piping is used to pass data between commands in Oxide.  Whatever is emitted by the preceding command is appended to the argument list of the 
+following command.  For example, the following pair of commands are equivalent:
+\begin{verbatim}
+context set &sample
+&sample | context set
+\end{verbatim}
+This is useful for stringing together commands that operate on OIDs by either filtering or creating new objects.  More examples are given in the shell tutorial.
+
+\section{Working with Plugins}
+Load a plugin using \verb!plugin! followed by the plugin name (tab complete will provide a list if it is working on your system).  The functions available in the plugin
+will now be available as commands in the shell.  The default plugin is loaded automatically on starting the shell.  See the list of available plugin commands provided 
+by the currently loaded plugins using \verb!show plugins!. \\
+Some commonly used plugins:
+\begin{description}
+  \item[unpack] provides functions to unpack various packed and compressed formats.
+  \item[re\_tools] provides functions to reverse engineer Windows PE files.
+  \item[bin\_tools] provides functions to examine and compare binary file formats
+  \item[string\_tools] provides a set of utility functions for playing around with strings, xoring, packing, etc.
+\end{description}
+
+\section{Working with Modules}
+Modules are typically interacted with indirectly by using plugins.  To run a module directly, use the \verb!run! command followed by the module name and some OIDs.  
+Modules do not print to the screen, so pipe the output to \verb!show! if you want to see the result.  \\
+Example:
+\begin{verbatim}
+run byte_histogram &sample | show
+\end{verbatim}
+See a list of available modules using \verb!show modules!.
+
+
+\end{multicols}
+\end{document}

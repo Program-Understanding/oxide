@@ -1,0 +1,641 @@
+#
+#
+# Oxide is initialized with the default plugin already loaded. It provides
+# functions to manipulate OIDs and collections
+#
+#
+
+ oxide > show plugins
+  ---------- Plugins -------------------
+  - 'default': 
+      -  file_io
+      -  clean
+      -  expand
+      -  random_sample
+      -  random_shuffle
+      -  top_n
+      -  count
+      -  select
+      -  export_file
+      -  cat
+      -  size_filter
+      -  name_filter
+      -  byte_filter
+      -  type_filter
+      -  key_filter
+      -  extension_filter
+      -  membership
+      -  summarize
+      -  intersection
+  --------------------------------------
+
+
+
+
+  #
+  #
+  # You can query information about the entire plugin or individual functions
+  #
+  #
+
+ oxide > help default
+
+
+
+ Plugin: Utility functions for manipulating files and collections
+
+
+    file_io :  
+        store or retrieve contents of a Python data structure
+        Syntax:
+            file_io <file_name> | show     # Retrieve from a file
+            @<var> | file_io <file_name>   # Write to a file
+    
+    clean :  
+        Passes a list where empty dict keys are removed
+        Syntax: <some_command> | clean | ...
+    
+        .
+        .
+        .
+    
+    summarize :  
+        Gives a summary of a set of files, including types, extensions, etc.  If no argument
+                is passed, gives a summary for the entire datastore (may be very slow).
+        Syntax: summarize %<oid>
+    
+    intersection :  
+        Returns the intersection of the collections passed in, non-collection IDs will be ignored
+        Syntax: intersection &col1 &col2 ...
+    
+ oxide > help summarize
+ 
+        Gives a summary of a set of files, including types, extensions, etc.  If no argument
+                is passed, gives a summary for the entire datastore (may be very slow).
+        Syntax: summarize %<oid>
+
+
+#
+#
+# 'summarize' shows some of the properties of the OIDs in a collection
+
+ oxide > summarize &sample
+
+Total files in set:  27
+
+Extensions (files with multiple names counted more than once):
+   None         :      7
+   exe          :      6
+   g0           :      5
+   upx          :      3
+   zip          :      2
+   bz2          :      1
+   gz           :      1
+   v1           :      1
+   so           :      1
+
+Types:
+   ELF          :      11
+   PE           :      10
+   ZIP          :      2
+   MACHO        :      2
+   BZ2          :      1
+   GZIP         :      1
+
+Sizes: 
+   Under 1k   : 0
+   1k - 10k   : 0
+   10k - 100k : 15
+   100k - 1MB : 11
+   1MB - 10MB : 1
+   over 10 MB : 0
+
+#
+#
+# 'expand' allows you to pass a collection's OIDs one at a time to other 
+# functions
+
+ oxide > expand &sample | show
+  ---------- Metadata c4bc4cceda6346956765779316c141003b35d130 
+  - Names: thunderbird.exe
+  - Size: 399512 bytes
+
+  - 'tags': 
+    - 'import_time': Thu Aug 22 16:55:51 2013
+  --------------------------------------
+  ---------- Metadata edec6dff47be52973da2ffe55949b33a656f3595 
+  - Names: bundle4.tar.bz2
+  - Size: 519459 bytes
+
+  - 'tags': 
+    - 'import_time': Thu Aug 22 16:55:51 2013
+  --------------------------------------
+  ---------- Metadata be339e5bc98caab0d6bc7d3fd97caceef2eda7d1 
+  - Names: ipd.pe32.v1
+  - Size: 133632 bytes
+
+  - 'tags': 
+    - 'import_time': Thu Aug 22 16:55:51 2013
+  --------------------------------------
+
+      .
+      .
+      .
+
+#
+#
+# 'cat' allows you to show the contents of a file
+
+ oxide > import datasets/diff | collection create diffs
+Processed 3/3 (100.00%)   time: 0.00m   est: 0.00m   261.74 per/s
+  - 3 file(s) imported, 3 are new
+  - Collection diffs created
+ oxide > show &diffs --verbose
+  ---------- Collection 3867075a431ec943be8df2ffae0ee3bdc849ef4c 
+  - 'name': diffs
+  - 'notes': 
+  - 'num_oids': 3
+  - 'oids': 
+    -  38dc4be7b8d2c66d8be4c5171d1923a512d285f5 : proof_text_1.txt
+    -  d358b57ae3bfba8369e60fd62e51c39cbbeb6bb3 : proof_text_3.txt
+    -  ed5a67d14dff962ecc704e3a4abe8d0161fba414 : proof_text_2.txt
+
+  - 'tags': 
+    - 'creation_time': Thu Aug 22 17:00:28 2013
+  --------------------------------------
+ oxide > cat ^proof_text_1.txt
+This is a simple text document. It has no purpose
+other than its simple existence. 
+    .
+    .
+    .
+
+ oxide > cat ^proof_text_2.txt
+This is a simple text document. It has no purpose
+other than its simple existence. 
+    .
+    .
+    .
+
+
+ oxide > cat ^proof_text_3.txt
+  ShellSyntaxError: File contains non-printable characters.  Use --force to override.
+ oxide > cat ^proof_text_3.txt --force
+This is a simple text document. It has no purpose
+other than its simple existence. 
+
+    .
+    .
+    .
+
+
+
+
+#
+#
+# Oxide contains other analysis plugins that allow a deeper analysis of the
+# files in the datastore. The bin_tools plugin provides a set of functions that 
+# facilitate the binary exploration of the objects loaded into oxide.
+#
+#
+
+ oxide > 
+ oxide > plugin bin_tools
+ oxide > show plugins
+  ---------- Plugins -------------------
+  - 'bin_tools': 
+    -  common_bytes
+    -  simple_diff
+    -  run_compare_gui
+    -  find_segments
+    -  val_search
+    -  strings
+    -  match_arch
+    -  dec_hex
+    -  hex_view
+    -  hex_dec
+
+#
+#
+# 'match_arch' performs a byte histogram and entropy calculation to estimate 
+# the likelihood that a file was compiled for a certain target.
+
+ oxide > help match_arch
+ 
+        Attempts to guess what architecture a binary is compiled for.
+        Syntax: match_arch %<oid>
+    
+ oxide > match_arch ^7z.exe
+7z.exe :
+	x86 : 0.807967 : match score
+	ppc40x : 0.638056 : match score
+	mpc52xx : 0.638042 : match score
+	mpc82xx : 0.638042 : match score
+	ep93xx : 0.603294 : match score
+	cns3xxx : 0.599971 : match score
+	brcm2708 : 0.595743 : match score
+	mipsel : 0.595642 : match score
+	adm8668 : 0.595642 : match score
+	au1000 : 0.595642 : match score
+	xburst : 0.595642 : match score
+	ar7 : 0.595642 : match score
+	brcm47xx : 0.595642 : match score
+	atheros : 0.595393 : match score
+	brcm63xx : 0.595393 : match score
+	mcs814x : 0.594838 : match score
+	at91 : 0.594838 : match score
+	omap4 : 0.594798 : match score
+	kirkwood : 0.594632 : match score
+	orion : 0.594632 : match score
+	ixp4xx : 0.594531 : match score
+	ramips : 0.594210 : match score
+	ar71xx : 0.593949 : match score
+	lantiq : 0.593948 : match score
+
+ oxide > match_arch ^7z.upx
+7z.upx :
+	x86 : 0.427561 : match score
+	atheros : 0.386741 : match score
+	brcm63xx : 0.386741 : match score
+	mipsel : 0.385972 : match score
+	adm8668 : 0.385972 : match score
+	au1000 : 0.385972 : match score
+	xburst : 0.385972 : match score
+	ar7 : 0.385972 : match score
+	brcm47xx : 0.385972 : match score
+	ar71xx : 0.385716 : match score
+	lantiq : 0.385715 : match score
+	ramips : 0.385176 : match score
+	mpc52xx : 0.372083 : match score
+	mpc82xx : 0.372083 : match score
+	ppc40x : 0.372025 : match score
+	ep93xx : 0.362211 : match score
+	cns3xxx : 0.361410 : match score
+	brcm2708 : 0.361329 : match score
+	mcs814x : 0.361160 : match score
+	at91 : 0.361160 : match score
+	ixp4xx : 0.360617 : match score
+	kirkwood : 0.360516 : match score
+	orion : 0.360516 : match score
+	omap4 : 0.358783 : match score
+
+
+#
+#
+# 'hex_view' gives a byte-by-byte display of file contents
+
+ oxide >  oxide > hex_view ^proof_text_1.txt
+0        54 68 69 73 20 69 73 20  |  This is 
+8        61 20 73 69 6d 70 6c 65  |  a simple
+16       20 74 65 78 74 20 64 6f  |   text do
+24       63 75 6d 65 6e 74 2e 20  |  cument. 
+32       49 74 20 68 61 73 20 6e  |  It has n
+40       6f 20 70 75 72 70 6f 73  |  o purpos
+48       65 0a 6f 74 68 65 72 20  |  e.other 
+56       74 68 61 6e 20 69 74 73  |  than its
+64       20 73 69 6d 70 6c 65 20  |   simple 
+72       65 78 69 73 74 65 6e 63  |  existenc
+80       65 2e 20 0a 0a 4d 61 6e  |  e. ..Man
+88       79 20 66 69 6c 65 73 20  |  y files 
+96       68 61 76 65 20 66 69 6c  |  have fil
+104      6c 65 72 20 69 6e 20 74  |  ler in t
+112      68 65 6d 2e 20 54 68 69  |  hem. Thi
+120      73 20 66 69 6c 65 20 69  |  s file i
+128      73 20 63 6f 6d 70 6c 65  |  s comple
+136      74 65 6c 79 0a 66 69 6c  |  tely.fil
+144      6c 65 72 2e 20 4f 66 74  |  ler. Oft
+152      65 6e 20 66 69 6c 6c 65  |  en fille
+
+
+#
+#
+# 'strings' shows the ascii character blocks in a file
+    
+ oxide > strings ^7z.exe
+Strings in  7z.exe
+    00000000: MZ@ !L!This program cannot be run in DOS mode.
+$
+    000000C4: 5aTRichPELcOL
+                           @Ux0.text
+ `.rdata`b@@.dataFp&V@.rsrc
+    00000285: |@@39(BU
+    0000040F: QVjhD@0BB
+    00000428: uEhBPEpB
+
+      .
+      .
+      .
+
+#
+#
+# 'find_segments' looks for obvious breaks in the binaries
+
+ oxide > help find_segments
+
+        Assuming an image uses 0xFF as padding, finds the 
+        offsets and lengths of segments.
+        syntax: find_segments %oid
+
+ oxide > find_segments ^7z.exe
+Segments in  7z.exe
+0  :  3356    ( Length =  3356  ) 
+3360  :  130532    ( Length =  127172  ) 
+
+
+
+
+#
+#
+# simple_diff tells if there are differences between files
+
+ oxide > simple_diff ^proof_text_1.txt ^proof_text_1.txt
+
+The files are identical!
+ oxide > simple_diff ^proof_text_1.txt ^proof_text_2.txt
+
+The files differ by  14  bytes out of  1176
+ oxide > simple_diff ^proof_text_1.txt ^proof_text_3.txt
+
+The files differ by  58  bytes out of  1176
+
+#
+#
+# run_compare_gui shows the differences between files. It is intended to show
+# versional differences (currently files are constrained to be the same length)
+
+ oxide > run_compare_gui 
+# from the diffs collection, load proof_text_1.txt, proof_text_2.txt and 
+# proof_text_3.txt
+
+
+#
+#
+# The re_tools plugin is a set of functions based on x86 binaries. It assists in
+# the analysis of PE and ELF binaries
+
+ oxide > plugin re_tools
+
+ oxide > show plugins
+  ---------- Plugins -------------------
+      .
+      .
+      .
+
+  - 're_tools': 
+    -  dec_hex
+    -  get_val
+    -  hex_view
+    -  calls
+    -  re_init
+    -  header
+    -  sections
+    -  import_table
+    -  entry_point
+    -  disassembly
+    -  rva_offset
+    -  strings
+    -  offset_rva
+    -  hex_dec
+  --------------------------------------
+
+
+ oxide > plugin re_tools
+ oxide > re_init ^7z.exe
+  - RE file set to 7z.exe 20fea1314dbed552d5fedee096e2050369172ee1
+
+ oxide > header
+  PE Header for 7z.exe 20fea1314dbed552d5fedee096e2050369172ee1
+  - File Size:      163840
+  - Addr Size:      32 bit
+  - Image Base:     0x400000 (4194304)
+  - Image Size:     184320 
+  - Code Size:      126976 
+  - Code Base:      0x1000 (4096)
+  - Data Base:      0x20000 (131072)
+  - File Alignment: 512
+  - Image Version:  0.0
+  - Linker Version: 6.0
+  - OS Version:     4.0
+  - Entry points:   0x1d0cc (118988)  
+  --------------------------
+  - Number of Sections: 4  
+  - Sections: .data, .rdata, .rsrc, .text
+  --------------------------
+  - Import Address Table :
+    - DLL:  ADVAPI32.dll
+    - DLL:  KERNEL32.dll
+    - DLL:  MSVCRT.dll
+    - DLL:  OLEAUT32.dll
+    - DLL:  USER32.dll
+  --------------------------
+  - Delay Import Address Table:
+    + No delay import table
+
+ oxide > entry_point
+  Entry point disassembly for 7z.exe 20fea1314dbed552d5fedee096e2050369172ee1
+  -------------------------------------
+0x1d0cc  :   push ebp
+0x1d0cd  :   mov ebp,esp
+0x1d0cf  :   push -1
+0x1d0d1  :   push 4328984
+0x1d0d6  :   push 4313286
+0x1d0db  :   mov eax,0
+0x1d0e1  :   push eax
+0x1d0e2  :   mov [ * 1],esp
+0x1d0e9  :   sub esp,32
+0x1d0ec  :   push ebx
+0x1d0ed  :   push esi
+0x1d0ee  :   push edi
+0x1d0ef  :   mov [ebp + -24 * 1],esp
+0x1d0f2  :   and [ebp + -4 * 1],0
+0x1d0f6  :   push 1
+0x1d0f8  :   call [4325736 * 1]
+0x1d0fe  :   pop ecx
+0x1d0ff  :   or [4372132 * 1],-1
+0x1d106  :   or [4372136 * 1],-1
+0x1d10d  :   call [4325740 * 1]
+q
+  -------------------------------------
+
+
+ oxide > import_table
+  - Import Table for 7z.exe 20fea1314dbed552d5fedee096e2050369172ee1 
+  --------------------------
+  - Import Address Table :
+    - DLL:  ADVAPI32.dll
+    - DLL:  KERNEL32.dll
+    - DLL:  MSVCRT.dll
+    - DLL:  OLEAUT32.dll
+    - DLL:  USER32.dll
+  --------------------------
+  - Delay Import Address Table:
+    + No delay import table
+ oxide > 
+
+
+#
+#
+# The browser_gui and viewer_gui plugins assist greatly in the analysis
+# of x86 files.
+#
+#
+ oxide > plugin browser_gui
+ oxide > run_browser_gui
+ oxide >
+ oxide > plugin viewer_gui
+ oxide > run_viewer_gui
+
+
+#
+#
+# The unpack plugin allows the manipulation of compressed files within
+# oxide. There are methods for both compressed files within the data store
+# or for files that need to be unpacked and imported.
+#
+#
+
+ oxide > plugin unpack
+ oxide > show plugins
+---------- Plugins -------------------
+   - 'unpack': 
+    -  ispacked
+    -  import_archive
+    -  import_zip
+    -  import_tar
+    -  unarchive
+    -  untar
+    -  unzip
+    -  extract_osx
+
+
+ oxide > extension_filter &sample --ext=zip | show
+  ---------- Metadata a9561a12a683ec46dbff10592cc26978e619c825 
+  - Names: bundle3.zip
+  - Size: 97268 bytes
+
+  - 'tags': 
+    - 'import_time': Thu Aug 22 16:55:51 2013
+  --------------------------------------
+  ---------- Metadata 8ad5832097faf9f32ec48f8ae6ce799fed668cb5 
+  - Names: bundle1.zip
+  - Size: 67854 bytes
+
+  - 'tags': 
+    - 'import_time': Thu Aug 22 16:55:51 2013
+  --------------------------------------
+
+ oxide > extension_filter &sample --ext=zip | unzip | collection create unzipped
+ - Attempting to unzip 2 files
+Processed 2/2 (100.00%)   time: 0.00m   est: 0.00m   54.77 per/s
+ - 5 files extracted, 0 files are new
+
+ - Attempting to unzip 5 files
+Processed 5/5 (100.00%)   time: 0.00m   est: 0.00m   323.06 per/s
+  - Collection unzipped created
+
+ oxide > show &unzipped --verbose
+  ---------- Collection 28cb76aa8e184c92fd219a7438f32fb5b08c6a1b 
+  - 'name': unzipped
+  - 'notes': 
+  - 'num_oids': 5
+  - 'oids': 
+    -  98cb27c309643e983bffc0da86199bc3b7d0fc65 : netcat
+    -  af68710ffdb5654f1b46c5f2b920de920d4fbf07 : pidgin.exe
+    -  b8721a7d7c1e2168614fc6d5fdf09b5f477cef95 : cat
+    -  f2a3c58f62423335543fe8ffb0058b1c77d77d12 : pidgin.upx
+    -  f80d016fad31324b8c31c1985f401cf4e42cedbf : 7z.upx
+
+  - 'tags': 
+    - 'creation_time': Thu Aug 22 17:49:21 2013
+  --------------------------------------
+
+ oxide > show orphans
+  ---------- Orphan oids ---------------
+  <EMPTY>
+  --------------------------------------
+
+#
+#
+# The checksum plugin assists in the finding of portions of code that
+# have checksums calculated on them. There are many CRC, hash and
+# custom checksum algorithms, many of which have been integrated into
+# Oxide's libraries.
+#
+#
+
+# Remember our proof_text_3.txt file that has some odd data areas?
+# Let's explore that file...
+
+ oxide > plugin checksum
+ oxide > show plugins
+  ---------- Plugins -------------------
+  - 'checksum': 
+    -  substring_hash
+    -  substring_crc
+    -  substring_custom
+    -  substring_find
+    -  gen_checksum
+
+ oxide > hex_view ^proof_text_3.txt
+0        54 68 69 73 20 69 73 20  |  This is 
+8        61 20 73 69 6d 70 6c 65  |  a simple
+16       20 74 65 78 74 20 64 6f  |   text do
+      .
+      .
+      .
+776      61 74 69 76 65 20 6f 6e  |  ative on
+784      65 73 2e 0a 20 20 20 20  |  es..    
+792      20 20 20 20 20 20 20 20  |          
+800      18 27 30 2c 11 1f 27 01  |  .'0,..'.
+808      05 1e 2c 05 05 09 1f 23  |  ..,....#
+816      25 02 05 2c 07 05 0a 09  |  %..,....
+824      1e 1b 23 1d 04 25 16 27  |  ..#..%.'
+832      31 16 2f 1c 1c 10 02 23  |  1./....#
+840      20 20 20 20 20 20 20 20  |          
+848      20 20 20 20 20 20 20 20  |          
+856      20 20 20 20 20 20 20 20  |          
+      .
+      .
+      .
+960      20 20 20 20 20 20 20 20  |          
+968      20 20 20 20 20 20 f1 9b  |        ..
+976      46 6f 72 20 74 68 65 20  |  For the 
+
+# The strange data area is within the "blank" section of the text
+# and it's mostly non-printable characters. Then at the end of the
+# blank section is a strange pair of bytes.
+# 
+# Let's analyze this section to see if there is a checksum to be found.
+
+
+ oxide > help substring_find
+ 
+        Using all algorithms (CRC, hash and custom), tries to find which
+                    (if any) checksums exist in specified oid or collection
+        Syntax: substring_find &<collection>|%<oid> [options]
+        Options:
+            --start: Offset within the file to begin calculating checksum 
+                    values. Default is 0 - the beginning of the file.
+            --end: Offset within the file to stop calculating checksum values.
+                    Default is the end of the file.
+            --check_begin,--check_end: defines the byte region in which the 
+                    checksum may be hidden. This region will be searched after 
+                    potential checksums are calculated. Defaults are the
+                    beginning and end of the file.
+            --min_substr: minimum substring size to compute checksum over. 
+                    Default is 1. If user inputs -1, the entire start->end 
+                    region will be processed, no loops for substrings.
+            --algorithms: returns a complete list of algorithm names known for
+                    crc, hash and custom checksum searches
+            --<specific algorithm>: use this algorithm for the search. Many may
+                    be specified.
+            --all: Checks all hash algorithms against the files
+    
+ oxide > substring_find --algorithms
+crc-16-genibus ccitt crc-16-modbus x-25 r-crc-16 crc-16 xmodem kermit crc-16-usb
+zmodem sha1 sha224 sha384 sha256 sha512 md5 sum_of_bytes_32 sum_of_bytes_16
+
+ oxide > substring_find ^proof_text_3.txt --start=??? --end=??? --check_begin=???
+  --check_end=??? --???specific_algorithm(s)???
+
+
