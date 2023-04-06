@@ -94,5 +94,5 @@ class SysUtilsTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    suite = unittest.TestLoader().loadTestsFromTestCase(sys_utils_test)
+    suite = unittest.TestLoader().loadTestsFromTestCase(SysUtilsTest)
     unittest.TextTestRunner().run(suite)
