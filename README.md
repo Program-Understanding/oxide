@@ -81,6 +81,14 @@ angr is a symbolic execution and program analysis open source project from UCSB 
 pip3 install angr
 ```
 
+## How to get Capa to work
+
+Capa is an open source tool used to analyze executable files and provide a list of capabilities.
+
+```
+$ pip install flare-capa
+```
+
 ## How to get Binary Ninja to work
 
 Binary Ninja is an interactive disassembler, decompiler, and reverse engineering platform created by Vector35 (former Raytheon/SI Gov).
