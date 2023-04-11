@@ -17,6 +17,9 @@ from capa.engine import *
 from capa.features.common import FORMAT_AUTO
 
 OS_AUTO = "auto"
+RULES_PATH = "capa-rules"
+FORMAT = "dictionary"
+
 
 # == Render dictionary helpers
 def render_meta(doc: rd.ResultDocument, result):
@@ -193,10 +196,7 @@ def capa_details(rules_path, file_path, output_format="dictionary"):
 
 
 def main(file):
-    RULES_PATH = "/home/nathan/Documents/capa-rules"
-    format = "dictionary"
-
-    dictionary = capa_details(RULES_PATH, file, format)
+    dictionary = capa_details(RULES_PATH, file, FORMAT)
     return dictionary
 
 if __name__ == "__main__":
