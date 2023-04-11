@@ -21,7 +21,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
-
 DESC = " This module uses the capa tool to extract features from an executable."
 NAME = "parse_capa"
 
@@ -36,7 +35,7 @@ logger.debug("init")
 opts_doc = {}
 
 
-def documentation() -> Dict[str, Any]:
+def documentation():
     return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
 
 
