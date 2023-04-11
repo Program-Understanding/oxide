@@ -1,0 +1,7 @@
+[{"oid":"b97b4eca830f6ed31ce35a05a0bee06133581311", "type":"disasm_min", "schema": ["offset:Int", "instr_text:Str"]},
+ [ 1530, "pushq %rbp"],
+ [ 1531, "movq %rsp, %rbp"],
+ [ 1534, "movl $5, -12(%rbp)"],
+ [ 1541, "movl $7, -8(%rbp)"],
+ [ 1548, "movl $10, -4(%rbp)"],
+ [ 1555, "jmp -16 <main+0xb>"]]
