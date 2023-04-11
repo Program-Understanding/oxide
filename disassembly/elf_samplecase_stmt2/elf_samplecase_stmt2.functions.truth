@@ -1,0 +1,13 @@
+[{"oid": "3826d14233c0a35d01cbf1d16b07c129396be56e", "type": "functions"},
+ [1208, "_init"],
+ [1232, ".plt"],
+ [1248, "__cxa_finalize@plt"],
+ [1264, "_start"],
+ [1312, "deregister_tm_clones"],
+ [1376, "register_tm_clones"],
+ [1456, "__do_global_dtors_aux"],
+ [1520, "frame_dummy"],
+ [1530, "main"],
+ [1632, "__libc_csu_init"],
+ [1744, "__libc_csu_fini"],
+ [1748, "_fini"]]

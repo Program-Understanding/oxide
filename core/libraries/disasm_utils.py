@@ -246,97 +246,97 @@ def get_eflag_name(eflag: int) -> str:
 
         reference code: https://github.com/capstone-engine/capstone/blob/master/bindings/python/test_x86.py#L22
     """
-    if eflag == X86_EFLAGS_UNDEFINED_OF:
+    if eflag == capstone.x86.X86_EFLAGS_UNDEFINED_OF:
         return "UNDEF_OF"
-    elif eflag == X86_EFLAGS_UNDEFINED_SF:
+    elif eflag == capstone.x86.X86_EFLAGS_UNDEFINED_SF:
         return "UNDEF_SF"
-    elif eflag == X86_EFLAGS_UNDEFINED_ZF:
+    elif eflag == capstone.x86.X86_EFLAGS_UNDEFINED_ZF:
         return "UNDEF_ZF"
-    elif eflag == X86_EFLAGS_MODIFY_AF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_AF:
         return "MOD_AF"
-    elif eflag == X86_EFLAGS_UNDEFINED_PF:
+    elif eflag == capstone.x86.X86_EFLAGS_UNDEFINED_PF:
         return "UNDEF_PF"
-    elif eflag == X86_EFLAGS_MODIFY_CF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_CF:
         return "MOD_CF"
-    elif eflag == X86_EFLAGS_MODIFY_SF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_SF:
         return "MOD_SF"
-    elif eflag == X86_EFLAGS_MODIFY_ZF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_ZF:
         return "MOD_ZF"
-    elif eflag == X86_EFLAGS_UNDEFINED_AF:
+    elif eflag == capstone.x86.X86_EFLAGS_UNDEFINED_AF:
         return "UNDEF_AF"
-    elif eflag == X86_EFLAGS_MODIFY_PF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_PF:
         return "MOD_PF"
-    elif eflag == X86_EFLAGS_UNDEFINED_CF:
+    elif eflag == capstone.x86.X86_EFLAGS_UNDEFINED_CF:
         return "UNDEF_CF"
-    elif eflag == X86_EFLAGS_MODIFY_OF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_OF:
         return "MOD_OF"
-    elif eflag == X86_EFLAGS_RESET_OF:
+    elif eflag == capstone.x86.X86_EFLAGS_RESET_OF:
         return "RESET_OF"
-    elif eflag == X86_EFLAGS_RESET_CF:
+    elif eflag == capstone.x86.X86_EFLAGS_RESET_CF:
         return "RESET_CF"
-    elif eflag == X86_EFLAGS_RESET_DF:
+    elif eflag == capstone.x86.X86_EFLAGS_RESET_DF:
         return "RESET_DF"
-    elif eflag == X86_EFLAGS_RESET_IF:
+    elif eflag == capstone.x86.X86_EFLAGS_RESET_IF:
         return "RESET_IF"
-    elif eflag == X86_EFLAGS_TEST_OF:
+    elif eflag == capstone.x86.X86_EFLAGS_TEST_OF:
         return "TEST_OF"
-    elif eflag == X86_EFLAGS_TEST_SF:
+    elif eflag == capstone.x86.X86_EFLAGS_TEST_SF:
         return "TEST_SF"
-    elif eflag == X86_EFLAGS_TEST_ZF:
+    elif eflag == capstone.x86.X86_EFLAGS_TEST_ZF:
         return "TEST_ZF"
-    elif eflag == X86_EFLAGS_TEST_PF:
+    elif eflag == capstone.x86.X86_EFLAGS_TEST_PF:
         return "TEST_PF"
-    elif eflag == X86_EFLAGS_TEST_CF:
+    elif eflag == capstone.x86.X86_EFLAGS_TEST_CF:
         return "TEST_CF"
-    elif eflag == X86_EFLAGS_RESET_SF:
+    elif eflag == capstone.x86.X86_EFLAGS_RESET_SF:
         return "RESET_SF"
-    elif eflag == X86_EFLAGS_RESET_AF:
+    elif eflag == capstone.x86.X86_EFLAGS_RESET_AF:
         return "RESET_AF"
-    elif eflag == X86_EFLAGS_RESET_TF:
+    elif eflag == capstone.x86.X86_EFLAGS_RESET_TF:
         return "RESET_TF"
-    elif eflag == X86_EFLAGS_RESET_NT:
+    elif eflag == capstone.x86.X86_EFLAGS_RESET_NT:
         return "RESET_NT"
-    elif eflag == X86_EFLAGS_PRIOR_OF:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_OF:
         return "PRIOR_OF"
-    elif eflag == X86_EFLAGS_PRIOR_SF:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_SF:
         return "PRIOR_SF"
-    elif eflag == X86_EFLAGS_PRIOR_ZF:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_ZF:
         return "PRIOR_ZF"
-    elif eflag == X86_EFLAGS_PRIOR_AF:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_AF:
         return "PRIOR_AF"
-    elif eflag == X86_EFLAGS_PRIOR_PF:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_PF:
         return "PRIOR_PF"
-    elif eflag == X86_EFLAGS_PRIOR_CF:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_CF:
         return "PRIOR_CF"
-    elif eflag == X86_EFLAGS_PRIOR_TF:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_TF:
         return "PRIOR_TF"
-    elif eflag == X86_EFLAGS_PRIOR_IF:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_IF:
         return "PRIOR_IF"
-    elif eflag == X86_EFLAGS_PRIOR_DF:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_DF:
         return "PRIOR_DF"
-    elif eflag == X86_EFLAGS_TEST_NT:
+    elif eflag == capstone.x86.X86_EFLAGS_TEST_NT:
         return "TEST_NT"
-    elif eflag == X86_EFLAGS_TEST_DF:
+    elif eflag == capstone.x86.X86_EFLAGS_TEST_DF:
         return "TEST_DF"
-    elif eflag == X86_EFLAGS_RESET_PF:
+    elif eflag == capstone.x86.X86_EFLAGS_RESET_PF:
         return "RESET_PF"
-    elif eflag == X86_EFLAGS_PRIOR_NT:
+    elif eflag == capstone.x86.X86_EFLAGS_PRIOR_NT:
         return "PRIOR_NT"
-    elif eflag == X86_EFLAGS_MODIFY_TF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_TF:
         return "MOD_TF"
-    elif eflag == X86_EFLAGS_MODIFY_IF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_IF:
         return "MOD_IF"
-    elif eflag == X86_EFLAGS_MODIFY_DF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_DF:
         return "MOD_DF"
-    elif eflag == X86_EFLAGS_MODIFY_NT:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_NT:
         return "MOD_NT"
-    elif eflag == X86_EFLAGS_MODIFY_RF:
+    elif eflag == capstone.x86.X86_EFLAGS_MODIFY_RF:
         return "MOD_RF"
-    elif eflag == X86_EFLAGS_SET_CF:
+    elif eflag == capstone.x86.X86_EFLAGS_SET_CF:
         return "SET_CF"
-    elif eflag == X86_EFLAGS_SET_DF:
+    elif eflag == capstone.x86.X86_EFLAGS_SET_DF:
         return "SET_DF"
-    elif eflag == X86_EFLAGS_SET_IF:
+    elif eflag == capstone.x86.X86_EFLAGS_SET_IF:
         return "SET_IF"
     else: 
         return None
