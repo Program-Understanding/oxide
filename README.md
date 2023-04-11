@@ -44,7 +44,7 @@ Ghidra runs in Java and requires Java JDK 11, *https://jdk.java.net/*
 
 ## How to get IDA to work
 
-IDAPro is one of the most prevalet disassemblers, with the Hex-Rays decompilers on the
+IDAPro is one of the most prevalent disassemblers, with the Hex-Rays decompilers on the
 market. Once purchased the IDAPATH must be set in the configuration file.
 
 ## How to get Radare2

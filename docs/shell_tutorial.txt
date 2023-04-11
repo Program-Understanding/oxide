@@ -2,7 +2,7 @@
 
 # Open the Oxide shell and display the help
 $ ./oxide.sh
- --------   Oxide   -------- 
+ --------   Oxide   --------
  oxide > help
   ---------- Oxide Shell Help ----------
   - Commands: bash, collection, configure, context, example, exit, help, history, import, load, plugin, py, run, show, tag
@@ -13,14 +13,14 @@ $ ./oxide.sh
         $<context>
         @<var>
         ^<file_name>
-        
-        
+
+
   - help <command> for command specific help
-        
+
   - See example for further information
-        
+
 # Import the sample dataset and create a collection
- oxide > import datasets/sample_dataset/ | collection create sample 
+ oxide > import datasets/sample_dataset/ | collection create sample
 Processed 26/26 (100.00%)   time: 0.02m   est: 0.00m   19.82 per/s
   - 26 file(s) imported, 26 are new
   - Collection sample created
@@ -34,7 +34,7 @@ Processed 26/26 (100.00%)   time: 0.02m   est: 0.00m   19.82 per/s
         show $<context>
         show @<var>
         show %<oid>
-        
+
         show modules [<module>] [--verbose]
         show collections [--verbose]
         show context
@@ -53,11 +53,11 @@ Processed 26/26 (100.00%)   time: 0.02m   est: 0.00m   19.82 per/s
 # Collections are persistent and are referenced with an &.
 # Display the sample collection and all of its details
  oxide > show &sample --verbose
-  ---------- Collection 8155723f531c3ecc69d9591e472b6748609d346f 
+  ---------- Collection 8155723f531c3ecc69d9591e472b6748609d346f
   - 'name': sample
-  - 'notes': 
+  - 'notes':
   - 'num_oids': 26
-  - 'oids': 
+  - 'oids':
 	  -  02ba7205702dbcd5c2dd50de69637b1bd6cdca80 : ipd.pe32.g0
 	  -  138b238aa35f66948e4b85070b8b4158618c9509 : firefox.exe
 	  -  20fea1314dbed552d5fedee096e2050369172ee1 : 7z-0.9.20.exe, 7z.exe
@@ -85,37 +85,37 @@ Processed 26/26 (100.00%)   time: 0.02m   est: 0.00m   19.82 per/s
 	  -  f8bfcc27b6604afa2fc266c292edd938c9924929 : netcat.upx
 	  -  ff8321e26633f09d8510005f2b3e4b3b755cdb1c : bundle2.tar.gz
 
-  - 'tags': 
+  - 'tags':
 	  - 'creation_time': Thu Aug 28 09:42:05 2014
   --------------------------------------
 
 
-# Display the details of a single file.  Files are referenced with a ^.
+# Display the details of a single file.  Files are referenced by name using a ^.
  oxide > show ^7z.exe
-  ---------- Metadata 20fea1314dbed552d5fedee096e2050369172ee1 
+  ---------- Metadata 20fea1314dbed552d5fedee096e2050369172ee1
   - Names: 7z.exe
   - Size: 163840 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Wed Aug 21 12:48:34 2013
   --------------------------------------
 
-# The context is not persistent and is useful for referencing a small set of files or a single file 
+# The context is not persistent and is useful for referencing a small set of files or a single file
 
  oxide > help context
 
     Description: Manipulate the context which is like a working set
-    Syntax:        
+    Syntax:
         context set %<oid> # Set context to this (e.g. clear, then add)
-        
+
         context add %<oid> # Append to the current context
-        
+
         context remove %<oid> # Remove this from context
-    
+
         context clear # Empty out the context
-        
+
         context save [<fname>] # Save a context to a file
-        
+
         context load [<fname>] # Load a context from a file
 
 
@@ -126,32 +126,32 @@ Processed 26/26 (100.00%)   time: 0.02m   est: 0.00m   19.82 per/s
 
  oxide > show context
   ---------- Context -------------------
-  0:thunderbird.exe ( PE  399512 bytes )  
-  1:ipd.pe32.v1 ( PE  133632 bytes )  
-  2:pidgin.upx ( PE  38378 bytes )  
-  3:bundle3.zip ( ZIP  97268 bytes )  
-  4:firefox.exe ( PE  924632 bytes )  
-  5:netcat ( ELF  48052 bytes )  
-  6:ipd.pe32.g0 ( PE  483933 bytes )  
-  7:ipd.elf32.g0 ( ELF  15010 bytes )  
-  8:pidgin.exe ( PE  48618 bytes )  
-  9:ash ( ELF  82972 bytes )  
-  10:cat ( ELF  71641 bytes )  
-  11:ipd.mac64.g0 ( MACHO  21200 bytes )  
-  12:bundle2.tar.gz ( GZIP  100387 bytes )  
-  13:libc-2.15.so ( ELF  1730024 bytes )  
-  14:toolbox ( ELF  103248 bytes )  
-  15:cp ( ELF  124863 bytes )  
-  16:ipd.elf64.g0 ( ELF  21070 bytes )  
-  17:nmap.exe ( PE  748032 bytes )  
-  18:7z-0.9.20.exe,7z.exe ( PE  163840 bytes )  
-  19:7z.upx ( PE  77824 bytes )  
-  20:bundle1.zip ( ZIP  67854 bytes )  
-  21:netcat.upx ( ELF  20432 bytes )  
-  22:rm ( ELF  82264 bytes )  
-  23:bash ( ELF  725136 bytes )  
-  24:putty.exe ( PE  483328 bytes )  
-  25:ipd.mac32.g0 ( MACHO  18908 bytes )  
+  0:thunderbird.exe ( PE  399512 bytes )
+  1:ipd.pe32.v1 ( PE  133632 bytes )
+  2:pidgin.upx ( PE  38378 bytes )
+  3:bundle3.zip ( ZIP  97268 bytes )
+  4:firefox.exe ( PE  924632 bytes )
+  5:netcat ( ELF  48052 bytes )
+  6:ipd.pe32.g0 ( PE  483933 bytes )
+  7:ipd.elf32.g0 ( ELF  15010 bytes )
+  8:pidgin.exe ( PE  48618 bytes )
+  9:ash ( ELF  82972 bytes )
+  10:cat ( ELF  71641 bytes )
+  11:ipd.mac64.g0 ( MACHO  21200 bytes )
+  12:bundle2.tar.gz ( GZIP  100387 bytes )
+  13:libc-2.15.so ( ELF  1730024 bytes )
+  14:toolbox ( ELF  103248 bytes )
+  15:cp ( ELF  124863 bytes )
+  16:ipd.elf64.g0 ( ELF  21070 bytes )
+  17:nmap.exe ( PE  748032 bytes )
+  18:7z-0.9.20.exe,7z.exe ( PE  163840 bytes )
+  19:7z.upx ( PE  77824 bytes )
+  20:bundle1.zip ( ZIP  67854 bytes )
+  21:netcat.upx ( ELF  20432 bytes )
+  22:rm ( ELF  82264 bytes )
+  23:bash ( ELF  725136 bytes )
+  24:putty.exe ( PE  483328 bytes )
+  25:ipd.mac32.g0 ( MACHO  18908 bytes )
   --------------------------------------
 
 
@@ -161,7 +161,7 @@ Processed 26/26 (100.00%)   time: 0.02m   est: 0.00m   19.82 per/s
   - Context saved to file .context.save
 oxide > exit
 $ ./oxide.sh
- --------   Oxide   -------- 
+ --------   Oxide   --------
  oxide > context load
   - Context loaded from file .context.save
 
@@ -170,50 +170,50 @@ $ ./oxide.sh
 # Display context item $0
 
  oxide > show $0
-  ---------- Metadata c4bc4cceda6346956765779316c141003b35d130 
+  ---------- Metadata c4bc4cceda6346956765779316c141003b35d130
   - Names: thunderbird.exe
   - Size: 399512 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Wed Aug 21 12:48:36 2013
   --------------------------------------
 
-# Slicing is supported when referencing context items 
+# Slicing is supported when referencing context items
 # Multiple items can be referenced on the same line
  oxide > show $:3 $8 $25:
-  ---------- Metadata c4bc4cceda6346956765779316c141003b35d130 
+  ---------- Metadata c4bc4cceda6346956765779316c141003b35d130
   - Names: thunderbird.exe
   - Size: 399512 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Thu Aug 28 09:42:05 2014
   --------------------------------------
-  ---------- Metadata be339e5bc98caab0d6bc7d3fd97caceef2eda7d1 
+  ---------- Metadata be339e5bc98caab0d6bc7d3fd97caceef2eda7d1
   - Names: ipd.pe32.v1
   - Size: 133632 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Thu Aug 28 09:42:05 2014
   --------------------------------------
-  ---------- Metadata f2a3c58f62423335543fe8ffb0058b1c77d77d12 
+  ---------- Metadata f2a3c58f62423335543fe8ffb0058b1c77d77d12
   - Names: pidgin.upx
   - Size: 38378 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Thu Aug 28 09:42:05 2014
   --------------------------------------
-  ---------- Metadata af68710ffdb5654f1b46c5f2b920de920d4fbf07 
+  ---------- Metadata af68710ffdb5654f1b46c5f2b920de920d4fbf07
   - Names: pidgin.exe
   - Size: 48618 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Thu Aug 28 09:42:05 2014
   --------------------------------------
-  ---------- Metadata 7193164643b1666d0fc315d21bff4a4712d1c59c 
+  ---------- Metadata 7193164643b1666d0fc315d21bff4a4712d1c59c
   - Names: ipd.mac32.g0
   - Size: 18908 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Thu Aug 28 09:42:05 2014
   --------------------------------------
 
@@ -224,7 +224,7 @@ $ ./oxide.sh
 
  oxide > show vars
   ---------- Variables -----------------
-  - 'x': 
+  - 'x':
 	  -  be339e5bc98caab0d6bc7d3fd97caceef2eda7d1
 	  -  c4bc4cceda6346956765779316c141003b35d130
 	  -  f2a3c58f62423335543fe8ffb0058b1c77d77d12
@@ -233,25 +233,25 @@ $ ./oxide.sh
   <EMPTY>
 
  oxide > show @x
- ---------- Metadata c4bc4cceda6346956765779316c141003b35d130 
+ ---------- Metadata c4bc4cceda6346956765779316c141003b35d130
   - Names: thunderbird.exe
   - Size: 399512 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Thu Aug 28 09:42:05 2014
   --------------------------------------
-  ---------- Metadata be339e5bc98caab0d6bc7d3fd97caceef2eda7d1 
+  ---------- Metadata be339e5bc98caab0d6bc7d3fd97caceef2eda7d1
   - Names: ipd.pe32.v1
   - Size: 133632 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Thu Aug 28 09:42:05 2014
   --------------------------------------
-  ---------- Metadata f2a3c58f62423335543fe8ffb0058b1c77d77d12 
+  ---------- Metadata f2a3c58f62423335543fe8ffb0058b1c77d77d12
   - Names: pidgin.upx
   - Size: 38378 bytes
 
-  - 'tags': 
+  - 'tags':
 	  - 'import_time': Thu Aug 28 09:42:05 2014
   --------------------------------------
 
@@ -260,7 +260,7 @@ $ ./oxide.sh
 # A Python shell can be invoked from the Oxide shell
 # Variables from each are present in the other
  oxide > py
-Python 2.7.2 (v2.7.2:8527427914a2, Jun 11 2011, 15:22:34) 
+Python 2.7.2 (v2.7.2:8527427914a2, Jun 11 2011, 15:22:34)
 [GCC 4.2.1 (Apple Inc. build 5666) (dot 3)] on darwin
 Type "help", "copyright", "credits" or "license" for more information.
 (Python Interactive Shell which shares state with Oxide)
@@ -274,16 +274,16 @@ Type "help", "copyright", "credits" or "license" for more information.
   ---------- Info ----------------------
  123
   --------------------------------------
-  
+
 # Bash shell commands can be executed from the Oxide shell
  oxide > bash ls
 core		db		ida_plugins	modules		plugins		shell.py	utils
 datasets	docs		localstore	oxide.sh	scratch		test		web_interface
 
 # Only the default plugin is initially loaded
- oxide > show plugins 
+ oxide > show plugins
   ---------- Plugins -------------------
-  - 'default': 
+  - 'default':
 	  -  membership
 	  -  summarize
 	  -  intersection
@@ -314,7 +314,7 @@ datasets	docs		localstore	oxide.sh	scratch		test		web_interface
 # The default plugin is loaded at startup and contains many useful functions.
 # Use the type_filter function to determine how many pe files are in the sample collection
  oxide > help type_filter
- 
+
         Plugin: Use without args to find all files with that type, use with args to filter
         Syntax: type_filter %<oid> --type=[ PE | ELF | PDF | etc...]
 
@@ -332,11 +332,11 @@ datasets	docs		localstore	oxide.sh	scratch		test		web_interface
   --------------------------------------
 
  oxide > show &sample_pes --verbose
-  ---------- Collection 32d79ff725f6536eb33a4aaf05773bbfd4e883d1 
+  ---------- Collection 32d79ff725f6536eb33a4aaf05773bbfd4e883d1
   - 'name': sample_pes
-  - 'notes': 
+  - 'notes':
   - 'num_oids': 10
-  - 'oids': 
+  - 'oids':
 	  -  02ba7205702dbcd5c2dd50de69637b1bd6cdca80 : ipd.pe32.g0
 	  -  138b238aa35f66948e4b85070b8b4158618c9509 : firefox.exe
 	  -  20fea1314dbed552d5fedee096e2050369172ee1 : 7z.exe
@@ -348,7 +348,7 @@ datasets	docs		localstore	oxide.sh	scratch		test		web_interface
 	  -  f2a3c58f62423335543fe8ffb0058b1c77d77d12 : pidgin.upx
 	  -  f80d016fad31324b8c31c1985f401cf4e42cedbf : 7z.upx
 
-  - 'tags': 
+  - 'tags':
 	  - 'creation_time': Wed Aug 21 13:09:04 2013
   --------------------------------------
 
@@ -374,7 +374,7 @@ Types:
    ZIP    		  :		   2
    GZIP    		  :		   1
 
-Sizes: 
+Sizes:
    Under 1k   : 0
    1k - 10k   : 0
    10k - 100k : 15
@@ -384,7 +384,7 @@ Sizes:
 
 # Modules are typically run indirectly by using plugins, but they can be accessed
 # directly as well using the run command.
-# Run and display the byte_histogram module over the the collection sample_pes 
+# Run and display the byte_histogram module over the the collection sample_pes
  oxide > run byte_histogram &sample_pes | show
   - Running byte_histogram over 1 items
 Processed 10/10 (100.00%)   time: 0.01m   est: 0.00m   14.10 per/s
@@ -412,12 +412,12 @@ Processed 10/10 (100.00%)   time: 0.00m   est: 0.00m   3358.94 per/s
 # The file_io command can be used to save the contents of a variable out to a file
 # This uses the built-in python pickle library to save python objects and load them.
  oxide > help file_io
-        
+
         Plugin: store or retrieve contents of a file
         Syntax:
             file_io <file_name> | show     # Retrieve from a file
             @<var> | file_io <file_name>   # Write to a file
-    
+
 # Write the variable to a file.
  oxide > @bytes | file_io my_bytes
 
@@ -431,7 +431,7 @@ Processed 10/10 (100.00%)   time: 0.00m   est: 0.00m   3358.94 per/s
 
  oxide > show plugins
   ---------- Plugins -------------------
-  - 'bin_tools': 
+  - 'bin_tools':
 	  -  diff
 	  -  match_arch
 	  -  simple_diff
@@ -443,7 +443,7 @@ Processed 10/10 (100.00%)   time: 0.00m   est: 0.00m   3358.94 per/s
 	  -  hex_dec
 	  -  dec_hex
 	  -  hex_view
-  - 'default': 
+  - 'default':
 	  -  membership
 	  -  summarize
 	  -  intersection
@@ -468,8 +468,8 @@ Processed 10/10 (100.00%)   time: 0.00m   est: 0.00m   3358.94 per/s
 # Strings will show all of the strings in a file with the associated offsets.
  oxide > strings $25
 Strings in  ipd.mac32.g0
-8__PAGEZERO0: 
-    00000058: H__TEXT  
+8__PAGEZERO0:
+    00000058: H__TEXT
     0000008C: __text__TEXT
     000000B0: `
                __cstring

@@ -100,5 +100,5 @@ class ShellTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    suite = unittest.TestLoader().loadTestsFromTestCase(shell_test)
+    suite = unittest.TestLoader().loadTestsFromTestCase(ShellTest)
     unittest.TextTestRunner().run(suite)
