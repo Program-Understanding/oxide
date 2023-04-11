@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 """Plugin: re_tools - Functions to help reverse engineer an x86 file
@@ -310,7 +310,7 @@ def strings(args, opts):
         else:
             raise ShellSyntaxError("Must provide an oid or run re_init to set a file")
     for oid in args:
-        strings = api.retrieve("strings", oid, opts)
+        strings = api.get_field("strings", oid, oid, opts)
         if not strings:
             print(" - No strings for", oid)
         else:
