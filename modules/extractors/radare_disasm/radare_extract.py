@@ -149,8 +149,8 @@ def extract(file_test, header):
     start = time.time()
 
     try:
-                # disable stderrflags=["-2"]
-        r2 = r2pipe.open(file_test)
+        # disable stderr flags=["-2"]
+        r2 = r2pipe.open(file_test, flags=['-2'])
     except Exception:  # Radare does not use custom exception
         print('r2pipe exception')
         return {}

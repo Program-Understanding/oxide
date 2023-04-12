@@ -80,12 +80,15 @@ def _objdump_record_inst_offsets(dasm_line, output_map, header_interface):
     elif header_interface.type == "MACHO":
         load_addr = 0x100000000
         dasm_list[0] = int(inst_addr, 16) - load_addr
+    elif header_interface.type == "PE":
+        dasm_list[0] = header_interface.get_offset(int(inst_addr, 16))
 
     # clean up assembly line
     if (len(dasm_list) > 1):
         dasm_list[1] = dasm_list[1].replace("        ", " ")
     else:
         return
+
     output_map["instructions"][dasm_list[0]] = " ".join(dasm_list[1:])
 
 # -------------------------------- ELF Processing ------------------------------------

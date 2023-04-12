@@ -19,13 +19,16 @@ logger = logging.getLogger(name)
 # --------------------------- Tool N: DDISASM -----------------------------------------
 
 
-def _cleanup_tempfiles(scratch_dir: str = None, temp_file: str = None):
+def _cleanup_tempfiles(scratch_dir: str, temp_file: str):
     basename = os.path.basename(temp_file)
     for file_path in glob.glob(os.path.join('scratch', 'ddisasm', basename)):
+        logger.debug(f'Trying to delete {file_path}')
         try:
             os.remove(file_path)
         except IsADirectoryError:
             shutil.rmtree(file_path)
+        except PermissionError:
+            logger.debug(f'Permission error cannot delete {file_path}')
 
 
 def _get_offset(vaddr, header_interface):
@@ -89,6 +92,9 @@ def _extract_insn_facts(block_fact_file: str, header_interface, exaustive_facts)
     with open(block_fact_file, 'r') as block_info_file:
         lines = block_info_file.read().split('\n')
         for line in lines:
+            if line == "":
+                # Handle empty line
+                continue
 
             # vaddr, size, end addr or last?
             block_info = line.split('\t')
@@ -125,7 +131,7 @@ def _extract_block_facts(cfg_info_path, header_interface):
     data_map = {}
     block_map = {}
 
-    with open(blk_info_path, 'r') as f:
+    with open(cfg_info_path, 'r') as f:
         # print("block_facts", blk_info_path)
         lines = f.read().split('\n')
         for line in lines:
@@ -175,7 +181,6 @@ def extract(file_test, header, scratch_dir):
     ddisasm_stdout = _run_ddisasm(file_test, scratch_dir)
     if ddisasm_stdout is None:
         return None
-    logging.info(_run_ddisasm(file_test, scratch_dir))
 
     end = time.time()
     output_map["meta"]["time"] = end - start
@@ -198,5 +203,5 @@ def extract(file_test, header, scratch_dir):
 
     _populate_block_map(header, output_map['original_blocks'], output_map['instructions'], exaustive_facts)
 
-    _cleanup_tempfiles()
+    _cleanup_tempfiles(scratch_dir, file_test)
     return output_map
