@@ -46,7 +46,10 @@ def extract(file_test: str, header) -> Optional[dict]:
     """
     start = time.time()
 
-    r2 = r2pipe.open(file_test, flags=["-2"])
+    try:
+        r2 = r2pipe.open(file_test, flags=["-2"])
+    except Exception:  # Radare does not use custom exception
+        return {}
 
     # cfg is json output of control flow graph
     output_map = {}

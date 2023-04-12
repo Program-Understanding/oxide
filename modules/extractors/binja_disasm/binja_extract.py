@@ -34,6 +34,10 @@ NAME = "binja_disasm"
 logger = logging.getLogger(NAME)
 
 
+def _get_offset(bv, addr: int):
+    return bv.get_data_offset_for_address(addr)
+
+
 def _binja_analyze(fname: str) -> Dict:
     output = {'functions': {}, 'blocks': {}, 'insns': {}}
     with bn.open_view(fname) as bv:
@@ -50,9 +54,9 @@ def _binja_analyze(fname: str) -> Dict:
                 logger.debug("BB:{}, out:{}, returns: {}".format(bb.start, [block.target.start for block in bb.outgoing_edges], not bb.can_exit))
                 for inst in bb.disassembly_text:
                     logger.debug("INSTRUCTION: {} text:{}".format(inst.address, str(inst)))
-                    output['insns'][inst.address] = str(inst)
-                    members.append(inst.address)
-                output['blocks'][bb.start] = {'members': members, 'dests': [block.target.start for block in bb.outgoing_edges]}
+                    output['insns'][_get_offset(bv, inst.address)] = str(inst)
+                    members.append(_get_offset(bv, inst.address))
+                output['blocks'][_get_offset(bv, bb.start)] = {'members': members, 'dests': [block.target.start for block in bb.outgoing_edges]}
     return output
 
 

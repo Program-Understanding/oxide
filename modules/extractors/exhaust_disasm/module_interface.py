@@ -55,7 +55,7 @@ from core import api, otypes
 from core.libraries.disasm_utils import disassemble_wcap, disassemble_wxed
 
 opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra"},
-            "decoder": {"type": str, "mangle": False, "default": "xed"}}
+            "decoder": {"type": str, "mangle": False, "default": "capstone"}}
 
 
 def documentation() -> Dict[str, Any]:

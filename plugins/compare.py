@@ -226,9 +226,9 @@ def compare_insns(args, opts):
         fname = _name(oid)
 
         # Comparing all available tools
-        tool_list = ['objdump', 'ghidra3', 'ida_disasm']  # 'bap_bwoff'
-        tool_list += ['fst_angr_disasm', 'emu_angr_disasm', 'radare_disasm', '_linear', 'bap_disasm']
-        tool_list += ['pharos_disasm', 'binja_disasm']  # ddisasm_disasm 'problstc_ref' problstc_disasm
+        tool_list = ['objdump', 'ghidra_disasm', 'ida_disasm']  # 'bap_bwoff'
+        tool_list += ['fst_angr_disasm', 'emu_angr_disasm', 'radare_disasm', 'radare_linear', 'bap_disasm']
+        tool_list += ['pharos_disasm', 'binja_disasm', 'ddisasm_disasm', 'problstc_ref', 'problstc_disasm']
         tool_list += ['min_truth', 'max_truth']
         to_remove = []
         disasm_maps = {}
@@ -248,9 +248,6 @@ def compare_insns(args, opts):
             elif tool == "max_truth":
                 module_name = 'truth_store'
                 options = {'type': 'disasm_max'}
-            elif tool == "ghidra3":
-                module_name = 'ghidra_disasm'
-                options = {'disassembler': module_name, 'version': 3}
             else:
                 options = {'disassembler': module_name}
 

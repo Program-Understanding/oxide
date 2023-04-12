@@ -60,6 +60,6 @@ def process(oid, opts):
     f_name = api.tmp_file(f_name, data)
 
     result = radare_linear_dasm.extract(f_name, header)
-    if result is None: return False
+    if not result: return False
     api.store(NAME, oid, result, opts)
     return True

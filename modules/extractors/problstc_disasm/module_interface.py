@@ -62,12 +62,16 @@ def process(oid: str, opts: dict) -> bool:
         return False
 
     disasm = api.retrieve("exhaust_disasm", oid)
-    if disasm is None:
+    if not disasm:
         logger.info("No disassembly found for %s" % disasm)
         return False
 
-    result = speculative.extract(disasm)
-
-    if result is None: return False
+    try:
+        result = speculative.extract(disasm)
+    except ZeroDivisionError:
+        # In some cases probalistic disassemly hits division by 0 in adjust code probs
+        # this needs serious rethinking
+        result = None
+    if not result: return False
     api.store(NAME, oid, result, opts)
     return True

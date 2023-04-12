@@ -54,7 +54,7 @@ def extract_ghidra_disasm(file_test: str) -> Optional[str]:
     cmd = "{} {} {} ".format(GHIDRA_PATH, GHIDRA_Project_PATH, GHIDRA_Project_NAME) + \
           "-import {} -overwrite -scriptPath {} ".format(file_test, SCRIPTS_PATH)   + \
           "-postScript {} | grep RESULT".format(EXTRACT_SCRIPT)
-    logger.debug("cmd: %s", cmd)
+    logger.info("cmd: %s", cmd)
     output = None
     with open(os.devnull, "w") as null:
         try:

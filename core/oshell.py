@@ -29,7 +29,7 @@ from glob import glob
 from cmd import Cmd
 from code import InteractiveConsole, InteractiveInterpreter
 
-from typing import List, Tuple
+from typing import List, Tuple, Any
 
 from core import oxide as local_oxide
 from core import sys_utils
@@ -501,8 +501,8 @@ class OxideShell(Cmd):
     @error_handler
     def do_import(self, line):
         """
-    Description: Import file(s) or directories
-    Syntax: import <file1> | <directory1> | *.exe
+            Description: Import file(s) or directories
+            Syntax: import <file1> | <directory1> | *.exe
         """
         if not line:
             raise ShellSyntaxError("")

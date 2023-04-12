@@ -66,6 +66,6 @@ def process(oid, opts):
             logging.info("%s threw exception, skipping disassembly", NAME)
             traceback.print_exc()
             result = None
-    if result is None: return False
+    if not result: return False
     api.store(NAME, oid, result, opts)
     return True

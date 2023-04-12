@@ -68,6 +68,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     if disassembler not in disassemblers:
         logger.info("Invalid option `%s` for disassembler, options are %s", disassembler,
                                                                             disassemblers)
+        logger.info(f"Option may not have loaded correct, please check `run {disassembler}`")
 
     oid_list = api.expand_oids(oid_list)
     results = {}

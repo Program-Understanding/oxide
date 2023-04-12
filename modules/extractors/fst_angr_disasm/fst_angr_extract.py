@@ -60,6 +60,9 @@ def extract(file_test, header):
     except angr.errors.SimProcedureError:
         logging.info("angr (fast cfg), sim procedure error")
         return None
+    except angr.errors.AngrExitError:
+        logging.info("angr (fast cfg), Likely failure to execute jumpkind while computing CFG")
+        return None
     if output_map is None: return None
 
     end = time.time()
