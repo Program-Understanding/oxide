@@ -20,7 +20,7 @@ def read_truth(args, opts):
         elif os.path.isdir(path): # read a directory
             print("Reading directory: %s" %(path))
             files_list = core.sys_utils.get_files_from_directory(path)
-            p = progress.progress(len(files_list))
+            p = progress.Progress(len(files_list))
             for file_location in files_list:
                 if 'pointer_dev' in file_location:
                     continue
