@@ -1,49 +1,27 @@
-"""
-Copyright 2023 National Technology & Engineering Solutions
-of Sandia, LLC (NTESS). Under the terms of Contract DE-NA0003525 with NTESS,
-the U.S. Government retains certain rights in this software.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-"""
-
 """ Wrapper for using ddisasm to extract basic block and instructions
 """
 
 import os
 import subprocess
-import shutil
+import json
 import logging
 import time
 import glob
+import shutil
 
 from typing import Optional
 
 SRC_VER = 0.1
 
-NAME = "ddisasm"
-logger = logging.getLogger(NAME)
+name = "ddisasm"
+logger = logging.getLogger(name)
 
 # --------------------------- Tool N: DDISASM -----------------------------------------
 
 
 def _cleanup_tempfiles(scratch_dir: str = None, temp_file: str = None):
-    for file_path in glob.glob('scratch/ddisasm/binary/*'):
+    basename = os.path.basename(temp_file)
+    for file_path in glob.glob(os.path.join('scratch', 'ddisasm', basename)):
         try:
             os.remove(file_path)
         except IsADirectoryError:
@@ -55,8 +33,9 @@ def _get_offset(vaddr, header_interface):
         if header_interface.etype == "Shared object file":
             # If shared object, ddisasm does not rebase
             return vaddr
-        # non-PIE, so use header info
-        return header_interface.get_offset(vaddr)
+        else:
+            # non-PIE, so use header info
+            return header_interface.get_offset(vaddr)
     else:
         return vaddr
 
@@ -65,7 +44,7 @@ def _get_rva(vaddr, header_interface):
     return vaddr
 
 
-def _scribe_version(output_map: dict) -> None:
+def _scribe_version(output_map):
     output_map['meta'] = {}
     output_map['meta']["tool_ver"] = "???"
     output_map['meta']["src_ver"] = SRC_VER
@@ -104,12 +83,12 @@ def _extract_insn_facts(block_fact_file: str, header_interface, exaustive_facts)
     """ Command to parse fact file for instructions
     """
     instruction_map = {}
+
+    
     # use block information to pull out instructions found in CFG
     with open(block_fact_file, 'r') as block_info_file:
         lines = block_info_file.read().split('\n')
         for line in lines:
-            if line == "":
-                continue
 
             # vaddr, size, end addr or last?
             block_info = line.split('\t')
@@ -121,7 +100,6 @@ def _extract_insn_facts(block_fact_file: str, header_interface, exaustive_facts)
                 file_offset = i
                 instruction_map[file_offset] = insn['mneu']
                 i += insn['size']
-
     return instruction_map
 
 
@@ -132,18 +110,18 @@ def _parse_exaustive(complete_facts_path, header_interface):
     # Utilizing exaustive + basic block information
     with open(complete_facts_path) as f:
         lines = f.read().split('\n')
-        for line in lines:
-            inst_comp_tokens = line.split('\t')
+        for l in lines:
+            inst_comp_tokens = l.split('\t')
             if inst_comp_tokens[0] == '' or len(inst_comp_tokens) < 3:
                 continue
             vaddr = int(inst_comp_tokens[0], 16)
             # print("debugging, where is operands" + str(inst_comp_tokens))
             instruction_map[_get_offset(vaddr, header_interface)] = {'mneu': inst_comp_tokens[2] + ' ' + inst_comp_tokens[3], 'size': int(inst_comp_tokens[1])}
-
+    
     return instruction_map
 
 
-def _extract_block_facts(blk_info_path, header_interface):
+def _extract_block_facts(cfg_info_path, header_interface):
     data_map = {}
     block_map = {}
 
@@ -197,7 +175,7 @@ def extract(file_test, header, scratch_dir):
     ddisasm_stdout = _run_ddisasm(file_test, scratch_dir)
     if ddisasm_stdout is None:
         return None
-    logging.info(ddisasm_stdout)
+    logging.info(_run_ddisasm(file_test, scratch_dir))
 
     end = time.time()
     output_map["meta"]["time"] = end - start

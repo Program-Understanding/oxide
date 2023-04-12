@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 """Plugin: re_tools - Functions to help reverse engineer an x86 file
@@ -136,6 +136,7 @@ def import_table(args, opts):
         Displays the import table
         Syntax: import_table <oid>
     """
+    breakpoint()
     args, invalid = api.valid_oids(args)
     args = api.expand_oids(args)
     if not args:
@@ -147,7 +148,7 @@ def import_table(args, opts):
     for oid in args:
         print("  - Import Table for %s %s " % (name(oid), oid))
 
-        header = api.get_field("object_header", [oid], "header")
+        header = api.get_field("object_header", [oid], oid)
         if not header:
             print("  --------------------------")
             print("   <EMPTY HEADER>")
@@ -155,11 +156,11 @@ def import_table(args, opts):
             continue
 
         src_type = api.get_field("src_type", oid, "type")
-        if src_type == "PE":
+        if "PE" in src_type:
             pe_import_table(header, opts)
-        elif src_type == "ELF":
+        elif "ELF" in src_type:
             elf_import_table(header, opts)
-        elif src_type == "MACHO":
+        elif "MACHO" in src_type:
             macho_import_table(header, opts)
         else:
             print("  - Source type %s is unsupported" % (src_type))
@@ -310,7 +311,7 @@ def strings(args, opts):
         else:
             raise ShellSyntaxError("Must provide an oid or run re_init to set a file")
     for oid in args:
-        strings = api.retrieve("strings", oid, opts)
+        strings = api.get_field("strings", oid, oid, opts)
         if not strings:
             print(" - No strings for", oid)
         else:
@@ -506,7 +507,7 @@ def hex_view(args, opts):
         else:
             print("  - Can't print arg %s" % arg)
 
-def calls(args, opts):
+'''def calls(args, opts):
     """
         Displays the function calls for a file
         Syntax: calls <oid> ...
@@ -544,15 +545,22 @@ def calls(args, opts):
             for f in names:
                 print("  -",f)
             print("  -------------------------------------")
+'''
 
 def parse_relocations(args, opts):
-    oid = args[0]
+    if args:
+        oid = args[0]
+    elif current_file:
+        oid = current_file
+    else:
+        raise ShellSyntaxError("Requires an OID.")
     src = api.source(oid)
     data = api.get_field(src, oid, "data", {})
     if not data:
         logger.debug("Not able to process%s",oid)
         return False
-    try:
+    src_type = api.get_field("src_type", oid, "type")
+    if "ELF" in src_type:
         # Parse Elf
         header = api.retrieve("elf", oid)
         for relocation_section in header["relocations"]:
@@ -564,44 +572,44 @@ def parse_relocations(args, opts):
             relocs = header["relocations"][relocation_section]["relocation_info"]
             for rel in relocs:
                 print("Offset: "+ str(rel))
-                print("RVA: " + str(relocs[rel]["RVA"]))
-                print("Info: " + str(relocs[rel]["Info"]))
-                print("Symbol Index: " + str(relocs[rel]["Symbol Index"]))
-                print("Relocation Type: " + str(relocs[rel]["Relocation Type"]))
-                if "Symbol Value" in relocs[rel].keys():
-                    print("Symbol Value: " + str(relocs[rel]["Symbol Value"]))
-                print("Symbol Name: " + str(relocs[rel]["Symbol Name"]))
-                print("Version: " + str(relocs[rel]["Version"]))
+                print("RVA: " + str(relocs[rel]["rva"]))
+                print("Info: " + str(relocs[rel]["info"]))
+                print("Symbol Index: " + str(relocs[rel]["sym_index"]))
+                print("Relocation Type: " + str(relocs[rel]["reloc_type"]))
+                if "sym_val" in relocs[rel].keys():
+                    print("Symbol Value: " + str(relocs[rel]["sym_val"]))
+                if "sym_name" in relocs[rel].keys():
+                    print("Symbol Name: " + str(relocs[rel]["sym_name"]))
+                #print("Version: " + str(relocs[rel]["version"]))
                 print()
-    except:
-        try:
-            # Parse PE
-            header = api.retrieve("pe", oid)
-            x = 1
-            for i in header["relocations"]:
-                print ("")
-                print ("-----------")
-                print ("Section #" + str(x))
-                print ("-----------")
-                print ("Page_RVA: ")
-                print (i["page_rva"])
-                print ("Block_Size: ")
-                print (i["block_size"])
-                print ("")
-                print ("---Relocations---")
-                for j in i["relocations"]:
-                    print("RVA Offset:")
-                    print(i["page_rva"] + j[1])
-                    print("Actual Offset:")
-                    print(j[1])
-                    print("Type:")
-                    print(j[0])
-                x = x + 1
-        except:
-            print("File is neither a suitable pe or elf file.")
+    elif "PE" in src_type:
+        # Parse PE
+        header = api.retrieve("pe", oid)
+        x = 1
+        for i in header["relocations"]:
+            print ("")
+            print ("-----------")
+            print ("Section #" + str(x))
+            print ("-----------")
+            print ("Page_RVA: ")
+            print (i["page_rva"])
+            print ("Block_Size: ")
+            print (i["block_size"])
+            print ("")
+            print ("---Relocations---")
+            for j in i["relocations"]:
+                print("RVA Offset:")
+                print(i["page_rva"] + j[1])
+                print("Actual Offset:")
+                print(j[1])
+                print("Type:")
+                print(j[0])
+            x = x + 1
+        else:
+            print("Relocations only works for PE and ELF.")
 
 exports = [re_init, header, entry_point, disassembly, rva_offset, offset_rva,
-           hex_view, import_table, strings, dec_hex, hex_dec, get_val, calls,
+           hex_view, import_table, strings, dec_hex, hex_dec, get_val,
            sections, parse_relocations
           ]
 
