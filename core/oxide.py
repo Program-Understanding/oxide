@@ -1022,6 +1022,7 @@ def wire_api():
     api.ghidra_project    = config.ghidra_project_project_name
     api.pharos_image      = config.pharos_docker_image
     api.probdisasm_image  = config.probdisasm_docker_image
+    api.chatgpt_token     = config.chatgpt_chatgpt_token
     api.scripts_dir       = config.dir_scripts
     api.documentation     = documentation
     api.get_cid_from_name = get_cid_from_name

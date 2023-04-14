@@ -75,3 +75,4 @@ tag_filter                 = None
 valid_oids                 = None
 tmp_file                   = None
 scripts_dir                = None
+chatgpt_token              = None

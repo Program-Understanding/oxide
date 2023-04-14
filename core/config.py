@@ -91,6 +91,7 @@ ghidra_project = {"project_name": "ghidraBenchmarking"}
 
 pharos = {"docker_image": ""}
 probdisasm = {"docker_image": ""}
+chatgpt = {"chatgpt_token" : ""}
 
 plugins = {"default": "True"}
 
@@ -109,7 +110,8 @@ ALL_DEFAULTS = {"dir"            : dir_defaults,
                 "history"        : history,
                 "ghidra_project" : ghidra_project,
                 "pharos"         : pharos,
-                "probdisasm"     : probdisasm
+                "probdisasm"     : probdisasm,
+                "chatgpt"        : chatgpt
                 }
 
 rcp = configparser.ConfigParser()
