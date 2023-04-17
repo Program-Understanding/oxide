@@ -29,3 +29,6 @@ localstore/*
 *.exe
 *.dll
 *.sys
+
+# editor files:
+.idea

@@ -1,5 +1,7 @@
 """ Plugin: Utility functions for managing truth files.
 """
+import time
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -15,7 +17,13 @@ learning_rate = 3e-4
 n_head = 4
 n_layer = 6
 dropout = 0.2
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+if torch.cuda.is_available():
+    device = "cuda"
+elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
+    device = "mps"
+else:
+    device = 'cpu'
+print(f"llm using device: {device}")
 model = None
 
 
@@ -27,6 +35,7 @@ def trainllm(args, opts):
         Train a large language model on bytes from programs passed in.
         Syntax: trainllm <oid_list>
     """
+    start_time = time.time()
     args, invalid = api.valid_oids(args)
     if not args:
         raise ShellSyntaxError("Must provide an OID.")
@@ -45,18 +54,26 @@ def trainllm(args, opts):
         raw_data = api.get_field("files", oid, "data")
 
         data = torch.tensor(encode(raw_data), dtype=torch.long)
+        start_iter_time = time.time()
         for steps in range(iterations):
             if steps % eval_iterations == 0:
                 losses = estimate_loss(data)
-                print(f"step {iter}: loss {losses:.4f}")
+                print(f"step {steps}/{iterations}: loss {losses:.4f}, time: {time.time() - start_iter_time:0.1f} seconds", end="")
+                if steps != 0:
+                    print(f" -- (est. time remaining: {(time.time() - start_time) / steps * (iterations - steps) / 60:0.2f} minutes)")
+                else:
+                    print()
+                start_iter_time = time.time()
             xb, yb = get_batch(data)
             logits, loss = model(xb, yb)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
 
+        total_time = time.time() - start_time
         print(logits.shape)
         print(loss)
+        print(f"Total time to train: {float(total_time) / 60:0.2f} minutes")
 
 
     return args
