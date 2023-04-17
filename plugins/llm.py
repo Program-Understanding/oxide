@@ -42,7 +42,7 @@ def trainllm(args, opts):
     args = api.expand_oids(args)
     global model
     if not model:
-        model = BigramLanguageModel()
+        model = TransformerModel()
         m = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
@@ -181,7 +181,7 @@ class Block(nn.Module):
         return x
 
 
-class BigramLanguageModel(nn.Module):
+class TransformerModel(nn.Module):
 
         def __init__(self):
             super().__init__()
