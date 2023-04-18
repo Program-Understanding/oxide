@@ -275,7 +275,8 @@ def compare_insns(args, opts):
                 to_remove.append(tool)
                 continue
 
-            inst_map = disasm['instructions']
+            if 'instructions' in disasm:
+                inst_map = disasm['instructions']
 
             # From extracted map to instructions and basic blocks, check if runtime failure
             if inst_map:
