@@ -3,7 +3,6 @@
 import json
 import collections
 from typing import Any, Dict
-
 import capa.main
 import capa.rules
 import capa.engine
@@ -17,7 +16,7 @@ from capa.engine import *
 from capa.features.common import FORMAT_AUTO
 
 OS_AUTO = "auto"
-RULES_PATH = "capa-rules"
+RULES_PATH = "/home/nathan/Documents/oxide/modules/extractors_dev/parse_capa/capa-rules"
 FORMAT = "dictionary"
 
 
