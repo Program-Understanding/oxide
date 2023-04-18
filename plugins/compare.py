@@ -224,6 +224,7 @@ def compare_insns(args, opts):
 
     for oid in valid:
         fname = _name(oid)
+        pipe = open("localstore/{}.insn_comparison.txt".format(fname), "w")
 
         # Comparing all available tools
         tool_list = ['objdump', 'ghidra_disasm', 'ida_disasm']  # 'bap_bwoff'
@@ -270,12 +271,14 @@ def compare_insns(args, opts):
 
             if disasm:
                 # disasm returned as dictionary
-                disasm = disasm.pop(list(disasm.keys())[0])
+                    disasm = disasm.pop(list(disasm.keys())[0])
             else:
                 to_remove.append(tool)
                 continue
-
-            inst_map = disasm['instructions']
+            try:
+                inst_map = disasm['instructions']
+            except:
+                pass
 
             # From extracted map to instructions and basic blocks, check if runtime failure
             if inst_map:

@@ -203,5 +203,5 @@ def extract(file_test, header, scratch_dir):
 
     _populate_block_map(header, output_map['original_blocks'], output_map['instructions'], exaustive_facts)
 
-    _cleanup_tempfiles(scratch_dir, file_test)
+    #_cleanup_tempfiles(scratch_dir, file_test)
     return output_map
