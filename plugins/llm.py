@@ -12,9 +12,9 @@ block_size = 64 # number of sequences in parallel
 batch_size = 256 # Maximum context length
 iterations = 1000
 eval_iterations = 100
-n_embed = 128 # number of embedding dimensions
+n_embed = 384 # number of embedding dimensions
 learning_rate = 3e-4
-n_head = 4
+n_head = 6
 n_layer = 6
 dropout = 0.2
 if torch.cuda.is_available():
@@ -29,6 +29,36 @@ model = None
 
 torch.manual_seed(1337)
 
+def savellm(args, opts):
+    """
+        Saves LLM to oxide/<args[0]>.pt
+    """
+    if len(args) != 1:
+        raise ShellSyntaxError("Must provide a single filename.")
+    if model is None:
+        raise ShellSyntaxError("Must train llm (`trainllm <oid_list>`) before saving.")
+    filename = args[0]
+    if filename.endswith(".pt"):
+        filename = filename[:-3]
+    print(f"Saving LLM to {filename}.pt")
+    torch.save(model.state_dict(), f"{filename}.pt")
+
+def loadllm(args, opts):
+    """
+        Loads LLM from oxide/<args[0]>.pt
+    """
+    global model
+
+    if len(args) != 1:
+        raise ShellSyntaxError("Must provide a single filename.")
+    filename = args[0]
+    if filename.endswith(".pt"):
+        filename = filename[:-3]
+
+    model = TransformerModel()
+    m = model.to(device)
+    model.load_state_dict(torch.load(f"{filename}.pt"))
+    model.eval()
 
 def trainllm(args, opts):
     """
@@ -48,7 +78,8 @@ def trainllm(args, opts):
 
     for oid in args:
         src_type = api.get_field("src_type", oid, "type")
-        if "PE" not in src_type and "ELF" not in src_type:
+        if "PE" not in src_type and "ELF" not in src_type and "OSX Universal Binary" not in src_type:
+            print(src_type)
             continue
 
         raw_data = api.get_field("files", oid, "data")
@@ -74,8 +105,7 @@ def trainllm(args, opts):
         print(logits.shape)
         print(loss)
         print(f"Total time to train: {float(total_time) / 60:0.2f} minutes")
-
-
+        print("Save LLM model to a file using: `savellm <filename>`")
     return args
 
 def generate(args, opts):
@@ -83,7 +113,7 @@ def generate(args, opts):
     #print(decode(m.generate(, max_new_tokens=100)[0].tolist()))
 
 
-exports = [trainllm]
+exports = [trainllm, loadllm, savellm]
 
 ##################### UTILS ############################
 
@@ -191,7 +221,8 @@ class TransformerModel(nn.Module):
             self.ln_f = nn.LayerNorm(n_embed) # final layer norm
             self.lm_head = nn.Linear(n_embed, vocab_size)
 
-        def forward(self, idx, targets):
+        def forward(self, idx, targets=None):
+            # print("shape:", idx.shape)
             B, T = idx.shape
 
             token_embeds = self.token_embedding_table(idx) # (Batch,Time,Channels)
@@ -214,7 +245,7 @@ class TransformerModel(nn.Module):
             # idx is (B, T) array of indices
             for _ in range(max_new_tokens):
                 # crop context to block size
-                idx_cond = idx[:, -block_size]
+                idx_cond = idx[:, -block_size:]
                 # get predictions
                 logits, loss = self(idx_cond)
                 # focus on last time step

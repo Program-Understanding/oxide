@@ -32,3 +32,6 @@ localstore/*
 
 # editor files:
 .idea
+
+# pytorch saves
+*.pt
