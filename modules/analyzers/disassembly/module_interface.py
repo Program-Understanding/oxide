@@ -75,6 +75,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     for oid in oid_list:
         header = api.get_field("object_header", oid, oid)
         if not header:
+            logger.info('No header found for {}'.format(oid))
             continue
 
         file_size = api.get_field("file_meta", oid, "size")

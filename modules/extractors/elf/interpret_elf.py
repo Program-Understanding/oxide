@@ -75,7 +75,7 @@ class ElfRepr:
         code = header["elf_header"]["machine"]
         if code in ("AMD x86-64 architecture", "Intel 80386"):
             self.machine = "x86"
-        elif code == "ARM":
+        elif code in ["ARM", "ARM AARCH64"]:
             self.machine = "ARM"
         else:
             self.machine = "Unknown"

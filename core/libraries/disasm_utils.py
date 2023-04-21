@@ -405,7 +405,7 @@ def dump_arm64(insn, instruction) -> None:
         instruction['write-back'] = False
 
     instruction['code-condition'] = None
-    if insn.cc not in [ARM64_CC_AL, ARM64_CC_INVALID]:
+    if insn.cc not in [capstone.arm64.ARM64_CC_AL, capstone.arm64.ARM64_CC_INVALID]:
         instruction['code-condition'] = insn.cc
 
     if insn.update_flags:
@@ -534,15 +534,15 @@ def dump_arm64_operands(insn) -> dict:
         for i in insn.operands:
             c += 1
             operands['operand_%d' % c] = {}
-            if i.type == capstone.arm.ARM64_OP_REG:
+            if i.type == capstone.arm64.ARM64_OP_REG:
                 operands['operand_%d' % c]['type.reg'] = insn.reg_name(i.reg)
-            if i.type == capstone.arm.ARM64_OP_IMM:
+            if i.type == capstone.arm64.ARM64_OP_IMM:
                 operands['operand_%d' % c]['type.imm'] = i.imm
-            if i.type == capstone.arm.ARM64_OP_CIMM:
+            if i.type == capstone.arm64.ARM64_OP_CIMM:
                 operands['operand_%d' % c]['type.c_imm'] = i.imm
-            if i.type == capstone.arm.ARM64_OP_FP:
+            if i.type == capstone.arm64.ARM64_OP_FP:
                 operands['operand_%d' % c]['type.fp'] = i.fp
-            if i.type == capstone.arm.ARM64_OP_MEM:
+            if i.type == capstone.arm64.ARM64_OP_MEM:
                 operands['operand_%d' % c]['type.mem'] = {}
                 if i.mem.base != 0:
                     operands['operand_%d' % c]['type.mem']['base'] = insn.reg_name(i.mem.base)
@@ -550,30 +550,30 @@ def dump_arm64_operands(insn) -> dict:
                     operands['operand_%d' % c]['type.mem']['index'] = insn.reg_name(i.mem.index)
                 if i.mem.disp != 0:
                     operands['operand_%d' % c]['type.mem']['displacement'] = i.mem.disp
-            if i.type == capstone.arm.ARM64_OP_REG_MRS:
+            if i.type == capstone.arm64.ARM64_OP_REG_MRS:
                 operands['operand_%d' % c]['reg_mrs'] = i.reg
-            if i.type == capstone.arm.ARM64_OP_REG_MSR:
+            if i.type == capstone.arm64.ARM64_OP_REG_MSR:
                 operands['operand_%d' % c]['reg_msr'] = i.reg
-            if i.type == capstone.arm.ARM64_OP_PSTATE:
+            if i.type == capstone.arm64.ARM64_OP_PSTATE:
                 operands['operand_%d' % c]['pstate'] = i.pstate
-            if i.type == capstone.arm.ARM64_OP_SYS:
+            if i.type == capstone.arm64.ARM64_OP_SYS:
                 operands['operand_%d' % c]['sys'] = i.sys
-            if i.type == capstone.arm.ARM64_OP_PREFETCH:
+            if i.type == capstone.arm64.ARM64_OP_PREFETCH:
                 operands['operand_%d' % c]['prefetch'] = i.prefetch
-            if i.type == capstone.arm.ARM64_OP_BARRIER:
+            if i.type == capstone.arm64.ARM64_OP_BARRIER:
                 operands['operand_%d' % c]['barrier'] = i.barrier
 
-            if i.shift.type != capstone.arm.ARM64_SFT_INVALID and i.shift.value:
+            if i.shift.type != capstone.arm64.ARM64_SFT_INVALID and i.shift.value:
                 operands['operand_%d' % c]['shift.type'] = i.shift.type
                 operands['operand_%d' % c]['shift.value'] = i.shift.value
 
-            if i.ext != capstone.arm.ARM64_EXT_INVALID:
+            if i.ext != capstone.arm64.ARM64_EXT_INVALID:
                 operands['operand_%d' % c]['ext'] = i.ext
 
-            if i.vas != capstone.arm.ARM64_VAS_INVALID:
+            if i.vas != capstone.arm64.ARM64_VAS_INVALID:
                 operands['operand_%d' % c]['vector_arrangement'] = i.vas
 
-            if i.vess != capstone.arm.ARM64_VESS_INVALID:
+            if i.vess != capstone.arm64.ARM64_VESS_INVALID:
                 operands['operand_%d' % c]['vector_elem_size'] = i.vess
 
             if i.vector_index != -1:
