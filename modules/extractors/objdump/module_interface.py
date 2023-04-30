@@ -56,7 +56,11 @@ def process(oid: str, opts: dict) -> bool:
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data)
 
-    result = extract(f_name, header)
+    try:
+        result = extract(f_name, header)
+    except AttributeError:
+        result = None
+
     if result is None: return False
     api.store(NAME, oid, result, opts)
     return True

@@ -34,8 +34,8 @@ from collocations import collocations
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {{"ngrams": {"type": int, "mangle": True, "default": 2}},
-            {"num_ngrams", {"type": int, "mangle": True, "default": 20}}}
+opts_doc = {"ngrams": {"type": int, "mangle": True, "default": 2},
+            "num_ngrams": {"type": int, "mangle": True, "default": 20}}
 
 
 def documentation():

@@ -246,27 +246,15 @@ def compare_insns(args, opts):
                 options['disassembler'] = 'truth_store'
 
             if tool == 'objdump':
-                # Objdump treated specially for functions, Used for functions
-                # TODO:: Realistically this should be Ghidra, and will break less on cross platform
-                try:
-                    out_map = api.retrieve(tool, oid, options)
-                    disasm = api.retrieve('disassembly', oid, options)
-                except AttributeError:
-                    disasm = None
-                    out_map = None
-                if not out_map:
-                    compare_logger.info('Objdump failed to return output')
-                else:
-                    if 'functions' in out_map:
-                        function_mapping = out_map['functions']
-                    else:
-                        compare_logger.info('Objdump found no functions for %s', oid)
-            else:
-                try:
-                    disasm = api.retrieve('disassembly', oid, options)
-                except:
-                    continue
+                # Chosen tool for functions
+                out_map = api.retrieve(tool, oid, options)
 
+                if 'functions' in out_map:
+                    function_mapping = out_map['functions']
+                else:
+                    compare_logger.info('Objdump found no functions for %s', oid)
+
+            disasm = api.retrieve('disassembly', oid, options)
             if disasm:
                 # disasm returned as dictionary
                 disasm = disasm.pop(list(disasm.keys())[0])

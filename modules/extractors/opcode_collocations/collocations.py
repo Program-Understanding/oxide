@@ -28,7 +28,7 @@ from math import log
 from typing import List
 
 
-def collocations(opcode_histo, bigrams: List[List[int, int]], num_bigrams: int = 20):
+def collocations(opcode_histo, bigrams: List[str], num_bigrams: int = 20):
     total_opcodes = 0
     colls = set()
     for opcode in opcode_histo:

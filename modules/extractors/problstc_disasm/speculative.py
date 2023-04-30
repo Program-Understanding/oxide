@@ -27,6 +27,8 @@ import time
 from collections import defaultdict
 
 from termcolor import colored
+import colorama
+colorama.init()
 import pprint
 
 import api
