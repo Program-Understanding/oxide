@@ -973,7 +973,11 @@ def load_reference(ref_name: str) -> Optional[bytes]:
     return ref
 
 
-def get_available_modules(oid: str, category: Optional[str] = 'all') -> List[str]:
+def get_available_modules(category: Optional[str] = 'all') -> List[str]:
+    """ Fetch list of all modules that have `category` matches for.
+
+        Defaults to "all" where all loaded are not fetched.
+    """
     mod_list = []
     for mod_name in initialized_modules:
         mod_doc = documentation(mod_name)

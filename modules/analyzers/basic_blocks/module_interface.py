@@ -46,7 +46,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     logger.debug("results()")
 
     disassembler = opts["disassembler"]
-    disassemblers = api.get_available_modules("oid", "disassembler")
+    disassemblers = api.get_available_modules("disassembler")
     if disassembler not in disassemblers:
         logger.info("Invalid option `%s` for disassembler, options are %s", disassembler,
                                                                             disassemblers)

@@ -22,19 +22,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE. 
 """
 
-desc = " This module is a placeholder for importing truth files.  It should not be used directly."
-name = "truth_store"
+DESC = " This module is a placeholder for importing truth files.  It should not be used directly."
+NAME = "truth_store"
+CATEGORY = "disassembler"
 
 import logging
 
-logger = logging.getLogger(name)
+logger = logging.getLogger(NAME)
 logger.debug("init")
 
 opts_doc = {"type": {"type": str, "mangle": True, "default": ""}}
 
 
 def documentation():
-    return {"description": desc, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True,
+            "category": CATEGORY}
 
 
 def process(oid, opts):

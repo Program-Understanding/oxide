@@ -24,7 +24,6 @@ THE SOFTWARE.
 
 DESC = " This module retrieves the disassembly starting at every byte in an object file."
 NAME = "exhaust_disasm"
-CATEGORY = "disassembler"
 
 import logging
 import ctypes
@@ -59,8 +58,7 @@ opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra"},
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True,
-            "category": CATEGORY}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
 
 
 def process(oid: str, opts: dict):
@@ -100,6 +98,6 @@ def process(oid: str, opts: dict):
         return False
 
     if disasm is None: return None
-    result = disasm
+    result = {'instructions': disasm}
     api.store(NAME, oid, result, opts)
     return True

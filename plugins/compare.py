@@ -62,7 +62,7 @@ def save_facts(args: List[str], opts: dict) -> None:
         out_dir = opts["dir"]
 
     # For each tool that is available, fetch saved results
-    disassemblers = api.get_available_modules("oid", "disassembler")
+    disassemblers = api.get_available_modules("disassembler")
 
     for oid in valid:
         fname = _name(oid)
@@ -226,10 +226,8 @@ def compare_insns(args, opts):
         fname = _name(oid)
 
         # Comparing all available tools
-        tool_list = ['objdump', 'ghidra_disasm', 'ida_disasm']  # 'bap_bwoff'
-        tool_list += ['fst_angr_disasm', 'emu_angr_disasm', 'radare_disasm', 'radare_linear', 'bap_disasm']
-        tool_list += ['pharos_disasm', 'binja_disasm', 'ddisasm_disasm', 'problstc_ref', 'problstc_disasm']
-        tool_list += ['min_truth', 'max_truth']
+        tool_list = api.get_available_modules("disassembler")
+        tool_list += ['disasm_min', 'disasm_max']
         to_remove = []
         disasm_maps = {}
         function_mapping = {}
@@ -242,22 +240,16 @@ def compare_insns(args, opts):
 
             compare_logger.info("\tOn tool %s", tool)
 
-            module_name = tool
-            if tool == "min_truth":
-                module_name = 'truth_store'
-                options = {'type': 'disasm_min'}
-            elif tool == "max_truth":
-                module_name = 'truth_store'
-                options = {'type': 'disasm_max'}
-            else:
-                options = {'disassembler': module_name}
+            options = {'disassembler': tool}
+            if tool in ['disasm_min', 'disasm_max']:
+                options['type'] = tool
+                options['disassembler'] = 'truth_store'
 
-            if module_name == 'truth_store':
-                disasm = {oid: api.retrieve(module_name, oid, options)}
-            elif module_name == 'objdump':
-                # Used for functions
+            if tool == 'objdump':
+                # Objdump treated specially for functions, Used for functions
+                # TODO:: Realistically this should be Ghidra, and will break less on cross platform
                 try:
-                    out_map = api.retrieve(module_name, oid, options)
+                    out_map = api.retrieve(tool, oid, options)
                     disasm = api.retrieve('disassembly', oid, options)
                 except AttributeError:
                     disasm = None
@@ -280,22 +272,14 @@ def compare_insns(args, opts):
                 disasm = disasm.pop(list(disasm.keys())[0])
             else:
                 to_remove.append(tool)
-                disasm = None
-                continue
-
-            if 'instructions' in disasm:
-                inst_map = disasm['instructions']
-            else:
-                to_remove.append(tool)
-                disasm = None
                 continue
 
             # From extracted map to instructions and basic blocks, check if runtime failure
-            if inst_map:
-                disasm_maps[tool] = inst_map
+            if 'instructions' in disasm:
+                disasm_maps[tool] = disasm['instructions']
             else:
                 # Add tool to list of tools to remove
-                compare_logger.info("Removing (%s) in instruction comparison", module_name)
+                compare_logger.info("Removing (%s) in instruction comparison", tool)
                 to_remove.append(tool)
 
         for tool in to_remove:
