@@ -238,7 +238,8 @@ def compare_insns(args, opts):
         compare_logger.debug("Comparing Inst within %s", oid)
 
         for tool in tool_list:
-            # compare_logger.info
+            disasm = None
+
             compare_logger.info("\tOn tool %s", tool)
 
             module_name = tool
@@ -252,12 +253,15 @@ def compare_insns(args, opts):
                 options = {'disassembler': module_name}
 
             if module_name == 'truth_store':
-                disasm = api.retrieve(module_name, oid, options)
+                disasm = {oid: api.retrieve(module_name, oid, options)}
             elif module_name == 'objdump':
                 # Used for functions
-                out_map = api.retrieve(module_name, oid, options)
-                disasm = api.retrieve('disassembly', oid, options)
-
+                try:
+                    out_map = api.retrieve(module_name, oid, options)
+                    disasm = api.retrieve('disassembly', oid, options)
+                except AttributeError:
+                    disasm = None
+                    out_map = None
                 if not out_map:
                     compare_logger.info('Objdump failed to return output')
                 else:
@@ -266,17 +270,25 @@ def compare_insns(args, opts):
                     else:
                         compare_logger.info('Objdump found no functions for %s', oid)
             else:
-                disasm = api.retrieve('disassembly', oid, options)
+                try:
+                    disasm = api.retrieve('disassembly', oid, options)
+                except:
+                    continue
 
             if disasm:
                 # disasm returned as dictionary
                 disasm = disasm.pop(list(disasm.keys())[0])
             else:
                 to_remove.append(tool)
+                disasm = None
                 continue
 
             if 'instructions' in disasm:
                 inst_map = disasm['instructions']
+            else:
+                to_remove.append(tool)
+                disasm = None
+                continue
 
             # From extracted map to instructions and basic blocks, check if runtime failure
             if inst_map:
