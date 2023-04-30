@@ -12,6 +12,12 @@ NAME = "truth_compare"
 compare_logger = logging.getLogger(NAME)
 
 
+
+
+
+
+
+
 def compare_min_truth(args, opts):
     """
         Compares where instructions in the min_truth are either missing or not the same.
@@ -32,6 +38,7 @@ def compare_min_truth(args, opts):
                     ['objdump', 'ghidra_disasm', 'ida_disasm', 'fst_angr_disasm', 'emu_angr_disasm',
                     'radare_disasm', 'radare_linear', 'bap_disasm', 'pharos_disasm', 'binja_disasm', 
                     'ddisasm_disasm', 'problstc_ref', 'problstc_disasm', 'min_truth', 'max_truth']
+            only - Only compare with disassembler(s). Delimit with a comma ",".
     """
     function_mapping = {}
     valid, invalid = api.valid_oids(args)
@@ -54,7 +61,7 @@ def compare_min_truth(args, opts):
             file_path = f"localstore/{fname}_min_truth_distances.json"
         tool_list = ['objdump', 'ghidra_disasm', 'ida_disasm']  # 'bap_bwoff'
         tool_list += ['fst_angr_disasm', 'emu_angr_disasm', 'radare_disasm', 'radare_linear', 'bap_disasm']
-        tool_list += ['pharos_disasm', 'binja_disasm', 'ddisasm_disasm', 'problstc_ref', 'problstc_disasm']
+        tool_list += ['pharos_disasm', 'binja_disasm', 'ddisasm_disasm', 'problstc_ref',]
         tool_list += ['min_truth', 'max_truth']
         print(tool_list, file = pipe)
         to_remove = []
@@ -65,6 +72,14 @@ def compare_min_truth(args, opts):
                 tool_list.remove(opts['exclude'])
             except ValueError:
                 print(f"{opts['exclude']} not found in tool_list")
+        elif "only" in opts:
+            if opts['only'] in tool_list:
+                includes = opts['only'].split(",")
+                tool_list =['min_truth', 'max_truth']
+                for disasms in includes:
+                    tool_list.append(disasms)
+            else:
+                raise ValueError(f"{opts['only']} not found in tool_list")
         # compare_logger.info
         compare_logger.debug("Comparing Inst within %s", oid)
 
@@ -83,7 +98,7 @@ def compare_min_truth(args, opts):
                 options = {'disassembler': module_name}
 
             if module_name == 'truth_store':
-                disasm = api.retrieve(module_name, oid, options)
+                disasm = {oid: api.retrieve(module_name, oid, options)}
             elif module_name == 'objdump':
                 # Used for functions
                 out_map = api.retrieve(module_name, oid, options)
@@ -179,26 +194,52 @@ def _output_graph(name, opts, range_data):
     fig, ax = plt.subplots()
 
     y_labels = []
+    ## Finds range so that the min_truth is in the middle
+    min_truth_data = range_data['min_truth']
+    min_truth_correct_ranges = min_truth_data['Correct']
+    min_truth_incorrect_ranges = min_truth_data['Incorrect']
+    min_truth_min_offset = min(range[0] for range in min_truth_correct_ranges + min_truth_incorrect_ranges)
+    min_truth_max_offset = max(range[1] for range in min_truth_correct_ranges + min_truth_incorrect_ranges)
+    min_truth_range_length = min_truth_max_offset - min_truth_min_offset
+
+    # Find the maximum range length for all the tools
+    max_range_length = min_truth_range_length
+    for tool, tool_data in range_data.items():
+        if tool not in ['min_truth', 'max_truth']:
+            correct_ranges = tool_data['Correct']
+            incorrect_ranges = tool_data['Incorrect']
+            min_offset = min(range[0] for range in correct_ranges + incorrect_ranges)
+            max_offset = max(range[1] for range in correct_ranges + incorrect_ranges)
+            range_length = max_offset - min_offset
+            max_range_length = max(max_range_length, range_length)
+
+    # Calculate the x-axis limits based on the maximum range length
+    xlim_left = min_truth_min_offset - (max_range_length - min_truth_range_length) // 2
+    xlim_right = xlim_left + max_range_length
     for i, tool in enumerate(sorted_tool_labels):
         tool_data = range_data[tool]
         y_labels.append(tool)
         correct_ranges = tool_data['Correct']
         incorrect_ranges = tool_data['Incorrect']
-        with open("test.txt", 'a') as f:
+        with open("localstore/test.txt", 'a') as f:
             f.write(f"{tool} DISASM" + "\n")
             f.write(json.dumps(correct_ranges) + "\n")
             f.write(json.dumps(incorrect_ranges) + "\n")
         missing_ranges = calculate_missing_ranges(correct_ranges, incorrect_ranges)
 
         for ranges, color in zip([correct_ranges, incorrect_ranges, missing_ranges], ['green', 'red', 'blue']):
+            if tool == "min_truth" or tool == 'max_truth':
+                if color == 'red':
+                    continue
             for start, end in ranges:
                 ax.barh(i, end - start, left=start, height=0.3, align='center', color=color, alpha=1)
 
     ax.set_yticks(range(len(y_labels)))
     ax.set_yticklabels(y_labels)
-    ax.set_xlabel('Address')
+    ax.set_xlabel('Offset')
+    ax.set_xlim(xlim_left, xlim_right)
     ax.set_ylabel("Tool")
-    ax.set_title(f"{name} min_truth comparison")
+    ax.set_title(f"Min / Max Disassembly! Comparison for {name}")
 
     correct_patch = mpatches.Patch(color='green', label='Correct')
     incorrect_patch = mpatches.Patch(color='red', label='Incorrect')
@@ -283,12 +324,14 @@ def _compute_min_truth_distance(offsets_list, tool_list):
         Output -
             min_truth_distances (dict) - dict that stores where each tool disagrees with min_truth
     """
+    
     min_truth_distances = {}
     if 'min_truth' not in tool_list:
         raise ShellSyntaxError("Min_truth not found in oid")
     else:
         min_truth_index = tool_list.index("min_truth")
         min_truth = offsets_list[min_truth_index]
+        min_truth_range = (min(min_truth), max(min_truth))
         min_truth_set = set(offsets_list[min_truth_index])
 
     if 'max_truth' not in tool_list:
@@ -296,10 +339,12 @@ def _compute_min_truth_distance(offsets_list, tool_list):
     else:
         max_truth_index = tool_list.index("max_truth")
         max_truth = offsets_list[max_truth_index]
+        max_truth_range = (min(max_truth), max(max_truth))
         max_truth_set = set(offsets_list[max_truth_index])
     
     #Gets ranges for each tool intersection or difference
-    def get_ranges(offsets, max_distance=15):
+    #Max_distance = 8 for the reason that most x86 instructions are 1-6 bytes.
+    def get_ranges(offsets, max_distance=8):
         if len(offsets) < 1:
             return [(0,0)]
         ranges = []
@@ -340,21 +385,13 @@ def _compute_min_truth_distance(offsets_list, tool_list):
             new_correct_ranges.extend(temp_ranges)
         return new_correct_ranges
     for tool_index in range(len(tool_list)):
-        # if tool_index == min_truth_index:
-        #     continue
-
         tool_set = set(offsets_list[tool_index]) 
         tool_name = tool_list[tool_index]
-        
-        incorrect = sorted((tool_set - min_truth_set).union(min_truth_set - tool_set))
-        correct = sorted(list(min_truth_set.intersection(tool_set)))
-        #Adds offsets ranges if they are above or below min truth
-        min_truth_min_range = min(min_truth)
-        min_truth_max_range = max(min_truth_set)
-
-        extra_incorrect = set(filter(lambda x: x < min_truth_min_range or x > min_truth_max_range, offsets_list[tool_index]))
-        # Combine the incorrect sets
-        incorrect = set(incorrect).union(extra_incorrect) 
+        incorrect = sorted((tool_set - max_truth_set).union(max_truth_set - tool_set))
+        correct = sorted(list(max_truth_set.intersection(tool_set)))
+        # extra_incorrect = set(filter(lambda x: x < min_truth_min_range or x > min_truth_max_range, offsets_list[tool_index]))
+        # # Combine the incorrect sets
+        # incorrect = set(incorrect).union(extra_incorrect) 
         # with open("test.txt", 'a') as f:
         #     f.write(f"{tool_name} : \n")
         #     f.write(f"correct = {correct}\n")
@@ -367,15 +404,19 @@ def _compute_min_truth_distance(offsets_list, tool_list):
                 print(f"Excluding {tool_name}: has incorrect length {len(incorrect)}, correct_length {len(correct)}")
                 continue
         
-        if tool_name == "min_truth" or tool_name == "max_truth":
+        if tool_name == "min_truth":
             ##Puts one incorrect instruction in min truth to make graph work
-            incorrect_ranges = [(min_truth_min_range - 1, min_truth_min_range -1)]
-            print(incorrect_ranges)
-            correct_ranges = get_ranges(sorted(list(correct)))
+            incorrect_ranges = [(min_truth_range[0] - 1, min_truth_range[0] - 1)]
+            correct_ranges = get_ranges(sorted(list(min_truth)))
+        elif tool_name == "max_truth":
+            ##Puts one incorrect instruction in min truth to make graph work
+            incorrect_ranges = [(max_truth_range[0] - 1, max_truth_range[0] - 1)]
+            correct_ranges = get_ranges(sorted(list(max_truth)))
         else:
             correct_ranges = get_ranges(sorted(list(correct)))
             incorrect_ranges = get_ranges(sorted(list(incorrect)))
             correct_ranges = split_ranges_on_intersection(correct_ranges, incorrect_ranges)
+            print(correct_ranges)
 
 
         min_truth_distances[tool_name] = {
