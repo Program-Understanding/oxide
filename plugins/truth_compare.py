@@ -39,7 +39,8 @@ def compare_min_truth(args, opts):
                     'radare_disasm', 'radare_linear', 'bap_disasm', 'pharos_disasm', 'binja_disasm', 
                     'ddisasm_disasm', 'problstc_ref', 'problstc_disasm', 'min_truth', 'max_truth']
             only - Only compare with disassembler(s). Delimit with a comma ",".
-    """
+            min_range - Set the X-axis to the range of min truth
+    """ 
     function_mapping = {}
     valid, invalid = api.valid_oids(args)
     if not valid:
@@ -60,10 +61,9 @@ def compare_min_truth(args, opts):
         except KeyError:
             file_path = f"localstore/{fname}_min_truth_distances.json"
         tool_list = ['objdump', 'ghidra_disasm', 'ida_disasm']  # 'bap_bwoff'
-        tool_list += ['fst_angr_disasm', 'emu_angr_disasm', 'radare_disasm', 'radare_linear', 'bap_disasm']
-        tool_list += ['pharos_disasm', 'binja_disasm', 'ddisasm_disasm', 'problstc_ref',]
+        tool_list += ['fst_angr_disasm', 'emu_angr_disasm', 'radare_disasm', 'bap_disasm']
+        tool_list += ['pharos_disasm', 'binja_disasm', 'ddisasm_disasm']
         tool_list += ['min_truth', 'max_truth']
-        print(tool_list, file = pipe)
         to_remove = []
         disasm_maps = {}
         function_mapping = {}
@@ -207,7 +207,10 @@ def _output_graph(name, opts, range_data):
     for tool, tool_data in range_data.items():
         if tool not in ['min_truth', 'max_truth']:
             correct_ranges = tool_data['Correct']
-            incorrect_ranges = tool_data['Incorrect']
+            if tool_data['Incorrect'] == [(0,0)]:
+                incorrect_ranges = correct_ranges
+            else:
+                incorrect_ranges = tool_data['Incorrect']
             min_offset = min(range[0] for range in correct_ranges + incorrect_ranges)
             max_offset = max(range[1] for range in correct_ranges + incorrect_ranges)
             range_length = max_offset - min_offset
@@ -221,25 +224,27 @@ def _output_graph(name, opts, range_data):
         y_labels.append(tool)
         correct_ranges = tool_data['Correct']
         incorrect_ranges = tool_data['Incorrect']
-        with open("localstore/test.txt", 'a') as f:
-            f.write(f"{tool} DISASM" + "\n")
-            f.write(json.dumps(correct_ranges) + "\n")
-            f.write(json.dumps(incorrect_ranges) + "\n")
+
         missing_ranges = calculate_missing_ranges(correct_ranges, incorrect_ranges)
 
         for ranges, color in zip([correct_ranges, incorrect_ranges, missing_ranges], ['green', 'red', 'blue']):
             if tool == "min_truth" or tool == 'max_truth':
                 if color == 'red':
                     continue
+            
             for start, end in ranges:
+                if start == 1:
+                    continue
                 ax.barh(i, end - start, left=start, height=0.3, align='center', color=color, alpha=1)
 
     ax.set_yticks(range(len(y_labels)))
     ax.set_yticklabels(y_labels)
     ax.set_xlabel('Offset')
     ax.set_xlim(xlim_left, xlim_right)
+    if 'min_range' in opts:
+        ax.set_xlim(min(min_truth_data['Correct']))
     ax.set_ylabel("Tool")
-    ax.set_title(f"Min / Max Disassembly! Comparison for {name}")
+    ax.set_title(f"Min / Max Disassembly Comparison for {name}")
 
     correct_patch = mpatches.Patch(color='green', label='Correct')
     incorrect_patch = mpatches.Patch(color='red', label='Incorrect')
@@ -346,7 +351,7 @@ def _compute_min_truth_distance(offsets_list, tool_list):
     #Max_distance = 8 for the reason that most x86 instructions are 1-6 bytes.
     def get_ranges(offsets, max_distance=8):
         if len(offsets) < 1:
-            return [(0,0)]
+           return[(0,0)]
         ranges = []
         start = offsets[0]
         end = offsets[0]
@@ -397,12 +402,12 @@ def _compute_min_truth_distance(offsets_list, tool_list):
         #     f.write(f"correct = {correct}\n")
         #     f.write(f"incorrect = {incorrect}\n")
         #     f.write(f"min_truth = {list(min_truth_set)}\n")
-        if len(incorrect) < 1 or len(correct) < 1:
-            if tool_name == "min_truth" or tool_name == "max_truth":
-                pass
-            else:
-                print(f"Excluding {tool_name}: has incorrect length {len(incorrect)}, correct_length {len(correct)}")
-                continue
+        # if len(incorrect) < 1 or len(correct) < 1:
+        #     if tool_name == "min_truth" or tool_name == "max_truth":
+        #         pass
+        #     else:
+        #         print(f"Excluding {tool_name}: has incorrect length {len(incorrect)}, correct_length {len(correct)}")
+        #         continue
         
         if tool_name == "min_truth":
             ##Puts one incorrect instruction in min truth to make graph work
@@ -416,7 +421,6 @@ def _compute_min_truth_distance(offsets_list, tool_list):
             correct_ranges = get_ranges(sorted(list(correct)))
             incorrect_ranges = get_ranges(sorted(list(incorrect)))
             correct_ranges = split_ranges_on_intersection(correct_ranges, incorrect_ranges)
-            print(correct_ranges)
 
 
         min_truth_distances[tool_name] = {
