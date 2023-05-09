@@ -32,6 +32,7 @@ from code import InteractiveConsole, InteractiveInterpreter
 from typing import List, Tuple, Any
 
 from core import oxide as local_oxide
+from core import datastore_filesystem as datastore
 from core import sys_utils
 from core.otypes import cast_string
 
@@ -333,6 +334,17 @@ class OxideShell(Cmd):
 
 
     @error_handler
+    def do_scratchdb(self, line: str):
+        """ Description: Intelligently clone current database to allow temporarily 
+            uncached analysis
+
+        Syntax:
+            scrachdb
+        """
+        self.scratchdb()
+
+
+    @error_handler
     def do_load(self, line):
         """ Description: Load a file and execute the commands in it
             Syntax: load <file>
@@ -379,13 +391,8 @@ class OxideShell(Cmd):
             Sytnax: q
         """
         self.do_exit(line)
-
-    @error_handler
-    def do_q(self, line: str) -> None:
-        """ Descriptoin: Alias for quit or exit
-            Sytnax: q
-        """
-        self.do_exit(line)
+    # Alias for quit or exit
+    do_q = do_quit
 
     @error_handler
     def do_exit(self, line: str) -> None:
@@ -920,6 +927,11 @@ class OxideShell(Cmd):
                     pass
 
         return args
+
+
+    def scratchdb(self):
+        print('ScratchDB')
+        datastore.scratchdb()
 
 
     def context_command(self, args, opts):

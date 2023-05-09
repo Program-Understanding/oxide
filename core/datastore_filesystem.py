@@ -41,6 +41,7 @@ logger = logging.getLogger(NAME)
 
 datastore_dir = config.dir_datastore
 sys_utils.ensure_dir_exists(datastore_dir)
+original_datastore = datastore_dir
 scratch_dir = config.dir_scratch
 sys_utils.ensure_dir_exists(scratch_dir)
 
@@ -333,3 +334,37 @@ def register_process() -> None:
     Called through Pool()'s initializer kw.
     """
     pass
+
+
+""" Expiramental DB helper function
+"""
+
+def scratchdb():
+    """ Create a reduced copy of current database to perform short-term caching
+    """
+    global datastore_dir
+    # Create scratch database to use
+    tmp_db = os.path.join(scratch_dir, "db-tmp{}".format(os.getpid()))
+    sys_utils.ensure_dir_exists(tmp_db)
+
+    # Update reference for store and retrieve
+    datastore_dir = tmp_db
+
+    # Ensure new direoctyr exists
+    sys_utils.ensure_dir_exists(datastore_dir)
+
+    def copy(src, dst):
+        logger.info("Copying from %s to %s", src, dst)
+        try:
+            shutil.copytree(src, dst)
+        except OSError as exc: # python >2.5
+            if exc.errno in (errno.ENOTDIR, errno.EINVAL):
+                shutil.copy(src, dst)
+            else: raise
+
+    copy(os.path.join(original_datastore, 'files'), os.path.join(datastore_dir, 'files'))
+    copy(os.path.join(original_datastore, 'file_meta'), os.path.join(datastore_dir, 'file_meta'))
+    copy(os.path.join(original_datastore, 'collections'), os.path.join(datastore_dir, 'collections'))
+    copy(os.path.join(original_datastore, 'collections_meta'), os.path.join(datastore_dir, 'collections_meta'))
+    copy(os.path.join(original_datastore, 'tags'), os.path.join(datastore_dir, 'tags'))
+    
