@@ -27,6 +27,7 @@ NAME = "ghidra_export"
 
 import logging
 import os
+import platform
 import multiprocessing
 
 from typing import Dict, Any
@@ -65,7 +66,13 @@ def process(oid: str, opts: dict) -> bool:
         return False
 
     project = api.ghidra_project
-    ghidra_xmldump.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless")
+    operating_system = platform.system()
+    print(operating_system)
+    if 'Linux' in operating_system or 'Darwin' in operating_system:
+        ghidra_xmldump.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless")
+    elif 'Windows' in operating_system:
+        ghidra_xmldump.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless.bat")
+
     # disambiguates database name between cores
     ghidra_xmldump.GHIDRA_Project_NAME = "{}_{}".format(project, multiprocessing.current_process().name)
     ghidra_xmldump.GHIDRA_Project_PATH = api.scratch_dir
@@ -85,19 +92,6 @@ def process(oid: str, opts: dict) -> bool:
     header = api.get_field("object_header", oid, oid)
     if not header:
         logger.warning('No header found for %s in %s', oid, NAME)
-        return False
-    ghidra_xmldump.SCRIPTS_PATH = api.scripts_dir
-    ghidra_xmldump.EXPORT_SCRIPT = "ExportXMLScript.java"
-    ghidra_xmldump.GHIDRA_TMP_FILE = os.path.join(api.scratch_dir, "PROG.XML")
-
-    src = api.source(oid)
-    data = api.get_field(src, oid, "data", {})
-    if not data:
-        logger.debug("Not able to process %s", oid)
-        return False
-
-    header = api.get_field("object_header", oid, oid)
-    if not header:
         return False
 
     f_name = api.get_field("file_meta", oid, "names").pop()

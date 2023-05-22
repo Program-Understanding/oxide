@@ -29,6 +29,7 @@ CATEGORY = "decompiler"
 import logging
 import os
 import multiprocessing
+import platform
 
 from typing import Dict, Any
 
@@ -66,7 +67,11 @@ def process(oid: str, opts: dict) -> bool:
         return False
 
     project = api.ghidra_project
-    ghidra_decompiler_mapping.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless")
+    operating_system = platform.system()
+    if 'Linux' in operating_system or 'Darwin' in operating_system:
+        ghidra_decompiler_mapping.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless")
+    elif 'Windows' in operating_system:
+        ghidra_decompiler_mapping.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless.bat")
     # disambiguates database name between cores
     ghidra_decompiler_mapping.GHIDRA_Project_NAME = "{}_{}".format(project, multiprocessing.current_process().name)
     ghidra_decompiler_mapping.GHIDRA_Project_PATH = api.scratch_dir

@@ -31,6 +31,8 @@ import json
 import logging
 import time
 
+from core.libraries.ghidra_utils import get_file_offset
+
 from typing import Optional
 
 from core import sys_utils
@@ -45,7 +47,7 @@ def extract_ghidra_decmap(file_test: str) -> Optional[str]:
     cmd = "{} {} {} ".format(GHIDRA_PATH, GHIDRA_Project_PATH, GHIDRA_Project_NAME) + \
           "-import {} -overwrite -scriptPath {} ".format(file_test, SCRIPTS_PATH)   + \
           "-postScript {} {}".format(EXPORT_SCRIPT_PATH, GHIDRA_TMP_FILE)
-    logger.debug("cmd: %s", cmd)
+    logger.info("cmd: %s", cmd)
     output = None
     with open(os.devnull, "w") as null:
         try:
@@ -80,9 +82,18 @@ def extract(file_test: str, header: dict) -> dict:
         logger.info("Ghidra tmp file (%s) not found", GHIDRA_TMP_FILE)
         return None
 
+    output_map['decompile'] = {}
     try:
-        output_map['decompile'] = json.loads(raw)
-    except JSONDecodeError:
+        print('raw', raw)
+        mapping = json.loads(raw)
+        LOAD_ADDR = mapping['meta']['load_addr']
+        del mapping['meta']
+        
+        for elem in mapping:
+            if elem == 'None':
+                continue
+            output_map['decompile'][get_file_offset(int(elem, 16), header, LOAD_ADDR)] = mapping[elem]
+    except json.decoder.JSONDecodeError:
         logger.info("Json decoding error encountered on Ghidra tmp file.")
         return None
 

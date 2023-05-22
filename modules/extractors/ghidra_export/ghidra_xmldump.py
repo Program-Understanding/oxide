@@ -451,10 +451,12 @@ def extract(file_test: str, header: dict) -> dict:
 
     parse_xml(output_map)
 
+    raw = open(GHIDRA_TMP_FILE, "rb").read()
+
     # Clean up temp file
     sys_utils.delete_file(GHIDRA_TMP_FILE)
 
     end = time.time()
     output_map["meta"]["time"] = end - start
-
+    output_map["raw"] = raw
     return output_map

@@ -245,7 +245,7 @@ def compare_insns(args, opts):
                 options['type'] = tool
                 options['disassembler'] = 'truth_store'
 
-            if tool == 'objdump':
+            if tool == 'ghidra_disasm':
                 # Chosen tool for functions
                 out_map = api.retrieve(tool, oid, options)
 
