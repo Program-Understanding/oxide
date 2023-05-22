@@ -31,6 +31,10 @@ import time
 
 name = "objdump"
 logger = logging.getLogger(name)
+if platform.system() == "Darwin":
+    objdump_cmd = "gobjdump"
+else:
+    objdump_cmd = "objdump"
 
 # ------------------------------- Tool 1: Objdump -----------------------------------
 
@@ -102,7 +106,7 @@ def _objdump_disassembly(file_test):
                 exec_sections (string)- plaintext of disassembly from objdump
     """
     # Output objdump only look at executable sections
-    cmd = ["objdump", "-d", file_test]
+    cmd = [objdump_cmd, "-d", file_test]
 
     # Determine if objdump returns valid output or error code 1
     try:
@@ -124,7 +128,7 @@ def _objdump_executable_sections(file_test):
     exec_sections = []
 
     # Process file headers using objdump to find exectuable sections
-    cmd = ["objdump", "-h", file_test]
+    cmd = [objdump_cmd, "-h", file_test]
     obj_sections = subprocess.check_output(cmd, universal_newlines=True)
     section_lines = obj_sections.split("\n")
 
