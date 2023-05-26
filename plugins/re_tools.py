@@ -120,7 +120,7 @@ def sections(args, opts):
             raise ShellSyntaxError("Must provide an oid")
 
     for oid in args:
-        header = api.get_field("object_header", [oid], "header")
+        header = api.get_field("object_header", [oid], oid)
         if not header:
             print("   <EMPTY HEADER>")
             print("  --------------------------")
@@ -136,7 +136,6 @@ def import_table(args, opts):
         Displays the import table
         Syntax: import_table <oid>
     """
-    breakpoint()
     args, invalid = api.valid_oids(args)
     args = api.expand_oids(args)
     if not args:
@@ -185,13 +184,15 @@ def entry_point(args, opts):
             raise ShellSyntaxError("Must provide an oid")
 
     for oid in args:
-        bbs = api.retrieve("basic_blocks", oid)
-        h = api.get_field("object_header", oid, "header")
-        disasm = api.get_field("disassembly", oid, "instructions")
+        bbs = api.get_field("basic_blocks", oid, oid)
+        h = api.get_field("object_header", oid, oid)
+        disasm = api.get_field("disassembly", oid, oid)
+        if "instructions" in disasm: disasm = disasm["instructions"]
         entry = h.get_entry_points().pop()
+        new_disasm = None
         if entry in bbs:
             offsets = bbs[entry]['members']
-        new_disasm = {i:disasm[i] for i in offsets}
+            new_disasm = {i:disasm[i] for i in offsets}
         if new_disasm:
             print("  Entry point disassembly for %s %s" % (name(oid), oid))
             print("  -------------------------------------")
@@ -229,7 +230,8 @@ def disassembly(args, opts):
     if "module" in opts:
         mod_opts["module"] = opts["module"]
     for oid in args:
-        disasm = api.get_field("disassembly", [oid], "instructions", mod_opts)
+        disasm = api.get_field("disassembly", oid, oid, mod_opts)
+        if "instructions" in disasm: disasm = disasm["instructions"]
         #comments = api.get_field("disassembly", [oid], "comments", mod_opts)
         functions = api.retrieve("function_extract", oid)
         if not functions:
@@ -459,10 +461,11 @@ def hex_view(args, opts):
     if "interactive" in opts:
         mod_opts["interactive"] = opts["interactive"]
 
-    disassm = api.get_field("disassembly", [oid], "instructions", mod_opts)
-    comments = api.get_field("disassembly", [oid], "comments", mod_opts)
-    if comments:
-        labels.append(comments)
+    disasm = api.get_field("disassembly", oid, oid, mod_opts)
+    if "instructions" in disasm: disasm = disasm["instructions"]
+    #comments = api.get_field("disassembly", [oid], "comments", mod_opts)
+    #if comments:
+    #    labels.append(comments)
     start = stop = 0
     width = default_width
     height = default_height
@@ -936,10 +939,11 @@ def get_fbreaks(funcs):
     fstarts = {}
     fends = {}
     for f in funcs:
+        if not funcs[f]["start"]: continue
         fstarts[funcs[f]["start"]] = "Begin internal_function_" + str(funcs[f]["start"])
-        fends[funcs[f]["end"]] = "End internal_function_" + str(funcs[f]["start"])
-    for e in fends:
-        fbreaks[e] = [fends[e]]
+    #    fends[funcs[f]["end"]] = "End internal_function_" + str(funcs[f]["start"])
+    #for e in fends:
+    #    fbreaks[e] = [fends[e]]
     for s in fstarts:
         if s in fbreaks:
             fbreaks[s].append(fstarts[s])
