@@ -29,8 +29,19 @@ THE SOFTWARE.
 import logging
 import time
 
+logger = logging.getLogger('bap-extract')
+
 # Python bindings may not be installed
 import bap
+try:
+    bap.run('test-install')
+except FileNotFoundError:
+    logger.debug('bap not found in environment. Please install bap')
+    raise ImportError
+except bap.bap.Failed:
+    # This file doesn't need to exist, only checking if bap could run
+    pass
+
 
 # ------------------------------- Tool 4: BAP -------------------------------------
 
