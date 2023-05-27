@@ -155,6 +155,7 @@ def _populate_block_map(header_interface, block_map, insn_map, exhaustive_facts)
             insn += exhaustive_facts[_get_rva(insn, header_interface)]['size']
         block_map[bb]['members'] = members
         del block_map[bb]['size']
+        block_map[bb]['dests'] = []
 
 
 def extract(file_test, header, scratch_dir):

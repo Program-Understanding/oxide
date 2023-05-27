@@ -537,7 +537,7 @@ def _display_blocks(union_offsets, block_maps, function_mapping, tool_list, colo
             if offset in block_maps[tool_index] and 'members' in block_maps[tool_index][offset]:
                 # set verbose level printing
                 if v <= 1:
-                    members = [x[0] for x in block_maps[tool_index][offset]['members']]
+                    members = [x for x in block_maps[tool_index][offset]['members']]
                 else:
                     members = block_maps[tool_index][offset]['members']
                 print("\t\t{0}[{length:2n}]: {1} -> {2} ".format(spacing_str % tool_list[tool_index],
