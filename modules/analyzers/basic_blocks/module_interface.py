@@ -83,13 +83,13 @@ def build_basic_blocks(blocks: dict) -> dict:
             continue
         bb_info = {}
         bb_info["first_insn"] = i
-        bb_info["last_insn"] = blocks[i]['members'][-1][0]
+        bb_info["last_insn"] = blocks[i]['members'][-1]
         bb_info["num_insns"] = len(blocks[i]['members'])
-        bb_info["members"] = [j[0] for j in blocks[i]['members']]
+        bb_info["members"] = [j for j in blocks[i]['members']]
         bb_info["dests"] = blocks[i]['dests']
-        h = hashlib.new("sha1")
-        long_str = "".join([j[1] for j in blocks[i]['members']])
-        h.update(long_str.encode())
-        bb_info["hash"] = h.digest()
+        # h = hashlib.new("sha1")
+        # long_str = "".join([j[1] for j in blocks[i]['members']])
+        # h.update(long_str.encode())
+        # bb_info["hash"] = h.digest()
         bbs[i] = bb_info
     return bbs

@@ -252,7 +252,7 @@ def compare_insns(args, opts):
                 if 'functions' in out_map:
                     function_mapping = out_map['functions']
                 else:
-                    compare_logger.info('Objdump found no functions for %s', oid)
+                    compare_logger.info('found no functions for %s', oid)
 
             disasm = api.retrieve('disassembly', oid, options)
             if disasm:
@@ -317,42 +317,40 @@ def compare_blocks(args, opts):
             pipe = open("{}{}.block_comparison.txt".format(fname, vlvl), "w")
 
         # Comparing all available tools, omitting Objdump as does not define blocks
-        tool_list = ['objdump', 'ghidra_disasm', 'fst_angr_disasm', 'emu_angr_disasm']
-        tool_list += ['ida_disasm', 'bap_disasm', '_disasm', 'ddisasm_disasm']  # 'bap_bwoff'
-        tool_list += ['min_truth']
+        tool_list = api.get_available_modules("disassembler")
+        tool_list += ['min_truth', 'max_truth']
         out_maps = {}
-        # function_mappping = {}
+        function_mappping = {}
 
         for tool in tool_list:
-            options = {}
+            if tool == 'problstc_disasm':
+                # Lots of output, experimental tool
+                to_remove.append('problstc_disasm')
+                continue
             blocks = None
+
+            compare_logger.info("\tOn tool %s for blocks", tool)
+            
+            options = opts
+            options.update({'disassembler': tool})
             module_name = tool
-            if tool == "min_truth":
+            if tool in ['block_min', 'block_max']:
                 module_name = 'truth_store'
-                options = {'type': 'block_min'}
-            elif tool == "max_truth":
-                module_name = 'truth_store'
-                options = {'type': 'block_max'}
-            elif tool == "ghidra3":
-                module_name = 'ghidra_disasm'
-                options = {'disassembler': module_name, 'version': 3}
-            else:
-                options = {'disassembler': module_name}
+                options['type'] = tool
+                options['disassembler'] = 'truth_store'
+
+            if tool == 'ghidra_disasm':
+                # Chosen tool for functions
+                out_map = api.retrieve(tool, oid, options)
+
+                if 'functions' in out_map:
+                    function_mapping = out_map['functions']
+                else:
+                    compare_logger.info('Using Ghidra, found no functions for %s', oid)
 
             # from standardized name and settings, request blocks
             if module_name == 'truth_store':
                 blocks = api.retrieve(module_name, oid, options)
-            elif module_name == 'objdump':
-                # Used for functions
-                out_map = api.retrieve(module_name, oid, options)
-
-                if not out_map:
-                    compare_logger.info('Objdump failed to return output')
-                else:
-                    if 'functions' in out_map:
-                        function_mapping = out_map['functions']
-                    else:
-                        compare_logger.info('Objdump found no functions for %s', oid)
             else:
                 blocks = api.retrieve('basic_blocks', oid, options)
 
@@ -677,14 +675,26 @@ def _block_comparison(sample, out_maps, function_mapping, tool_list, opts, pipe)
                     # Emuangr sometimes produces empty basic blocks
                     excluded += 1
                     continue
-                x_members = set([k for k in blocks_list[x_idx][i]["members"]])
+
+                members = blocks_list[x_idx][i]["members"]
+                if len(members) > 0 and (isinstance(members[0], tuple) or isinstance(members[0], list)):
+                    x_members = set([k[0] for k in blocks_list[x_idx][i]["members"]])
+                else:
+                    x_members = set([k for k in blocks_list[x_idx][i]["members"]])
                 x_dests = set([k for k in blocks_list[x_idx][i]["dests"]])
 
                 # accumulate total number of destinations used in tool x, wrong from duplicate??
                 total_dests_in_x += len(x_dests)
 
                 if i in blocks_list[y_idx].keys():
-                    y_members = set([k for k in blocks_list[y_idx][i]["members"]])
+
+                    # Handle case where tool returns tuple for memebers for readability
+                    members = blocks_list[y_idx][i]["members"]
+                    if len(members) > 0 and (isinstance(members[0], tuple) or isinstance(members[0], list)):
+                        y_members = set([k[0] for k in blocks_list[y_idx][i]["members"]])
+                    else:
+                        y_members = set([k for k in blocks_list[y_idx][i]["members"]])
+
                     if x_members == y_members:
                         same_members += 1
 

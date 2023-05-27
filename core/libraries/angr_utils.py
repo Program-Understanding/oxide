@@ -119,6 +119,8 @@ def init_angr_project(file_test, header_interface):
     claripy_logger.setLevel(50)
     pyvex_logger = logging.getLogger("pyvex.lifting.libvex")
     pyvex_logger.setLevel(50)
+    pyvex_logger = logging.getLogger("pyvex.lifting.util")
+    pyvex_logger.setLevel(50)
     identifier_logger = logging.getLogger("angr.analyses.identifier.identify")
     identifier_logger.setLevel(50)
     return p
