@@ -8,7 +8,6 @@ import logging
 import time
 import glob
 import shutil
-import platform
 
 from typing import Optional
 
@@ -198,7 +197,7 @@ def extract(file_test, header, scratch_dir):
     basename = os.path.basename(file_test)
 
     # earlier versions used instructions_complete
-    if platform.system() == "Darwin":
+    if os.path.exists(os.path.join(scratch_dir, "ddisasm", basename, "disassembly")) is True:
         insns_facts = "disassembly/instruction.facts"
         block_info = "disassembly/block_information.csv"
     else:
