@@ -8,6 +8,7 @@ import logging
 import time
 import glob
 import shutil
+import platform
 
 from typing import Optional
 
@@ -89,6 +90,9 @@ def _extract_insn_facts(block_fact_file: str, header_interface, exaustive_facts)
 
     
     # use block information to pull out instructions found in CFG
+    if os.path.exists(block_fact_file) is False:
+        logger.error("Could not find block facts file: %s", block_fact_file)
+        return instruction_map
     with open(block_fact_file, 'r') as block_info_file:
         lines = block_info_file.read().split('\n')
         for line in lines:
@@ -114,6 +118,9 @@ def _parse_exaustive(complete_facts_path, header_interface):
     # instruction_complete.facts is exaustive disassembly
     # instructions.facts is very stripped down and does not encompass most instructions
     # Utilizing exaustive + basic block information
+    if os.path.exists(complete_facts_path) is False:
+        logger.error("Could not find exaustive facts file: %s", complete_facts_path)
+        return instruction_map
     with open(complete_facts_path) as f:
         lines = f.read().split('\n')
         for l in lines:
@@ -130,7 +137,9 @@ def _parse_exaustive(complete_facts_path, header_interface):
 def _extract_block_facts(cfg_info_path, header_interface):
     data_map = {}
     block_map = {}
-
+    if os.path.exists(cfg_info_path) is False:
+        logger.error("Could not find block facts file: %s", cfg_info_path)
+        return data_map, block_map
     with open(cfg_info_path, 'r') as f:
         # print("block_facts", blk_info_path)
         lines = f.read().split('\n')
@@ -189,12 +198,19 @@ def extract(file_test, header, scratch_dir):
     basename = os.path.basename(file_test)
 
     # earlier versions used instructions_complete
-    inst_facts = os.path.join(scratch_dir, "ddisasm", basename, "instruction.facts")
+    if platform.system() == "Darwin":
+        insns_facts = "disassembly/instruction.facts"
+        block_info = "disassembly/block_information.csv"
+    else:
+        insns_facts = "instruction.facts"
+        block_info = "block_information.csv"
+        
+    inst_facts = os.path.join(scratch_dir, "ddisasm", basename, insns_facts)
     exaustive_facts = _parse_exaustive(inst_facts, header)
-    block_fact_file = os.path.join(scratch_dir, "ddisasm", basename, "block_information.csv")
+    block_fact_file = os.path.join(scratch_dir, "ddisasm", basename, block_info)
     output_map["instructions"] = _extract_insn_facts(block_fact_file, header, exaustive_facts)
 
-    block_facts = os.path.join(scratch_dir, "ddisasm", basename, "block_information.csv")  # previous versions could use cfg.json
+    block_facts = os.path.join(scratch_dir, "ddisasm", basename, block_info)  # previous versions could use cfg.json
     # likely still can use cfg.json with more research
     res = _extract_block_facts(block_facts, header)
 
