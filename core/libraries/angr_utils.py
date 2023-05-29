@@ -210,7 +210,7 @@ def process_cfg(cfg, header_interface):
                     insn_str = inst.insn.mnemonic + ("  " if inst.insn.op_str != '' else "") + inst.insn.op_str
                     # Save instruction to list, and relate to basic block offset
                     output_map["instructions"][offset] = insn_str
-                    members.append([offset, insn_str])
+                    members.append((offset, insn_str))
             except KeyError:
                 logger.debug("Decode error in capstone instructions")
                 continue

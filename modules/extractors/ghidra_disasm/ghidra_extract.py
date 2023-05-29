@@ -110,7 +110,7 @@ def _populate_block_map(ghidra_block_ref: list, header_interface, output_map: di
 
         output_map["original_blocks"][bb_offset]["dests"] = sorted(dests, key=str)
 
-        members = [[get_file_offset(int(x, 16), header_interface, LOAD_ADDR, OFFSETS_OFF), "null"] for x in bb_list[2]]
+        members = [(get_file_offset(int(x, 16), header_interface, LOAD_ADDR, OFFSETS_OFF), "null") for x in bb_list[2]]
         output_map["original_blocks"][bb_offset]["members"] = members
 
 
@@ -149,7 +149,8 @@ def _update_blocks_with_insns(output_map: dict) -> None:
             # don't assume block index exists in instructions
             if mems[i][0] in output_map["instructions"]:
                 # for canonical representation must lower case instructions
-                mems[i][1] = output_map["instructions"][mems[i][0]].lower()
+                # Replace tuple value with updated second key
+                mems[i] = (mems[i][0], output_map["instructions"][mems[i][0]].lower())
 
 
 def _sort_lines(extract_lines: str) -> (list, list, list):

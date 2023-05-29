@@ -176,7 +176,7 @@ def _record_blocks(output_map: dict, instr_records: list, edges: list) -> None:
             blocks[offset] = {}
             current_block = offset
 
-        members.append(offset)
+        members.append((offset, "null"))
 
         if offset in ends:
             blocks[current_block]["dests"] = edge_map[offset]
@@ -188,6 +188,23 @@ def _record_blocks(output_map: dict, instr_records: list, edges: list) -> None:
 
 def _record_data(output_map: dict, data: list) -> None:
     pass
+
+
+def _update_blocks_with_insns(output_map: dict) -> None:
+    block_map = output_map["original_blocks"]
+    # visit all basic blocks
+    for bb in block_map:
+        if bb == "meta":
+            continue
+
+        # traverse blocks members
+        mems = output_map["original_blocks"][bb]["members"]
+        for i in range(len(mems)):
+            # update text of instruction in original blocks from instructions dictionary
+            # don't assume block index exists in instructions
+            if mems[i][0] in output_map["instructions"]:
+                # for canonical representation must lower case instructions
+                mems[i] = (mems[i][0], output_map["instructions"][mems[i][0]].lower())
 
 
 def extract(file_test: str, header_interface, scratch_dir: str) -> Optional[dict]:
@@ -230,5 +247,7 @@ def extract(file_test: str, header_interface, scratch_dir: str) -> Optional[dict
     # Instruction level CFG
     _record_blocks(output_map, instr, edges)
     _record_data(output_map, data)
+    
+    _update_blocks_with_insns(output_map)
 
     return output_map

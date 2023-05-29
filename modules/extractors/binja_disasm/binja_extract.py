@@ -55,7 +55,7 @@ def _binja_analyze(fname: str) -> Dict:
                 for inst in bb.disassembly_text:
                     logger.debug("INSTRUCTION: {} text:{}".format(inst.address, str(inst)))
                     output['insns'][_get_offset(bv, inst.address)] = str(inst)
-                    members.append(_get_offset(bv, inst.address))
+                    members.append((_get_offset(bv, inst.address), str(inst)))
                 output['blocks'][_get_offset(bv, bb.start)] = {'members': members, 'dests': [block.target.start for block in bb.outgoing_edges]}
     return output
 

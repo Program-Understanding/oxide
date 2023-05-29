@@ -181,8 +181,7 @@ def _update_blocks_with_insns(output_map):
             # update text of instruction in original blocks from instructions dictionary
             # don't assume block index exists in instructions
             if mems[i][0] in output_map["instructions"]:
-                mems[i][1] = output_map["instructions"][mems[i][0]]
-
+                mems[i] = (mems[i][0], output_map["instructions"][mems[i][0]])
 
 def extract(file_test, header_interface):
     """ Runs instruction extraction from idapro terminal interface using python language script
