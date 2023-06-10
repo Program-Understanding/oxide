@@ -65,10 +65,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     logger.debug("results()")
     disassembler = opts["disassembler"]
     disassemblers = api.get_available_modules("disassembler")
-    if disassembler not in disassemblers:
-        logger.info("Invalid option `%s` for disassembler, options are %s", disassembler,
-                                                                            disassemblers)
-        logger.info(f"Option may not have loaded correct, please check `run {disassembler}`")
 
     oid_list = api.expand_oids(oid_list)
     results = {}
@@ -84,7 +80,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         decoder = opts["decoder"]
 
         tool_insns = None
-        if not disassembler or disassembler == "ghidra_disasm":
+        if not disassembler:
             tool_insns = api.get_field("ghidra_disasm", oid, "instructions", opts)
         elif disassembler in disassemblers:
             tool_insns = api.get_field(disassembler, oid, "instructions", opts)
@@ -92,6 +88,9 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
             tool_insns = disassembler
         else:
             # invalid disassembler option
+            logger.info("Invalid option `%s` for disassembler, options are %s",
+                        disassembler, disassemblers)
+            logger.info(f"Option may not have loaded correct,please check `run {disassembler}`")
             tool_insns = None
 
         if not tool_insns:
