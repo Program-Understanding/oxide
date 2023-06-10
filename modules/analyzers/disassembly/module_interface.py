@@ -86,11 +86,10 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         tool_insns = None
         if not disassembler or disassembler == "ghidra_disasm":
             tool_insns = api.get_field("ghidra_disasm", oid, "instructions", opts)
-        elif disassembler == "probablistic_disasm":
-            # TODO: switch this to default disassembler
-            tool_insns = api.get_field("probablistic_disasm", oid, "instructions", opts)
         elif disassembler in disassemblers:
             tool_insns = api.get_field(disassembler, oid, "instructions", opts)
+        elif type(disassembler) == dict:
+            tool_insns = disassembler
         else:
             # invalid disassembler option
             tool_insns = None

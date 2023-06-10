@@ -581,6 +581,11 @@ def _inst_comparison(sample: str, oid: str, disasm_maps: dict, function_mapping:
     # blocks located in out_maps
     inst_maps = []
     offsets_lists = []
+    union_offsets = set()
+
+    false_positives = {tool: [] for tool in tool_list}
+    false_negatives = {tool: [] for tool in tool_list}
+    correct = {tool: [] for tool in tool_list}
 
     # Extract instruction store for each tool, renaming and using option for min/max_truth
     for tool in tool_list:
@@ -636,6 +641,69 @@ def _inst_comparison(sample: str, oid: str, disasm_maps: dict, function_mapping:
         union_offsets = sorted(list(union_offsets))
         _display_dasm(union_offsets, section_list, inst_maps, function_mapping, tool_list,
                       color, 'sections' in opts, pipe)
+    
+    if 'graph' in opts:
+        if (len(union_offsets) == 0):
+            for offset_list in offsets_lists:
+                offset_set = set(offset_list)
+                if 'meta' in offset_set:
+                    offset_set.remove('meta')
+                offset_set.discard(None)
+                union_offsets = union_offsets.union(offset_set)
+            union_offsets = sorted(list(union_offsets))
+
+        min_offsets = set(disasm_maps['disasm_min'].keys())
+        max_offsets = set(disasm_maps['disasm_max'].keys())
+        correct = {tool: set() for tool in tool_list}
+        inst_info = {tool: {'correct': [], 'false_positive': [], 'false_negative': []}
+                     for tool in tool_list}
+
+        for tool in tool_list:
+            if tool == 'disasm_min' or tool == 'disasm_max':
+                correct[tool] = set(disasm_maps[tool].keys()).copy()
+                options = {'disassembler': 'objdump'}
+                disasm = api.retrieve('disassembly', oid, options)
+                disasm = disasm.pop(list(disasm.keys())[0])
+                for offset in disasm_maps[tool]:
+                    inst_length = disasm['instructions'][offset]['size']
+                    inst_info[tool]['correct'].append((offset, inst_length))
+                continue
+
+            tool_offsets = set(disasm_maps[tool].keys())
+            correct[tool] = tool_offsets.copy()
+
+            false_negatives[tool] = min_offsets - tool_offsets
+            false_positives[tool] = tool_offsets - max_offsets
+
+            correct[tool] -= false_negatives[tool]
+            correct[tool] -= false_positives[tool]
+            union_offsets = dict.fromkeys(union_offsets, None)
+            options = {'disassembler':union_offsets,'decoder': 'capstone'}
+            disasm = api.retrieve('disassembly', oid, options)
+            disasm = disasm.pop(list(disasm.keys())[0])
+            for offset in false_positives[tool]:
+                inst_length = disasm['instructions'][offset]['size']
+                inst_info[tool]['false_positive'].append((offset, inst_length))
+
+            for offset in false_negatives[tool]:
+                inst_length = disasm['instructions'][offset]['size']
+                inst_info[tool]['false_negative'].append((offset, inst_length))
+
+            for offset in correct[tool]:
+                inst_length = disasm['instructions'][offset]['size']
+                inst_info[tool]['correct'].append((offset, inst_length))
+
+        print(f"False Negative Offsets:\n{false_negatives}", file=pipe)
+        print(f"False Positive Offsets:\n{false_positives}", file=pipe)
+        summary = {}
+        print("Summary:\n", file=pipe)
+        for tool in tool_list:
+            summary[tool] = {
+                'Correct': [(offset, offset + length) for offset, length in inst_info[tool]['correct']],
+                'False Positive': [(offset, offset + length) for offset, length in inst_info[tool]['false_positive']],
+                'False Negative': [(offset, offset + length) for offset, length in inst_info[tool]['false_negative']],
+            }
+            print(f"{tool}: {summary[tool]}\n", file=pipe)
 
 
 def _block_comparison(sample, out_maps, function_mapping, tool_list, opts, pipe):
