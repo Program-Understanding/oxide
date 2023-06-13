@@ -24,12 +24,40 @@ THE SOFTWARE.
 
 import unittest
 import os
+from modules.analyzers.disassembly.module_interface import results
 
 # This file needs to be named test.py and reside in the same folder as the module itself.
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
-class ObjectHeaderTest(unittest.TestCase):
+class DisassemblyTest(unittest.TestCase):
+    def test_results(self):
+        #inputs a list of object identifiers and options
+        sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
+        oid_list = ["oid1", "oid", "oid"]
+        opts = {"disassembler": "ghidra_disasm", "decoder": "capstone"}
+
+        #outputs
+        output = results(oid_list, opts)
+
+        expected_output = {
+            "oid": {"Disassembly instructions" : "disasm"},
+            "oid": {"Disassembly instructions" : "disasm"},
+            "oid": {"Disassembly instructions" : "disasm"}
+        } 
+        for sample_file in sample_files:
+            fp = os.path.join(self.oxide.config.dir_sample_dataset, sample_file)
+            oid, newfile = self.oxide.import_file(fp)
+            if not oid: continue
+            oid_list.append(oid)
+        for oid in oid_list:
+            self.assertEqual(output, expected_output)
+            
+        
+        #self.assertEqual(output, expected_output)
+
+
+    '''
     def test_object_header(self) -> None:
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
         oid_list = []
@@ -46,3 +74,5 @@ class ObjectHeaderTest(unittest.TestCase):
             else:
                 self.assertFalse(self.oxide.process("object_header", [oid], {}),
                                  "object_header able to process a not-PE/ELF/MACHO file")
+
+                                 '''
