@@ -78,7 +78,7 @@ def process(oid: str, opts: dict) -> bool:
     ghidra_xmldump.GHIDRA_Project_PATH = api.scratch_dir
     ghidra_xmldump.SCRIPTS_PATH = api.scripts_dir
     ghidra_xmldump.EXPORT_SCRIPT = "ExportXMLScript.java"
-    ghidra_xmldump.GHIDRA_TMP_FILE = os.path.join(api.scratch_dir, "PROG.XML")
+    ghidra_xmldump.GHIDRA_TMP_FILE = os.path.join(api.scratch_dir, f"PROG-{multiprocessing.current_process().name}.XML")
 
     # Toggles whether module returns vaddr or file offsets
     ghidra_xmldump.OFFSETS_OFF = opts['rebase-off']
@@ -97,6 +97,8 @@ def process(oid: str, opts: dict) -> bool:
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data)
     result = ghidra_xmldump.extract(f_name, header)
+    # tempfile cleaned up in extract
+
     if result is None: return False
     api.store(NAME, oid, result, opts)
 

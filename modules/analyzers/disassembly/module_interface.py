@@ -65,7 +65,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     logger.debug("results()")
     disassembler = opts["disassembler"]
     disassemblers = api.get_available_modules("disassembler")
-    if disassembler not in disassemblers:
+    if not disassembler or disassembler not in disassemblers:
         logger.info("Invalid option `%s` for disassembler, options are %s", disassembler,
                                                                             disassemblers)
         logger.info(f"Option may not have loaded correct, please check `run {disassembler}`")
@@ -81,25 +81,14 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         file_size = api.get_field("file_meta", oid, "size")
         data = api.get_field("files", oid, "data")
 
-        decoder = opts["decoder"]
-
-        tool_insns = None
-        if not disassembler or disassembler == "ghidra_disasm":
-            tool_insns = api.get_field("ghidra_disasm", oid, "instructions", opts)
-        elif disassembler == "probablistic_disasm":
-            # TODO: switch this to default disassembler
-            tool_insns = api.get_field("probablistic_disasm", oid, "instructions", opts)
-        elif disassembler in disassemblers:
-            tool_insns = api.get_field(disassembler, oid, "instructions", opts)
-        else:
-            # invalid disassembler option
-            tool_insns = None
+        tool_insns = api.get_field(disassembler, oid, "instructions", opts)
 
         if not tool_insns:
             continue
 
         if 'meta' in tool_insns: del tool_insns['meta']
 
+        decoder = opts["decoder"]
         disasm = None
         # perform decoding
         if decoder == "capstone":

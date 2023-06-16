@@ -165,7 +165,8 @@ def extract(header_interface, ghidra_export, ghidra_cfg, load_addr):
     output_map["indirect_control"] = _extract_indirect_control(ghidra_cfg)
 
     # If everything is empty, than an issue occured
-    if (0 == len(output_map["local_data"])) and (0 == len(output_map["global_data"])) and (0 == len(output_map["indirect_control"])):
+    if ((0 == len(output_map["local_data"])) and (0 == len(output_map["global_data"])) and
+      (0 == len(output_map["indirect_control"]))):
         logger.error("Ghidra found no pointers, or export parsing failed.")
         return None
 
