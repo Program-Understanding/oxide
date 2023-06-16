@@ -186,6 +186,10 @@ def extract(file_test, header):
         r2.cmd("s " + str(fun["offset"]))
         logger.debug("analyzing %s" % fun["offset"])
 
+        # Relocatables have offset 0. Skip these functions
+        if fun["offset"] == 0:
+            continue
+
         r2.cmd("af")
         local_cfg = r2.cmdj("agj")
 

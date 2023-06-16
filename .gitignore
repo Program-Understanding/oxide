@@ -32,6 +32,7 @@ localstore/*
 
 # editor files:
 .idea
+.vscode
 
 # pytorch saves
 *.pt

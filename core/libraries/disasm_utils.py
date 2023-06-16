@@ -187,7 +187,7 @@ def disassemble_wcap(file_size, data, header, tool_insns) -> Optional[dict]:
                     cap.mode = capstone.CS_MODE_THUMB
                     insn = next(cap.disasm(data[offset:], offset, 1))
                     cap.mode = save_mode
-            except (StopIteration, ctypes.ArgumentError):
+            except (StopIteration, ctypes.ArgumentError, capstone.CsError):
                 # restore mode for next instruction
                 save_mode = cap.mode
                 logger.debug("bad decode at offset %s bytes %s", offset,
