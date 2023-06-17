@@ -65,7 +65,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     logger.debug("results()")
     disassembler = opts["disassembler"]
     disassemblers = api.get_available_modules("disassembler")
-    if not disassembler or disassembler not in disassemblers:
+    if (not disassembler or disassembler not in disassemblers) and type(disassembler) is not dict:
         logger.info("Invalid option `%s` for disassembler, options are %s", disassembler,
                                                                             disassemblers)
         logger.info(f"Option may not have loaded correct, please check `run {disassembler}`")
@@ -81,7 +81,10 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         file_size = api.get_field("file_meta", oid, "size")
         data = api.get_field("files", oid, "data")
 
-        tool_insns = api.get_field(disassembler, oid, "instructions", opts)
+        if type(disassembler) is dict:
+            tool_insns = disassembler
+        else:
+            tool_insns = api.get_field(disassembler, oid, "instructions", opts)
 
         if not tool_insns:
             continue
