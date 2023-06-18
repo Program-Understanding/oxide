@@ -449,6 +449,13 @@ class OxideShell(Cmd):
         commands = self.parse_line("show "+line)
         self.parse_pipe(commands)
 
+    @error_handler
+    def do_reload(self, line: str) -> None:
+        """ Description: Re-import all modules to update changes of code dynamically for debugging.
+            Syntax:
+                reload
+        """
+        local_oxide.initialize_all_modules()
 
     @error_handler
     def do_context(self, line: str) -> None:

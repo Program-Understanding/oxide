@@ -108,11 +108,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         elif decoder == "xed":
             disasm = disassemble_wxed(file_size, data, header, tool_insns)
         elif decoder == "native":
-<<<<<<< HEAD
-            disasm = {oid: tool_insns}
-=======
-            disasm = tool_insns # disasm[offset] instead of disasm[offset]["str"]
->>>>>>> 2c03b81e843cca8141194a5f51137085d6df0a56
+            disasm = {k: {"str": v} for k, v in tool_insns.items()}
         else:
             logger.info("Invalid decoder selected")
 
