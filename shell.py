@@ -33,15 +33,14 @@ import sys
 from core import rshell
 from core import oshell
 
-parser = argparse.ArgumentParser()
-parser.add_argument('-r', '--remote', action='store', type=str, dest='remote',
-                    metavar='HOST:PORT', help="The server ip:port I'm connecting to")
-args = parser.parse_args()
-
-
 def main() -> None:
     """ Oxide CLI entry point, initiating remote or commandline shell.
     """
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-r', '--remote', action='store', type=str, dest='remote',
+                        metavar='HOST:PORT', help="The server ip:port I'm connecting to")
+    args = parser.parse_args()
+
     if args.remote:
         if len(args.remote.split(":")) != 2:
             parser.print_help()
@@ -56,6 +55,44 @@ def main() -> None:
     else:
         oshell.OxideShell().cmdloop()
 
+# --- Do not read below, this is strictly to support one liner support
+try:
+    HAS_CLICK = True
+    import click
+except ImportError:
+    HAS_CLICK = False
 
-if __name__ == '__main__':
-    main()
+if not HAS_CLICK:
+    if __name__ == '__main__':
+        main()
+else:
+    @click.group(invoke_without_command=True)
+    @click.pass_context
+    def cli(ctx):
+        if ctx.invoked_subcommand is None:
+            main()
+
+
+    @cli.command()
+    @click.argument('arguments', nargs=-1)
+    def run(arguments) -> None:
+        """ One shot run analysis
+                expected command:
+                    shell.py run [cmd] [cmd_arguments] [oid]
+                Do not include `| show`, show will post-pend to command by default.
+        """
+        arg_string = " ".join(arguments)
+        oshell.OxideShell().onecmd(f"run {arg_string} | show")
+
+    @cli.command('import')
+    @click.argument('arguments', nargs=-1)
+    def imp(arguments) -> None:
+        """ One shot import
+                expected command:
+                    shell.py import [oid]+
+        """
+        arg_string = " ".join(arguments)
+        oshell.OxideShell().onecmd(f"import {arg_string} | show")
+
+    if __name__ == '__main__':
+        cli()
