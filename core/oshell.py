@@ -1444,8 +1444,16 @@ class OxideShell(Cmd):
             cm = self.oxide.retrieve("collections_meta", str(item), {})
             if "verbose" in opts:
                 oids = self.oxide.get_field("collections", str(item) , "oid_list")
-                files = [ oid + " : " + ", ".join(self.oxide.get_names_from_oid(oid))
-                           for oid in oids if True ]
+                files = {}
+                for oid in oids:
+                    file_meta = self.oxide.retrieve("file_meta", oid)
+                    if file_meta is None:
+                        oid_desc = {"names": ", ".join(self.oxide.get_names_from_oid(oid))}
+                    else:
+                        oid_desc = {"names": ", ".join(self.oxide.get_names_from_oid(oid)),
+                                    "original_paths": file_meta["original_paths"],
+                                    "size": file_meta["size"]}
+                    files[oid] = oid_desc
 
                 cm["oids"] = files
             self.print_item(cm, header="Collection %s" % item)
