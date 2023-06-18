@@ -263,7 +263,12 @@ def compare_insns(args, opts):
 
             compare_logger.info("\tOn tool %s", tool)
 
-            options = {"disassembler": tool}
+            if tool == "ddisasm_disasm":
+                decoder = "capstone"
+            else:
+                decoder = "native"
+
+            options = {"disassembler": tool, "decoder": decoder}
             if tool in ["disasm_min", "disasm_max"]:
                 options["type"] = tool
                 options["disassembler"] = "truth_store"
@@ -533,13 +538,14 @@ def _display_dasm(
             empty = " " * (spacing)
             if color:
                 empty = "\u001b[41;1m{}\u001b[0m".format(empty)
-            print(
-                spacing_str % inst_maps[tool_index][offset]["str"][0:format_len]
-                if offset in inst_maps[tool_index]
-                else empty,
-                file=pipe,
-                end=" |",
-            )
+            if offset in inst_maps[tool_index]:
+                if tool_list[tool_index] == "ddisasm_disasm":
+                    output = inst_maps[tool_index][offset]["str"][0:format_len]
+                else:
+                    output = inst_maps[tool_index][offset][0:format_len]
+            else:
+                output = empty
+            print(spacing_str % output, file=pipe, end=" |")
         print(file=pipe)
 
 
@@ -659,13 +665,6 @@ def _inst_comparison(
     false_negatives = {tool: [] for tool in tool_list}
     correct = {tool: [] for tool in tool_list}
 
-    if "exclude" in opts:
-        excludes = opts['exclude'].split(",") 
-        for exclude in excludes:
-            try:
-                tool_list.remove(exclude)
-            except ValueError:
-                print(f"{exclude} not found in tool_list")
     if "include" in opts:
         includes = opts['include'].split(",")
         tool_list =[]
@@ -676,6 +675,13 @@ def _inst_comparison(
                 print(f"{include} not found in tool_list")
         tool_list.append("disasm_min")
         tool_list.append("disasm_max")
+    if "exclude" in opts:
+        excludes = opts['exclude'].split(",") 
+        for exclude in excludes:
+            try:
+                tool_list.remove(exclude)
+            except ValueError:
+                print(f"{exclude} not found in tool_list")
     # Extract instruction store for each tool, renaming and using option for min/max_truth
     for tool in tool_list:
         if tool not in disasm_maps:
@@ -768,7 +774,10 @@ def _inst_comparison(
                 if offset not in inst_maps[i]:
                     tool_data.append([offset, ""])
                 else:
-                    tool_data.append([offset, inst_maps[i][offset]['str']])
+                    if tool_list[i] == "ddisasm_disasm":
+                        tool_data.append([offset, inst_maps[i][offset]['str']])
+                    else:
+                        tool_data.append([offset, inst_maps[i][offset]])
             output_data.append({'tool_name': tool_list[i], 'data': tool_data})
 
         with open(output_file, 'w') as f:
