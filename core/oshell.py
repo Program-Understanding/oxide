@@ -25,6 +25,7 @@ THE SOFTWARE.
 import os, logging, time, pickle, types, traceback, sys, shutil
 from collections import defaultdict
 from glob import glob
+import shlex
 
 from cmd import Cmd
 from code import InteractiveConsole, InteractiveInterpreter
