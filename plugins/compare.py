@@ -31,6 +31,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+import re
 
 from typing import List, BinaryIO, Dict, Tuple, Any
 
@@ -533,18 +534,17 @@ def _display_dasm(
         print(spacing_str % offset, file=pipe, end="|")
         for tool_index in range(len(tool_list)):
             # Display spacing width of each instruction or spacing width of spaces
-            if offset in inst_maps[tool_index]:
-                format_len = min(len(inst_maps[tool_index][offset]), spacing - 1)
             empty = " " * (spacing)
-            if color:
-                empty = "\u001b[41;1m{}\u001b[0m".format(empty)
             if offset in inst_maps[tool_index]:
-                if tool_list[tool_index] == "ddisasm_disasm":
-                    output = inst_maps[tool_index][offset]["str"][0:format_len]
-                else:
-                    output = inst_maps[tool_index][offset][0:format_len]
+                output = re.sub(r'\s+', ' ',inst_maps[tool_index][offset]["str"]).strip()
             else:
                 output = empty
+            format_len = spacing - 1
+            if offset in inst_maps[tool_index]:
+                format_len = min(len(output), format_len)
+                output = output[0:format_len]
+            if color:
+                empty = "\u001b[41;1m{}\u001b[0m".format(empty)
             print(spacing_str % output, file=pipe, end=" |")
         print(file=pipe)
 
@@ -774,10 +774,8 @@ def _inst_comparison(
                 if offset not in inst_maps[i]:
                     tool_data.append([offset, ""])
                 else:
-                    if tool_list[i] == "ddisasm_disasm":
-                        tool_data.append([offset, inst_maps[i][offset]['str']])
-                    else:
-                        tool_data.append([offset, inst_maps[i][offset]])
+                    output = re.sub(r'\s+', ' ',inst_maps[i][offset]["str"]).strip()
+                    tool_data.append([offset, output])
             output_data.append({'tool_name': tool_list[i], 'data': tool_data})
 
         with open(output_file, 'w') as f:
