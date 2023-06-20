@@ -340,7 +340,7 @@ def extract_field(args: List[str], opts: dict):
     return new_args
 
 
-def export_file(args, opts):
+def export_file(args, opts, directory = None):
     """
         Given a list of oid's exports the files. If tar or zip option used with
                 multiple input files a single file will be exported.
@@ -351,12 +351,15 @@ def export_file(args, opts):
         raise ShellSyntaxError("No valid oids found")
     oids = api.expand_oids(valid)
 
+    #Prompts the user for the directory
+    directory = input("Enter what directory to export the file to: ")
+
     if "zip" in opts:
-        export_tar_zip(oids, opts, type="zip")
+        export_tar_zip(oids, opts, type="zip", directory = directory)
     elif "tar" in opts:
-        export_tar_zip(oids, opts, type="tar")
+        export_tar_zip(oids, opts, type="tar", directory = directory)
     else:
-        export_files(oids, opts)
+        export_files(oids, opts, directory = directory)
 
 
 def cat(args: List[str], opts: dict) -> None:
@@ -559,7 +562,7 @@ exports = [random_sample, random_shuffle, top_n, count, expand, clean, file_io, 
 
 
 # ---------------------------- UTILS -------------------------------------------------------------
-def export_tar_zip(oids, opts, type):
+def export_tar_zip(oids, opts, type, directory = None):
     name = "export"
     if "name" in opts:
         name = opts["name"] and opts["name"]
@@ -577,6 +580,9 @@ def export_tar_zip(oids, opts, type):
     elif "gz" in opts:
         mode += ":gz"
         name += ".gz"
+
+    if directory:
+        name = os.path.join(directory, name)
 
     fname = unique_scratch_file(name)
     xo = None
@@ -609,7 +615,7 @@ def export_tar_zip(oids, opts, type):
         os.remove(f)
 
 
-def export_files(oids, opts):
+def export_files(oids, opts, directory=None):
     base_name = "export"
     if "name" in opts and opts["name"]:
         base_name = opts["name"]
@@ -621,7 +627,11 @@ def export_files(oids, opts):
             continue
         name = api.get_field("file_meta", oid, "names").pop()
         name = base_name + "_" + name
-        write_file(name, data)
+
+        if directory:
+            name = os.path.join(directory, name)
+
+        write_file(name, data, directory)
 
 
 def unique_scratch_file(name):
@@ -632,11 +642,17 @@ def unique_scratch_file(name):
     return name
 
 
-def write_file(name, data):
-    name = unique_scratch_file(name)
-    fd = open(name, "wb")
-    fd.write(data)
-    fd.close()
+def write_file(name, data, directory = None):
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+        name = os.path.join(directory, name)
+
+    #name = unique_scratch_file(name)
+    with open(name, "wb") as fd:
+        fd.write(data)
+    #fd = open(name, "wb")
+    #fd.write(data)
+    #fd.close()
     logger.info(" - File %s exported" % (name))
 
 
@@ -647,7 +663,7 @@ def print_membership(membership_cids: List[str]) -> None:
     else:
         for cid in membership_cids:
             name = api.get_colname_from_oid(cid)
-            prlogger.info("  - %s: ", name)
+            logger.info("  - %s: ", name)
             for oid in membership_cids[cid]:
                 names = ", ".join(list(api.get_names_from_oid(oid)))
                 logger.info("    - %s : %s", oid, names)
