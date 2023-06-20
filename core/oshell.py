@@ -25,11 +25,12 @@ THE SOFTWARE.
 import os, logging, time, pickle, types, traceback, sys, shutil
 from collections import defaultdict
 from glob import glob
+import shlex
 
 from cmd import Cmd
 from code import InteractiveConsole, InteractiveInterpreter
 
-from typing import List, Tuple, Any
+from typing import List, Optional, Tuple, Any
 
 from core import oxide as local_oxide
 from core import sys_utils
@@ -448,6 +449,13 @@ class OxideShell(Cmd):
         commands = self.parse_line("show "+line)
         self.parse_pipe(commands)
 
+    @error_handler
+    def do_reload(self, line: str) -> None:
+        """ Description: Re-import all modules to update changes of code dynamically for debugging.
+            Syntax:
+                reload
+        """
+        local_oxide.initialize_all_modules()
 
     @error_handler
     def do_context(self, line: str) -> None:
@@ -1436,8 +1444,16 @@ class OxideShell(Cmd):
             cm = self.oxide.retrieve("collections_meta", str(item), {})
             if "verbose" in opts:
                 oids = self.oxide.get_field("collections", str(item) , "oid_list")
-                files = [ oid + " : " + ", ".join(self.oxide.get_names_from_oid(oid))
-                           for oid in oids if True ]
+                files = {}
+                for oid in oids:
+                    file_meta = self.oxide.retrieve("file_meta", oid)
+                    if file_meta is None:
+                        oid_desc = {"names": ", ".join(self.oxide.get_names_from_oid(oid))}
+                    else:
+                        oid_desc = {"names": ", ".join(self.oxide.get_names_from_oid(oid)),
+                                    "original_paths": file_meta["original_paths"],
+                                    "size": file_meta["size"]}
+                    files[oid] = oid_desc
 
                 cm["oids"] = files
             self.print_item(cm, header="Collection %s" % item)

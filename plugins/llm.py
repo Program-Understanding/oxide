@@ -1,7 +1,34 @@
+# Modified from Andrej's Youtube tutorial, based on: https://github.com/karpathy/nanoGPT/blob/master/model.py
+'''MIT License
+
+Copyright (c) 2022 Andrej Karpathy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+'''
+'''
+Modified for Oxide by Samuel Mulder 2023
+'''
+
 """ Plugin: Utility functions for managing truth files.
 """
 import time
-
+import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -26,8 +53,6 @@ else:
 print(f"llm using device: {device}")
 model = None
 
-
-torch.manual_seed(1337)
 
 def savellm(args, opts):
     """
@@ -121,6 +146,24 @@ exports = [trainllm, loadllm, savellm]
 encode = lambda s: [i for i in s]
 decode = lambda l: b''.join(l)
 
+def new_gelu(x):
+    """
+    Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT).
+    Reference: Gaussian Error Linear Units (GELU) paper: https://arxiv.org/abs/1606.08415
+    """
+    return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
+
+class LayerNorm(nn.Module):
+    """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
+
+    def __init__(self, ndim, bias):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(ndim))
+        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
+
+    def forward(self, input):
+        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+
 def get_batch(train_data, val_data=None):
     if not val_data:
         data = train_data
@@ -194,20 +237,36 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+
+class MLP(nn.Module):
+
+    def __init__(self, n_embed):
+        super().__init__()
+        self.c_fc    = nn.Linear(n_embed, 4 * n_embed, bias=False)
+        self.c_proj  = nn.Linear(4 * n_embed, n_embed, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = new_gelu(x)
+        x = self.c_proj(x)
+        x = self.dropout(x)
+        return x
+
 class Block(nn.Module):
     """ Transformer Block: communication followed by computation """
 
     def __init__(self, n_embed, n_head):
         super().__init__()
         head_size = n_embed // n_head
+        self.ln1 = LayerNorm(n_embed, bias=False)
         self.sa = MultiHeadAttention(n_head, head_size)
-        self.ffwd = FeedForward(n_embed)
-        self.ln1 = nn.LayerNorm(n_embed)
-        self.ln2 = nn.LayerNorm(n_embed)
-
+        self.ln2 = LayerNorm(n_embed, bias=False)
+        self.mlp = MLP(n_embed)
+        
     def forward(self, x):
         x = x + self.sa(self.ln1(x))
-        x = x + self.ffwd(self.ln2(x))
+        x = x + self.mlp(self.ln2(x))
         return x
 
 
@@ -219,7 +278,7 @@ class TransformerModel(nn.Module):
             self.position_embedding_table = nn.Embedding(block_size, n_embed)
             self.blocks = nn.Sequential(*[Block(n_embed, n_head=n_head) for _ in range(n_layer)])
             self.ln_f = nn.LayerNorm(n_embed) # final layer norm
-            self.lm_head = nn.Linear(n_embed, vocab_size)
+            self.lm_head = nn.Linear(n_embed, vocab_size, bias=False)
 
         def forward(self, idx, targets=None):
             # print("shape:", idx.shape)

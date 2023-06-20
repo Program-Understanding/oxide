@@ -32,7 +32,7 @@ import json
 import logging
 import time
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from core.libraries.ghidra_utils import get_file_offset
 
@@ -153,7 +153,7 @@ def _update_blocks_with_insns(output_map: dict) -> None:
                 mems[i] = (mems[i][0], output_map["instructions"][mems[i][0]].lower())
 
 
-def _sort_lines(extract_lines: str) -> (list, list, list):
+def _sort_lines(extract_lines: str) -> Tuple[list, list, list]:
     global LOAD_ADDR
     ghidra_inst_ref = []
     ghidra_block_ref = []

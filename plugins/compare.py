@@ -31,6 +31,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+import re
 
 from typing import List, BinaryIO, Dict, Tuple, Any
 
@@ -226,8 +227,11 @@ def compare_insns(args, opts):
     Options:
         file - specifies dumping to output file
         dir - specifies out directory to dump output
+        include - specifies which tools to include
+        exclude - specifies which tools to exclude
         verbose - Includes breakdown of instuctions per tool
         color - Adds coloring to output to make easier to view
+        save - Saves verbose output as a JSON file
         graph - Graphs correct, false negatives, and false positives
     """
     function_mapping = {}
@@ -260,7 +264,12 @@ def compare_insns(args, opts):
 
             compare_logger.info("\tOn tool %s", tool)
 
-            options = {"disassembler": tool}
+            if tool == "ddisasm_disasm":
+                decoder = "capstone"
+            else:
+                decoder = "native"
+
+            options = {"disassembler": tool, "decoder": decoder}
             if tool in ["disasm_min", "disasm_max"]:
                 options["type"] = tool
                 options["disassembler"] = "truth_store"
@@ -525,18 +534,18 @@ def _display_dasm(
         print(spacing_str % offset, file=pipe, end="|")
         for tool_index in range(len(tool_list)):
             # Display spacing width of each instruction or spacing width of spaces
-            if offset in inst_maps[tool_index]:
-                format_len = min(len(inst_maps[tool_index][offset]), spacing - 1)
             empty = " " * (spacing)
+            if offset in inst_maps[tool_index]:
+                output = re.sub(r'\s+', ' ',inst_maps[tool_index][offset]["str"]).strip()
+            else:
+                output = empty
+            format_len = spacing - 1
+            if offset in inst_maps[tool_index]:
+                format_len = min(len(output), format_len)
+                output = output[0:format_len]
             if color:
                 empty = "\u001b[41;1m{}\u001b[0m".format(empty)
-            print(
-                spacing_str % inst_maps[tool_index][offset]["str"][0:format_len]
-                if offset in inst_maps[tool_index]
-                else empty,
-                file=pipe,
-                end=" |",
-            )
+            print(spacing_str % output, file=pipe, end=" |")
         print(file=pipe)
 
 
@@ -656,6 +665,23 @@ def _inst_comparison(
     false_negatives = {tool: [] for tool in tool_list}
     correct = {tool: [] for tool in tool_list}
 
+    if "include" in opts:
+        includes = opts['include'].split(",")
+        tool_list =[]
+        for include in includes:
+            try:
+                tool_list.append(include)
+            except ValueError:
+                print(f"{include} not found in tool_list")
+        tool_list.append("disasm_min")
+        tool_list.append("disasm_max")
+    if "exclude" in opts:
+        excludes = opts['exclude'].split(",") 
+        for exclude in excludes:
+            try:
+                tool_list.remove(exclude)
+            except ValueError:
+                print(f"{exclude} not found in tool_list")
     # Extract instruction store for each tool, renaming and using option for min/max_truth
     for tool in tool_list:
         if tool not in disasm_maps:
@@ -723,7 +749,44 @@ def _inst_comparison(
             pipe,
         )
 
+    if "save" in opts:
+        out_dir = os.path.join(api.scratch_dir, "data")
+        if "dir" in opts and os.path.exists(opts["dir"]):
+            out_dir = opts["dir"]
+        fname = _name(oid)
+        output_file = os.path.join(out_dir, fname, "compare_insns.json")
+        if not os.path.exists(os.path.join(out_dir, fname)):
+            os.makedirs(os.path.join(out_dir, fname))
+        union_offsets = set()
+        for offset_list in offsets_lists:
+            offset_set = set(offset_list)
+            if "meta" in offset_set:
+                offset_set.remove("meta")
+            # If instruction with None for address, remove
+            offset_set.discard(None)
+            union_offsets = union_offsets.union(offset_set)
+        union_offsets = sorted(list(union_offsets))
+        # print instructions to output file
+        output_data = []
+        for i in range(len(tool_list)):
+            tool_data = []
+            for offset in union_offsets:
+                if offset not in inst_maps[i]:
+                    tool_data.append([offset, ""])
+                else:
+                    output = re.sub(r'\s+', ' ',inst_maps[i][offset]["str"]).strip()
+                    tool_data.append([offset, output])
+            output_data.append({'tool_name': tool_list[i], 'data': tool_data})
+
+        with open(output_file, 'w') as f:
+            json.dump(output_data, f)
+
+
+
     if "graph" in opts:
+        if "disasm_min" not in tool_list:
+            print("disasm_min not found in tool_list")
+            return
         if len(union_offsets) == 0:
             for offset_list in offsets_lists:
                 offset_set = set(offset_list)

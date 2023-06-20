@@ -73,11 +73,11 @@ def process(oid: str, opts: dict) -> bool:
     elif 'Windows' in operating_system:
         ghidra_decompiler_mapping.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless.bat")
     # disambiguates database name between cores
-    ghidra_decompiler_mapping.GHIDRA_Project_NAME = "{}_{}".format(project, multiprocessing.current_process().name)
+    ghidra_decompiler_mapping.GHIDRA_Project_NAME = f"{project}_{multiprocessing.current_process().name}"
     ghidra_decompiler_mapping.GHIDRA_Project_PATH = api.scratch_dir
     ghidra_decompiler_mapping.SCRIPTS_PATH = api.scripts_dir
     ghidra_decompiler_mapping.EXPORT_SCRIPT_PATH = "decompile_mapping.py"
-    ghidra_decompiler_mapping.GHIDRA_TMP_FILE = os.path.join(api.scratch_dir, "DecompilerMapping.json")
+    ghidra_decompiler_mapping.GHIDRA_TMP_FILE = os.path.join(api.scratch_dir, f"DecompilerMapping-{multiprocessing.current_process().name}.json")
     print(ghidra_decompiler_mapping.GHIDRA_TMP_FILE)
     # Toggles whether module returns vaddr or file offsets
     ghidra_decompiler_mapping.OFFSETS_OFF = opts['rebase-off']
@@ -96,6 +96,8 @@ def process(oid: str, opts: dict) -> bool:
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data)
     result = ghidra_decompiler_mapping.extract(f_name, header)
+    # File cleaned up in extract
+
     if result is None: return False
     api.store(NAME, oid, result, opts)
     return True

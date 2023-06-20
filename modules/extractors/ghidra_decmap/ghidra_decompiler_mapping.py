@@ -84,9 +84,10 @@ def extract(file_test: str, header: dict) -> dict:
 
     output_map['decompile'] = {}
     try:
-        print('raw', raw)
         mapping = json.loads(raw)
         LOAD_ADDR = mapping['meta']['load_addr']
+        LOAD_ADDR = int(LOAD_ADDR, 16)
+
         del mapping['meta']
         
         for elem in mapping:

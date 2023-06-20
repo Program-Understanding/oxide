@@ -33,7 +33,7 @@ from typing import Optional, List, Dict, Any
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-AVAILABLE = ["xed", "capstone"]
+AVAILABLE = ["xed", "capstone", "native"]
 
 try:
     import capstone
@@ -47,8 +47,10 @@ except ModuleNotFoundError:
     AVAILABLE.remove("xed")
     logger.warning("Unable to import PyXED.")
 
-if not AVAILABLE:
-    raise ModuleNotFoundError("PyXED and Capstone are missing.")
+# We no longer should need this
+# DEPRECATED
+# if not AVAILABLE:
+#    raise ModuleNotFoundError("PyXED and Capstone are missing.")
 
 from core import api, otypes
 from core.libraries.disasm_utils import disassemble_wcap, disassemble_wxed
@@ -62,9 +64,21 @@ def documentation() -> Dict[str, Any]:
 
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
+    """ Decoder values: tools e.g., xed, capstone, pypcode, native
+           - Native uses the disassembler native results
+    """
     logger.debug("results()")
     disassembler = opts["disassembler"]
+    decoder = opts["decoder"]
     disassemblers = api.get_available_modules("disassembler")
+    if (not disassembler or disassembler not in disassemblers) and type(disassembler) is not dict:
+        logger.info("Invalid option `%s` for disassembler, options are %s", disassembler,
+                                                                            disassemblers)
+        logger.info(f"Option may not have loaded correct, please check `run {disassembler}`")
+
+    if decoder not in AVAILABLE:
+        logger.info(f"Invalid decoder provided, {decoder} selected, and available: {AVAILABLE}")
+        return None
 
     oid_list = api.expand_oids(oid_list)
     results = {}
@@ -77,21 +91,10 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         file_size = api.get_field("file_meta", oid, "size")
         data = api.get_field("files", oid, "data")
 
-        decoder = opts["decoder"]
-
-        tool_insns = None
-        if not disassembler:
-            tool_insns = api.get_field("ghidra_disasm", oid, "instructions", opts)
-        elif disassembler in disassemblers:
-            tool_insns = api.get_field(disassembler, oid, "instructions", opts)
-        elif type(disassembler) == dict:
+        if type(disassembler) is dict:
             tool_insns = disassembler
         else:
-            # invalid disassembler option
-            logger.info("Invalid option `%s` for disassembler, options are %s",
-                        disassembler, disassemblers)
-            logger.info(f"Option may not have loaded correct,please check `run {disassembler}`")
-            tool_insns = None
+            tool_insns = api.get_field(disassembler, oid, "instructions", opts)
 
         if not tool_insns:
             continue
@@ -104,6 +107,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
             disasm = disassemble_wcap(file_size, data, header, tool_insns)
         elif decoder == "xed":
             disasm = disassemble_wxed(file_size, data, header, tool_insns)
+        elif decoder == "native":
+            disasm = {k: {"str": v} for k, v in tool_insns.items()}
         else:
             logger.info("Invalid decoder selected")
 
