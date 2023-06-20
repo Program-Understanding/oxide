@@ -352,7 +352,7 @@ def export_file(args, opts, directory = None):
     oids = api.expand_oids(valid)
 
     #Prompts the user for the directory
-    directory = input("Enter what directory to export the file to: ")
+    directory = input("Enter what directory you want to export the file to: ")
 
     if "zip" in opts:
         export_tar_zip(oids, opts, type="zip", directory = directory)
@@ -615,7 +615,7 @@ def export_tar_zip(oids, opts, type, directory = None):
         os.remove(f)
 
 
-def export_files(oids, opts, directory=None):
+def export_files(oids, opts, directory = None):
     base_name = "export"
     if "name" in opts and opts["name"]:
         base_name = opts["name"]
@@ -644,7 +644,7 @@ def unique_scratch_file(name):
 
 def write_file(name, data, directory = None):
     if directory:
-        os.makedirs(directory, exist_ok=True)
+        os.makedirs(directory, exist_ok = True)
         name = os.path.join(directory, name)
 
     #name = unique_scratch_file(name)
