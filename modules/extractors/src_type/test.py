@@ -28,8 +28,9 @@ import os
 # This file needs to be named test.py and reside in the same folder as the module itself.
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
+   
 
-class SrcTypeTest(unittest.TestCase):
+class src_type_test(unittest.TestCase):
     def test_src_type(self):
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
         for sample_file in sample_files:

@@ -45,6 +45,7 @@ def process(oid: str, opts: dict = {}) -> bool:
     logger.debug("process()")
     src = api.source(oid)
     src_type = {"source":src}
+    #src_type = api.get_field("src_type", oid, "type")
     logger.debug("Processing file %s", str(oid))
     if src == "collections":
         src_type["type"] = "collection"

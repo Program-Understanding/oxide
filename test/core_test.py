@@ -65,7 +65,7 @@ class CoreTest(unittest.TestCase):
     '''
     def test_import_file(self):
         """ Assert that a file can be imported """
-        f = os.path.join(oxide.config.dir_datasets, "sample_dataset", "bash.exe")
+        f = os.path.join(oxide.config.dir_datasets, "sample_dataset", "pe-mingw32-strip.exe")
         fail_msg = "Not able to import file", f
         self.assertNotEqual(oxide.import_file(f), (None, False), fail_msg)
 

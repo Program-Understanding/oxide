@@ -29,7 +29,7 @@ import os
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
-class PeTest(unittest.TestCase):
+class pe_test(unittest.TestCase):
     def test_pe(self):
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
         oid_list = []

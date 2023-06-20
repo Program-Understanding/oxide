@@ -29,7 +29,7 @@ import os
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
-class ObjectHeaderTest(unittest.TestCase):
+class object_header_test(unittest.TestCase):
     def test_object_header(self) -> None:
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
         oid_list = []
@@ -40,7 +40,7 @@ class ObjectHeaderTest(unittest.TestCase):
             oid_list.append(oid)
         for oid in oid_list:
             src_type = self.oxide.get_field("src_type", oid, "type")
-            if src_type == 'PE' or src_type == 'ELF' or src_type == 'MACHO':
+            if  'PE' in src_type or 'ELF' in src_type or 'MACHO' in src_type:
                 self.assertTrue(self.oxide.process("object_header", [oid], {}),
                                 "object_header not able to process a PE, ELF, MACHO file")
             else:

@@ -29,7 +29,7 @@ import os
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
-class ElfTest(unittest.TestCase):
+class elf_test(unittest.TestCase):
     def test_elf(self):
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
         oid_list = []
@@ -44,3 +44,4 @@ class ElfTest(unittest.TestCase):
             else:
                 self.assertFalse(self.oxide.process("elf", oid, {}),
                                  "elf able to process a not-ELF file")
+

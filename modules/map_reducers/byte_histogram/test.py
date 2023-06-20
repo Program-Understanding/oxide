@@ -22,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE. 
 """
 
+
 import unittest
 import os
 
@@ -29,7 +30,7 @@ import os
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
-class ByteHistogramTest(unittest.TestCase):
+class byte_histogram_test(unittest.TestCase):
     def test_byte_histogram(self):
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
         for sample_file in sample_files:

@@ -30,7 +30,9 @@ import shlex
 from cmd import Cmd
 from code import InteractiveConsole, InteractiveInterpreter
 
-from typing import List, Optional, Tuple, Any
+
+
+from typing import List, Tuple, Any
 
 from core import oxide as local_oxide
 from core import sys_utils

@@ -27,7 +27,7 @@ NAME = "function_hashes"
 
 import logging
 import hashlib
-import api
+from core import api
 logger = logging.getLogger(NAME)
 logger.debug("init")
 

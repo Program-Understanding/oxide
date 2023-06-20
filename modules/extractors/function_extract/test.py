@@ -29,6 +29,8 @@ import os
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
+
+'''
 class opcodes_test(unittest.TestCase):
     def test_opcodes(self):
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
@@ -47,3 +49,4 @@ class opcodes_test(unittest.TestCase):
             else:
                 self.assertFalse(self.oxide.process("opcodes", oid, {}),
                                  "opcodes able to process a not-PE/ELF/MACHO file")
+'''

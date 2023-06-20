@@ -44,6 +44,7 @@ def documentation() -> Dict[str, Any]:
 
 
 def process(oid: str, opts: dict) -> bool:
+    #logger.debug("process()")
     logger.debug("Processing oid %s", oid)
     src_type = api.get_field("src_type", oid, "type")
 
@@ -58,5 +59,6 @@ def process(oid: str, opts: dict) -> bool:
 
     result = parse_elf(data, oid)
     result["header"] = ElfRepr(result)
+
     api.store(NAME, oid, result, opts)
     return True

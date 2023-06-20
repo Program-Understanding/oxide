@@ -16,7 +16,11 @@ from capa.engine import *
 from capa.features.common import FORMAT_AUTO
 
 OS_AUTO = "auto"
-RULES_PATH = "/home/nathan/Documents/oxide/modules/extractors_dev/parse_capa/capa-rules"
+#RULES_PATH = "./capa-rules"
+#RULES_PATH = "/home/nathan/Documents/oxide/modules/extractors_dev/parse_capa/capa-rules"
+RULES_PATH = "/home/nzi0007/oxide/modules/extractors_dev/parse_capa/capa-rules"
+
+
 FORMAT = "dictionary"
 
 
@@ -162,6 +166,9 @@ def render_dictionary(doc: rd.ResultDocument) -> Dict[str, Any]:
     return result
 
 
+FORMAT_AUTO = capa.features.common.FORMAT_AUTO
+OS_AUTO = capa.features.common.OS_AUTO
+
 # ==== render dictionary helpers
 def capa_details(rules_path, file_path, output_format="dictionary"):
     # load rules from disk
@@ -173,8 +180,8 @@ def capa_details(rules_path, file_path, output_format="dictionary"):
     capabilities, counts = capa.main.find_capabilities(rules, extractor, disable_progress=True)
 
     # collect metadata (used only to make rendering more complete)
-    # meta = capa.main.collect_metadata([], file_path, FORMAT_AUTO, OS_AUTO, rules_path, extractor)
-    meta = capa.main.collect_metadata([], file_path, rules_path, extractor)
+    meta = capa.main.collect_metadata([], file_path, FORMAT_AUTO, OS_AUTO, rules_path, extractor)
+    #meta = capa.main.collect_metadata([], file_path, rules_path, extractor)
     meta["analysis"].update(counts)
     meta["analysis"]["layout"] = capa.main.compute_layout(rules, extractor, capabilities)
 

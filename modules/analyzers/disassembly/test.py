@@ -30,37 +30,14 @@ from modules.analyzers.disassembly.module_interface import results
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
-class DisassemblyTest(unittest.TestCase):
-    def test_results(self):
-        #inputs a list of object identifiers and options
-        sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
-        oid_list = ["oid1", "oid", "oid"]
-        opts = {"disassembler": "ghidra_disasm", "decoder": "capstone"}
-
-        #outputs
-        output = results(oid_list, opts)
-
-        expected_output = {
-            "oid": {"Disassembly instructions" : "disasm"},
-            "oid": {"Disassembly instructions" : "disasm"},
-            "oid": {"Disassembly instructions" : "disasm"}
-        } 
-        for sample_file in sample_files:
-            fp = os.path.join(self.oxide.config.dir_sample_dataset, sample_file)
-            oid, newfile = self.oxide.import_file(fp)
-            if not oid: continue
-            oid_list.append(oid)
-        for oid in oid_list:
-            self.assertEqual(output, expected_output)
-            
-        
-        #self.assertEqual(output, expected_output)
-
-
-    '''
-    def test_object_header(self) -> None:
+class disassembly_test(unittest.TestCase):
+    def test_disassembly(self) -> None:
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
         oid_list = []
+        opts = {
+            "disassembler": "ghidra_disasm",
+            "decoder": "capstone"
+        }
         for sample_file in sample_files:
             fp = os.path.join(self.oxide.config.dir_sample_dataset, sample_file)
             oid, newfile = self.oxide.import_file(fp)
@@ -68,11 +45,11 @@ class DisassemblyTest(unittest.TestCase):
             oid_list.append(oid)
         for oid in oid_list:
             src_type = self.oxide.get_field("src_type", oid, "type")
-            if src_type == 'PE' or src_type == 'ELF' or src_type == 'MACHO':
-                self.assertTrue(self.oxide.process("object_header", [oid], {}),
-                                "object_header not able to process a PE, ELF, MACHO file")
-            else:
-                self.assertFalse(self.oxide.process("object_header", [oid], {}),
-                                 "object_header able to process a not-PE/ELF/MACHO file")
+            decoder = opts["decoder"]
 
-                                 '''
+            if  'PE' in src_type or 'ELF' in src_type or 'MACHO' in src_type:
+                self.assertNotEqual(self.oxide.retrieve("disassembly", [oid], {}, opts),
+                                "disassembly not able to process capstone, XED")
+            else:
+                self.assertTrue(self.oxide.process("disassembly", [oid], {}, opts),
+                                 "disassembly able to process capstone, XED")

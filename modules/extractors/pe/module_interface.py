@@ -45,8 +45,10 @@ def documentation() -> Dict[str, Any]:
 def process(oid: str, opts: dict = {}) -> bool:
     logger.debug("process()")
     src_type = api.get_field("src_type", oid, "type")
+
     if 'PE' not in src_type:
         return False
+    
     src = api.source(oid)
     data = api.get_field(src, oid, "data", {})
     if not data:

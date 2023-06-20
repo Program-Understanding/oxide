@@ -30,7 +30,7 @@ import unittest
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
-class TagsTest(unittest.TestCase):
+class tags_test(unittest.TestCase):
     def test_tags(self):
         self.oxide.process("tags", [])
 

@@ -29,7 +29,7 @@ import os
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
-class FilesTest(unittest.TestCase):
+class files_test(unittest.TestCase):
     def test_import_file_contents_match(self):
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
         for sample_file in sample_files:

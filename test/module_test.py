@@ -51,7 +51,7 @@ def module_test(singlemodule=None):
                     print("Running the %s module test." % (module))
                     sys.path.insert(0,os.path.join(moduletypepath,module)) # Prepend the path
                     class_str = str(module) + ".test"
-                    try:
+                    try:     
                         mod = __import__(class_str, globals(), locals(), [str(module) + "_test"])
                         try:
                             test_class = getattr(mod, str(module) + "_test")
