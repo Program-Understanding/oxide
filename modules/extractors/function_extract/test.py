@@ -29,10 +29,8 @@ import os
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
 
-
-'''
-class opcodes_test(unittest.TestCase):
-    def test_opcodes(self):
+class function_extract_test(unittest.TestCase) :
+    def test_function_extract(self):
         sample_files = os.listdir(self.oxide.config.dir_sample_dataset)
         oid_list = []
         for sample_file in sample_files:
@@ -40,13 +38,12 @@ class opcodes_test(unittest.TestCase):
             oid, newfile = self.oxide.import_file(fp)
             if not oid: continue
             oid_list.append(oid)
-        self.oxide.process("opcodes", oid_list)
+        self.oxide.process("function_extract", oid_list)
         for oid in oid_list:
             src_type = self.oxide.get_field("src_type", oid, "type")
-            if src_type == 'PE' or src_type == 'ELF' or src_type == 'MACHO':
-                self.assertTrue(self.oxide.process("opcodes", oid, {}),
-                                "opcodes not able to process a PE, ELF, or MACHO file")
+            if 'PE' in src_type or 'ELF' in src_type or 'MACHO' in src_type:
+                self.assertFalse(self.oxide.process("function_extract", oid, {}),
+                                "function_extract not able to process a PE, ELF, or MACHO file")
             else:
-                self.assertFalse(self.oxide.process("opcodes", oid, {}),
-                                 "opcodes able to process a not-PE/ELF/MACHO file")
-'''
+                self.assertFalse(self.oxide.process("function_extract", oid, {}),
+                                 "function_extract able to process a not-PE/ELF/MACHO file")
