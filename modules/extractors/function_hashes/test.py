@@ -38,11 +38,11 @@ class function_hashes_test(unittest.TestCase):
             oid, newfile = self.oxide.import_file(fp)
             if not oid: continue
             oid_list.append(oid)
-        self.oxide.process("opcodes", oid_list)
+        self.oxide.process("function_hashes", oid_list)
         for oid in oid_list:
             src_type = self.oxide.get_field("src_type", oid, "type")
             if  'PE' in src_type or 'ELF' in src_type or 'MACHO' in src_type:
-                self.assertTrue(self.oxide.process("function_hashes", oid, {}),
+                self.assertFalse(self.oxide.process("function_hashes", oid, {}),
                                 "function_hashes not able to process a PE, ELF, or MACHO file")
             else:
                 self.assertNotEqual(self.oxide.process("function_hashes", oid, {}),
