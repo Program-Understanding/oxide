@@ -37,6 +37,7 @@ from typing import List, Tuple, Any
 from core import oxide as local_oxide
 from core import sys_utils
 from core.otypes import cast_string
+from core.oxide import modules_available, documentation
 
 dict_type = (dict, defaultdict)
 collection_type = (list, set, tuple)
@@ -146,6 +147,7 @@ class OxideShell(Cmd):
         self.intro   = "\n --------   Oxide   -------- \n"
         self.context = [] # [ (oid, set(names) ) ]
 
+        self.modules_available = {}
         self.plugins     = {}
         self.plugin_vars = {}
         self.pystate     = {}
@@ -665,13 +667,16 @@ class OxideShell(Cmd):
                     print(("   ", func.__name__, ":",))
                     print((func.__doc__))
                 return
+            elif documentation(line) is not None:  # Check if line is a module name
+                module_doc = documentation(line)
+                print(module_doc)
+                return
             else:
                 print((" - Command %s not found" % (line)))
                 return
 
             print((f.__doc__))
 
-        else:
             self.print_header("Oxide Shell Help")
             commands = list(self.commands.keys())
             commands.sort()
