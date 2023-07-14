@@ -22,43 +22,39 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE. 
 """
 
-DESC = " This module uses the elf_parse module to extract features from the ELF header."
-NAME = "elf"
-USG = "This module takes the an ID and retrieves information that describes the file if it is an ELF file"
+""" shell.py
 
-import logging
+Oxide CLI entrypoint module
+"""
+import argparse
+import sys
 
-from typing import Dict, Any
+from core import rshell
+from core import oshell
 
-from interpret_elf import ElfRepr
-from parse_elf import parse_elf
-from core import api
-
-logger = logging.getLogger(NAME)
-logger.debug("init")
-
-opts_doc = {}
+parser = argparse.ArgumentParser()
+parser.add_argument('-r', '--remote', action='store', type=str, dest='remote',
+                    metavar='HOST:PORT', help="The server ip:port I'm connecting to")
+args = parser.parse_args()
 
 
-def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage" :USG}
+def main() -> None:
+    """ Oxide CLI entry point, initiating remote or commandline shell.
+    """
+    if args.remote:
+        if len(args.remote.split(":")) != 2:
+            parser.print_help()
+            sys.exit(1)
 
-def process(oid: str, opts: dict) -> bool:
-    #logger.debug("process()")
-    logger.debug("Processing oid %s", oid)
-    src_type = api.get_field("src_type", oid, "type")
+        host, port_str = args.remote.split(":")
+        print(' - Connecting to remote server {}:{}'.format(host, port_str))
+        sys.argv = sys.argv[:1]
+        remote_shell = rshell.RemoteOxideShell(host, int(port_str))
+        remote_shell.cmdloop()
 
-    if "ELF" not in src_type:
-        return False
+    else:
+        oshell.OxideShell().cmdloop()
 
-    src = api.source(oid)
-    data = api.get_field(src, oid, "data", {})
-    if not data:
-        logger.debug("Not able to process %s", oid)
-        return False
 
-    result = parse_elf(data, oid)
-    result["header"] = ElfRepr(result)
-
-    api.store(NAME, oid, result, opts)
-    return True
+if __name__ == '__main__':
+    main()
