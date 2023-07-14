@@ -24,6 +24,7 @@ THE SOFTWARE.
 
 DESC = " This module uses the elf_parse module to extract features from the ELF header."
 NAME = "elf"
+USG = "This module takes the an ID and retrieves information that describes the file if it is an ELF file"
 
 import logging
 
@@ -40,8 +41,7 @@ opts_doc = {}
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
-
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage" :USG}
 
 def process(oid: str, opts: dict) -> bool:
     #logger.debug("process()")
