@@ -110,3 +110,14 @@ pip3 install
 If you are using **MacOS**, you will need to install GNU objdump.
 With Brew, `brew install binutils` and symlink `gobjdump` to `/usr/local/bin/gobjdump`.
 ....
+
+
+# Remote Shell
+
+Launch a server like:
+
+`Python3 utils/server.py -l 127.0.0.1:1492`
+
+Then, in another shell connect with:
+
+`Python3 rshell.py -r 127.0.0.1:1492`
