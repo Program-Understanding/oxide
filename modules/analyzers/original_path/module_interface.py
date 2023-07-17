@@ -1,5 +1,6 @@
 DESC = "Returns the original path of imported binary"
 NAME = "original_path"
+USG = "After being ran against against a collection, it returns the original file path of each beinary file within the collection before it was imported into oxide"
 
 import logging
 
@@ -14,7 +15,7 @@ opts_doc = {}
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "Usage": USG }
 
 
 def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:

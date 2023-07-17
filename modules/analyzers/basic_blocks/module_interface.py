@@ -24,6 +24,7 @@ THE SOFTWARE.
 
 DESC = " Wrapper to access basic block analysis from extractors (ghidra, ida, angr)"
 NAME = "basic_blocks"
+USG = ""
 
 import hashlib
 import logging
@@ -35,7 +36,7 @@ from core import api
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra_disasm"}}
+opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra_disasm"}, "usage": USG}
 
 
 def documentation() -> Dict[str, Any]:

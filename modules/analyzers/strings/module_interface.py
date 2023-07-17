@@ -24,6 +24,7 @@ THE SOFTWARE.
 
 DESC = "Identify ascii-strings in file"
 NAME = "strings"
+USG = "To use module type in 'run strings &<collection_name> | show' which runs the module against all files within the sample collection"
 
 # imports
 import logging
@@ -44,7 +45,7 @@ def documentation() -> Dict[str, Any]:
     """ Config options for file
     """
     return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": True,
-            "atomic": True}
+            "atomic": True, "usage": USG}
 
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
