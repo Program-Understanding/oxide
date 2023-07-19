@@ -36,11 +36,11 @@ from core import api
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra_disasm"}, "usage": USG}
+opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra_disasm"}}
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "Usage": USG}
 
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:

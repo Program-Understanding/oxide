@@ -37,11 +37,11 @@ from core import api, otypes
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"fake": {"type": bool, "mangle": False, "default": False}, "usage": USG }
+opts_doc = {"fake": {"type": bool, "mangle": False, "default": False} }
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True }
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "Usage": USG}
 
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
