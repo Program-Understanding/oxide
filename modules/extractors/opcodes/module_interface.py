@@ -39,12 +39,12 @@ def documentation():
 
 def process(oid, opts):
     logger.debug("process()")
-    disasm = api.get_field("disassembly", [oid], "instructions")
+    disasm = api.get_field("disassembly", [oid], oid)
     if disasm is None:
         return False
 
-    opcodes = get_opcodes(disasm)
-    api.store(name, oid, {"opcodes": opcodes}, opts)
+    opcodes = get_opcodes(disasm["instructions"])
+    api.store(NAME, oid, {"opcodes": opcodes}, opts)
     return True
 
 
