@@ -25,7 +25,7 @@ THE SOFTWARE.
 """Plugin: re_tools - Functions to help reverse engineer an x86 file
 """
 
-import os, tempfile, struct
+import os, tempfile, struct, capstone
 
 from core import api
 from re_lib import instruction_to_string, get_slice
@@ -75,6 +75,39 @@ def re_init(args, opts):
         except ValueError:
             raise ShellSyntaxError("Invalid height")
     return [current_file]
+
+def dos_stub(args, opts):
+    """
+        Disassembles the DOS header for PE files.
+        Syntax: header <oid> ... [--verbose]
+    """
+    args, invalid = api.valid_oids(args)
+    args = api.expand_oids(args)
+    if not args:
+        if current_file:
+            args = [current_file]
+        else:
+            raise ShellSyntaxError("Must provide an oid")
+    
+    cap = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)    
+    for oid in args:
+        src_type = api.get_field("src_type", oid, "type")
+        if "PE" not in src_type:
+            print(oid, " is not a PE file.")
+            continue
+        header = api.retrieve("pe", oid)
+        if "dos_header" in header:
+            if "dos_stub" in header["dos_header"]:
+                stub = header["dos_header"]["dos_stub"]
+                insns = cap.disasm(stub, 0)
+                for n, i in enumerate(insns):
+                    print(i)
+                    if n == 6: break
+                print(stub[14:])
+        else:
+            print("DOS stub not found.")
+
+    return []
 
 def header(args, opts):
     """
@@ -613,7 +646,7 @@ def parse_relocations(args, opts):
 
 exports = [re_init, header, entry_point, disassembly, rva_offset, offset_rva,
            hex_view, import_table, strings, dec_hex, hex_dec, get_val,
-           sections, parse_relocations
+           sections, parse_relocations, dos_stub,
           ]
 
 ################## UTILITIES ###################################################
