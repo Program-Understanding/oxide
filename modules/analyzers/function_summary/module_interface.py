@@ -24,6 +24,10 @@ THE SOFTWARE.
 
 DESC = " Extract basic function info."
 NAME = "function_summary"
+USG = "This module takes a list of collection with list of OID's for each binary file or a single OID pertaining to a binary file and performs \
+analysis on them which returns a dictionary containing the function summary for each binary file which includes the name of the function, \
+The offset of the function within the binary file and the function signature which provides details about the functions return type, \
+calling convention and parameters. The dictionary keys are the names of binary files"
 
 import logging
 
@@ -37,7 +41,7 @@ logger.debug("init")
 
 def documentation() -> Dict[str, Any]:
     return {"description": DESC, "opts_doc": {}, "set": True,
-            "atomic": True}
+            "atomic": True, "Usage": USG}
 
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
