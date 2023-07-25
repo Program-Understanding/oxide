@@ -24,6 +24,10 @@ THE SOFTWARE.
 
 DESC = "Return general file stats."
 NAME = "file_stats"
+USG = "This module collects a list of oid's or a single oid representing the binary files you want to get the statistics of. This module returns\
+a dictionary containing the statistics for each binary file in the collection hwich are identified by their individual oid. THe dictionary gives information \
+that includes the number of basic blocks, the number of functions, the number of sections, whether or not the RTTI is present and if present, the \
+section names."
 
 import hashlib
 import operator
@@ -40,7 +44,7 @@ opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra_di
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "Usage": USG}
 
 
 def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:

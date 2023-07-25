@@ -24,6 +24,11 @@ THE SOFTWARE.
 
 DESC = " This module retrieves the disassembly of a given object file using a tool to guide decoding."
 NAME = "disassembly"
+USG = "This module collects a list of oid's or a single oid representing the binary files to disassemble and retrieve instructions from \
+After running the modules on your collection of binary files, the module returns a dictionary with oid's as keys and sub-dictionaries as \
+values. Each sub-dictionary represents the disassembles instrtructions for the corresponding binary file including details like addresses, \
+opcodes, operands, mnemonics and more. THis information can be used to analyze and understand the behavior of the compiled code in each \
+binary file."
 
 import logging
 import ctypes
@@ -60,7 +65,7 @@ opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra_di
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "Usage" : USG}
 
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
