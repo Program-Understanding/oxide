@@ -24,6 +24,7 @@ THE SOFTWARE.
 
 DESC = " This module stores tags on oids"
 NAME = "tags"
+USG = " "
 
 import logging
 
@@ -39,7 +40,7 @@ opts_doc = {}
 
 def documentation() -> Dict[str, Any]:
     return {"description": DESC, "opts_doc": opts_doc, "set": True, "atomic": True,
-            "private": True}
+            "private": True, "Usage": USG}
 
 
 def results(oid_list: List[str], opts: dict) -> None:
