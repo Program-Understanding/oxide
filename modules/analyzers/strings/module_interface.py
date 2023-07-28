@@ -24,9 +24,8 @@ THE SOFTWARE.
 
 DESC = "Identify ascii-strings in file"
 NAME = "strings"
-USG = "This module collects a list of oid's or a single oid representing the binary file you want to analyze. This module returns a dictionary \
-with a list of the ASCII strings found in each binary file withing the collection long with their respective offsets in the file, with the \
-offsets as the key and the extracted string as the value. "
+USG = "This module returns a dictionary with a list of the ASCII strings found in each binary file withing the collection along with their respective \
+    offsets in the file keys and the extracted string as values. "
 
 # imports
 import logging

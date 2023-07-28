@@ -24,11 +24,10 @@ THE SOFTWARE.
 
 DESC = " Wrapper to access basic block analysis from extractors (ghidra, ida, angr)"
 NAME = "basic_blocks"
-USG = "The basic_blocks module collects a collection with a list of oid's or a single oid. This module then returns a dictionary with the \
-basic block analysis results for each binary file including the adress of the first and last instruction in the basic block as \
-first_insn and last_insn, the total number of instructions in the basic block as num_insns, a list of instruction mnemonics in the \
-basic block as members, potential destinations of the basic bloscks as dests and an optional hash value that represents the content \
-of the basic block "
+USG = "This module returns a dictionary with the \
+basic block analysis results for each binary file including the address of the first and last instruction as \
+first_insn and last_insn, the total number of instructions as num_insns, a list of instruction mnemonics \
+as members, potential destinations as dests and an optional hash value"
 
 import hashlib
 import logging

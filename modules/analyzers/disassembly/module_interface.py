@@ -24,11 +24,9 @@ THE SOFTWARE.
 
 DESC = " This module retrieves the disassembly of a given object file using a tool to guide decoding."
 NAME = "disassembly"
-USG = "This module collects a list of oid's or a single oid representing the binary files to disassemble and retrieve instructions from \
-After running the modules on your collection of binary files, the module returns a dictionary with oid's as keys and sub-dictionaries as \
-values. Each sub-dictionary represents the disassembles instrtructions for the corresponding binary file including details like addresses, \
-opcodes, operands, mnemonics and more. THis information can be used to analyze and understand the behavior of the compiled code in each \
-binary file."
+USG = "This module returns a dictionary with oids as keys and sub-dictionaries as \
+values. Each sub-dictionary represents the disassembled instructions for the corresponding binary file including details like addresses, \
+opcodes, operands, mnemonics, etc."
 
 import logging
 import ctypes

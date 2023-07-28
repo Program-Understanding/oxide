@@ -26,7 +26,7 @@ DESC = "Extracts chains of same byte extending beyond nine sequence"
 NAME = "padding"
 USG = " This module is used to analyze data sequences and extract chains of the same byte that extend beyond a specified number of \
 consecutive occurences. Users can run the module with a list of OID's to perform analysis on them. The module returns a dictionary \
-containing information about the extraced padding for each OID which include the starting byte index, the byte value and the count of \
+containing information about the extracted padding for each OID which include the starting byte index, the byte value and the count of \
 consecutive occurences."
 
 import logging

@@ -24,8 +24,7 @@ THE SOFTWARE.
 
 DESC = " This module will return hashes of each section"
 NAME = "section_hashes"
-USG = "This module collects a list of oid's or a single oid representing the binary files you want to get the SHA-1 hash values of. This module \
-then returns a dictionary containing the SHA-1 hash value for each section within each individual binary file. Each OID has a nested dictionary \
+USG = "This module returns a dictionary containing the SHA-1 hash value for each section within each individual binary file. Each OID has a nested dictionary \
 with section names as keys and their corresponding SHA-1 hash values"
 
 import logging

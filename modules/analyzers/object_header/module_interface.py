@@ -24,9 +24,7 @@ THE SOFTWARE.
 
 DESC = " This module retrieves the correct general header object from different file types."
 NAME = "object_header"
-USG = "This module can be used to retrieve the general header object from different binary files. It provides a list of OID's corresponding \
-to the binary files that you want to analyze,checks if a header object is found and performs any desired analysis on the header such as \
-extracting information from the header structure"
+USG = "REWRITE ME"
 
 import logging
 

@@ -24,8 +24,7 @@ THE SOFTWARE.
 
 DESC = " This module determines if a PE file is packed or not. Experimentally usable for ELF/MACHO."
 NAME = "packer_detect"
-USG = "This module takes a list of OID'S and analyzes each binary file by retrieving the corresponding binary files metadata and data. \
-The module checks if each binary file is likely packed or not and returns the analysis as a dictionary of OID to result pairs indicating \
+USG = "The module checks if each binary file is likely packed or not and returns the analysis as a dictionary of OID to result pairs indicating \
 some information about the binary file including if it is likely packed or not, the number of bad sections, the number of executable \
 sections, the number of imports, the number of known bad section names, the number of  non-standard section names, the number of sections \
 with read, write and execute permissions and the number of standard section names all found in the binary."

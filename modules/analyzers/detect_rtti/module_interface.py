@@ -24,9 +24,8 @@ THE SOFTWARE.
 
 DESC = " This module will detect the use of RTTI from GCC (existance of .data.rel.ro)"
 NAME = "detect_rtti"
-USG = "THe detect_rtti module collects a collection with a list of oid's or a single oid. After the module is ran against the sample files \
-that you want to run the analysis on, the module returns a dictionary with the oid as keys and boolean values as the results. Each boolean \
-value indicates weather or not the correspondong binary file contains RTTI as True or False"
+USG = "This module returns a dictionary with the oids as keys and a boolean value indicating \
+whether or not the correspondong file contains RTTI."
 
 import logging
 

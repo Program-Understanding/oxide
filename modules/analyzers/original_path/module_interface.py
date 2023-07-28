@@ -1,6 +1,6 @@
 DESC = "Returns the original path of imported binary"
 NAME = "original_path"
-USG = "This module collects a list of oid's that represent a binary file, it returns a dictionary with original file path of each file \
+USG = "This module returns a dictionary with original file path of each file \
 within the collection before it was imported into oxide"
 
 import logging
