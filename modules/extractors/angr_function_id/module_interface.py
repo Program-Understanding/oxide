@@ -25,6 +25,8 @@ THE SOFTWARE.
 DESC = " This module uses angr to identify static linked functions using angr divination."
 NAME = "angr_function_id"
 CATEGORY = "divination"
+USG = "This module returns a dictionary with a list of the binary files within the collection and their respective metadata timestamps \
+along with their static link functions if any "
 
 import logging
 
@@ -41,7 +43,7 @@ opts_doc = {}
 
 def documentation() -> Dict[str, Any]:
     return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
-            "atomic": True, "category": CATEGORY}
+            "atomic": True, "category": CATEGORY, "usage": USG}
 
 
 def process(oid: str, opts: dict) -> bool:

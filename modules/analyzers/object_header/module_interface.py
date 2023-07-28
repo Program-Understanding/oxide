@@ -24,7 +24,8 @@ THE SOFTWARE.
 
 DESC = " This module retrieves the correct general header object from different file types."
 NAME = "object_header"
-USG = "REWRITE ME"
+USG = "This module returns a dictionary that contains information extracted from the headers of each binary file within a collection which \
+include python objects that contain detailed information about the headers and their memory addresses"
 
 import logging
 

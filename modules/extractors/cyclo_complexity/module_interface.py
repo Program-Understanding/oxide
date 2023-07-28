@@ -24,6 +24,8 @@ THE SOFTWARE.
 
 DESC = " Compute cyclomatic complexity for functions within executable using Ghidra"
 NAME = "cyclo_complexity"
+USG = "This module returns a dictionary with cyclomatic complexity for functions within each binary file. It shows the complexity levels \
+and complexity scores that both measure the complexity of each function."
 
 import logging
 import api
@@ -35,7 +37,7 @@ logger.debug("init")
 opts_doc = {}
 
 def documentation():
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
 
 
 def process(oid, opts):
