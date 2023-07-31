@@ -24,8 +24,8 @@ THE SOFTWARE.
 
 DESC = " This module uses the elf_parse module to extract features from the ELF header."
 NAME = "elf"
-USG = "This module takes an oid or a collection of oids and returns a disctionary with information that describes the file if it is an \
-ELF file using elf_parse"
+USG = "This module takes an oid or a collection of oids that represent a file and returns a disctionary with information that describes \
+each file if it is an ELF file using elf_parse"
 
 import logging
 
