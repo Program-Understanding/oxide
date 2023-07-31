@@ -24,6 +24,9 @@ THE SOFTWARE.
 
 DESC = " This module retrieves the disassembly starting at every byte in an object file."
 NAME = "exhaust_disasm"
+USG = "This module takes a collection of binary files and uses the specified disasembler option, either capstone or xed, and returns a \
+dictionary with the disassembled instructions where each byte's address is used as the object key and the value contains information about \
+each instruction at that address"
 
 import logging
 import ctypes
@@ -58,7 +61,7 @@ opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra"},
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
 
 
 def process(oid: str, opts: dict):
