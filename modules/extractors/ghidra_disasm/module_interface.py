@@ -25,6 +25,9 @@ THE SOFTWARE.
 DESC = " This module uses ghidra to extract a disassembly."
 NAME = "ghidra_disasm"
 CATEGORY = "disassembler"
+USG = "This module takes a collection of binary files and analyzes them using Ghidra. It returns a dictionary with information about the disassembled \
+instructions in the binary. The information in the dictionary includes the addresses of the instructions as the dictionary keys and the destinations \
+as dests and members which contains the individual instructions at the current address as the values"
 
 import logging
 import os
@@ -45,7 +48,7 @@ opts_doc = {"version": {"type": int, "mangle": True, "default": -1},
 
 def documentation() -> Dict[str, Any]:
     return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
-            "atomic": False, "category": CATEGORY}
+            "atomic": False, "category": CATEGORY, "Usage": USG}
 
 
 def process(oid: str, opts: dict) -> bool:

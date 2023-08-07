@@ -25,7 +25,7 @@ THE SOFTWARE.
 DESC = "Identify ascii-strings in file"
 NAME = "strings"
 USG = "This module returns a dictionary with a list of the ASCII strings found in each binary file withing the collection along with their respective \
-    offsets in the file keys and the extracted string as values. "
+offsets in the file keys and the extracted string as values. "
 
 # imports
 import logging

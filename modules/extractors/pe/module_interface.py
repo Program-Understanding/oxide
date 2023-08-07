@@ -24,6 +24,8 @@ THE SOFTWARE.
 
 DESC = " This module builds a general header object from the pe_parse module."
 NAME = "pe"
+USG = "This module returns a dicitionary with portable executable header information extracted from each binary file. It includes information \
+such as its sections, version number, entry points, size of headers and more"
 
 import logging
 from typing import Dict, Any

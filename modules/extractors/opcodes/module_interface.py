@@ -24,6 +24,8 @@ THE SOFTWARE.
 
 DESC = " Extract opcodes from a disassembly"
 NAME = "opcodes"
+USG = "This module extracts and returns the operation codes(opcodes) from a binary file if any otherwise returns the associated oid for the binary and \
+a string that says none "
 
 import logging
 import api
@@ -34,7 +36,7 @@ opts_doc = {}
 
 
 def documentation():
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
 
 
 def process(oid, opts):

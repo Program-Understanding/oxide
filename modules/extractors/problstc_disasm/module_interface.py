@@ -25,6 +25,7 @@ THE SOFTWARE.
 DESC = " This module computes probablistic disassembly based on module:exhaust_disasm."
 NAME = "problstc_disasm"
 CATEGORY = "disassembler"
+USG = "This module takes a collection of binary files and analyzes them using the exhaust_disasm module. It returns "
 
 import logging
 
@@ -41,7 +42,7 @@ opts_doc = {}
 
 def documentation() -> Dict[str, Any]:
     return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
-            "atomic": True, "category": CATEGORY}
+            "atomic": True, "category": CATEGORY, "usage": USG}
 
 
 def process(oid: str, opts: dict) -> bool:

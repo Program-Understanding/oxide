@@ -25,6 +25,9 @@ THE SOFTWARE.
 DESC = " This module uses angr to extract a disassembly."
 NAME = "fst_angr_disasm"
 CATEGORY = "disassembler"
+USG = "This module takes a collection of binary files and calls the extract function and performs disassembly using angr. It returns a dictionary \
+with information about each basic block within the binary including a list of destination block offsets that are reachable from each block \
+and a list of instructions and their addresses."
 
 import logging
 
@@ -39,7 +42,7 @@ opts_doc = {}
 
 def documentation():
     return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
-            "atomic": True, "category": CATEGORY}
+            "atomic": True, "category": CATEGORY, "usage": USG}
 
 
 def process(oid: str, opts: dict) -> bool:

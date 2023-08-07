@@ -25,9 +25,11 @@ THE SOFTWARE.
 DESC = " This module uses objdump to extract a disassembly."
 NAME = "objdump"
 CATEGORY = "disassembler"
+USG = "This module takes a collection of binary files and analyzes them. It returns a dictionary containing information about the disassembled \
+instructions in the binary It also returns metadata about the binary itself that include version information, timestamps, and information \
+about original blocks and canonical blocks."
 
 import logging
-
 from core import api
 from objdump_extract import extract
 
@@ -39,7 +41,7 @@ opts_doc = {}
 
 def documentation():
     return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
-            "atomic": True, "category": CATEGORY}
+            "atomic": True, "category": CATEGORY, "usage": USG}
 
 
 def process(oid: str, opts: dict) -> bool:

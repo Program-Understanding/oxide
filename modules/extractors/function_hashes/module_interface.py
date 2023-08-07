@@ -24,6 +24,9 @@ THE SOFTWARE.
 
 DESC = " Extract fuzzy hashes of each function from a disassembly"
 NAME = "function_hashes"
+USG = "This module takes a collection of binary files and analyzes them. It processes each binary and extracts fuzzy hashes and lengths of \
+the individual functions found in the binaries. The module then returns a dictionary containing the function names as keys and their \
+corresponding fuzzy hashes and lengths as values."
 
 import logging
 import hashlib
@@ -34,7 +37,7 @@ logger.debug("init")
 opts_doc = {}
 
 def documentation():
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
 
 def process(oid, opts):
     f_dict = {}

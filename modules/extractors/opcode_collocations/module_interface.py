@@ -24,6 +24,9 @@ THE SOFTWARE.
 
 DESC = " Find collocations in the opcodes list"
 NAME = "opcode_collocations"
+USG = "This module returns a dictionary containing information about the collocations in the opcode listfound in each binary within the \
+collection. Each collocation is represented as a pair of opcodes and their corresponding score, which indicates the significance of the \
+collocation "
 
 import logging
 
@@ -39,7 +42,7 @@ opts_doc = {"ngrams": {"type": int, "mangle": True, "default": 2},
 
 
 def documentation():
-    return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False, "atomic": True, "usage": }
 
 
 def process(oid, opts):

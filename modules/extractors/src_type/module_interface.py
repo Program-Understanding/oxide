@@ -24,6 +24,8 @@ THE SOFTWARE.
 
 DESC = " This module attempts to determine the type of a file."
 NAME = "src_type"
+USG = "This analyzes a file and tells the user what type of file it is. module returns a dictionary with two key-value pairs source and \
+type"
 
 import logging
 from core import api
@@ -36,7 +38,7 @@ opts_doc = {}
 
 
 def documentation() -> None:
-    return {"description": DESC, "opts_doc": opts_doc, "set": True, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": True, "atomic": True, "usage": USG}
 
 
 def process(oid: str, opts: dict = {}) -> bool:

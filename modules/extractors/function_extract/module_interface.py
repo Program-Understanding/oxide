@@ -1,5 +1,7 @@
 DESC = " Extract functions from a disassembly (uses ghidra_disasm)"
 NAME = "function_extract"
+USG = " This module takes a collection of binary files and extracts information about its functions, basic blocks and instructions from the \
+binary using ghidra_disasm. It returns a dictionary with the function name as a key and infomation about the function as its key-value pair"
 
 import logging
 import hashlib
@@ -10,7 +12,7 @@ logger.debug("init")
 opts_doc = {}
 
 def documentation():
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
 
 def process(oid, opts):
     f_dict = {}
