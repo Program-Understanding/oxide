@@ -30,6 +30,7 @@ import json
 import logging
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 import re
 
@@ -784,6 +785,9 @@ def _inst_comparison(
 
 
     if "graph" in opts:
+        bw = False
+        if "bw" in opts:
+            bw = True
         if "disasm_min" not in tool_list:
             print("disasm_min not found in tool_list")
             return
@@ -864,7 +868,7 @@ def _inst_comparison(
         output_file = os.path.join(out_dir, fname, "compare_insns_graph.png")
         if not os.path.exists(os.path.join(out_dir, fname)):
             os.makedirs(os.path.join(out_dir, fname))
-        _insns_plot_data(summary, output_file, True)
+        _insns_plot_data(summary, output_file, True, bw)
 
 
 def _block_comparison(sample, out_maps, function_mapping, tool_list, opts, pipe):
@@ -1177,18 +1181,32 @@ def _insns_draw_line(ax, y: int, points: List[Tuple[int, int]], color: str):
         ax.hlines(y, start, end, color=color, linewidth=15)
 
 
+from matplotlib.lines import Line2D
+import matplotlib.patches as mpatches
+from typing import Dict, List, Tuple
+import matplotlib.pyplot as plt
+
 def _insns_plot_data(
     parsed_data: Dict[str, Dict[str, List[Tuple[int, int]]]],
     output_file: str,
     compact: bool,
+    bw: bool = True,
 ):
     """
     Plots the parsed instruction data.
     """
     methods = list(parsed_data.keys())
     overall_min, overall_max = _insns_get_overall_min_max(parsed_data)
+    
     colors = {'Correct': 'green', 'False Positive': 'red', 'False Negative': 'orange'}
-    custom_lines = [Line2D([0], [0], color=colors[label], lw=4) for label in colors.keys()]
+    patterns = {'Correct': '.....', 'False Positive': '+++', 'False Negative': '---'}
+    blank_color = 'gray'
+    
+    if bw:
+        custom_elements = [mpatches.Patch(facecolor='white', hatch=patterns[label]) for label in patterns.keys()]
+        blank_color = 'white'
+    else:
+        custom_elements = [Line2D([0], [0], color=colors[label], lw=4) for label in colors.keys()]
 
     if compact:
         fig, ax = plt.subplots(1, 1, figsize=(10, 5))
@@ -1198,22 +1216,29 @@ def _insns_plot_data(
         ax.set_xlim(overall_min, overall_max)
         ax.grid(True)
         for i, method in enumerate(methods[::-1], start=1):
-            ax.barh(i, overall_max - overall_min, left=overall_min, color='gray')
-            for classification in colors.keys():
+            ax.barh(i, overall_max - overall_min, left=overall_min, color=blank_color)
+            for classification in (patterns if bw else colors).keys():
                 for start, end in parsed_data[method][classification]:
-                    ax.barh(i, end-start, left=start, color=colors[classification])
-        ax.legend(custom_lines, colors.keys())
+                    if bw:
+                        ax.barh(i, end-start, left=start, facecolor='white', hatch=patterns[classification])
+                    else:
+                        ax.barh(i, end-start, left=start, color=colors[classification])
+        ax.legend(custom_elements, patterns.keys() if bw else colors.keys())
     else:
         fig, axs = plt.subplots(len(methods), 1, figsize=(10, 2 * len(methods)))
         for ax, method in zip(axs, methods):
-            ax.hlines(1, overall_min, overall_max, color='gray', linewidth=15)
-            for classification in colors.keys():
-                _insns_draw_line(ax, 1, parsed_data[method][classification], colors[classification])
+            ax.hlines(1, overall_min, overall_max, color=blank_color, linewidth=15)
+            for classification in (patterns if bw else colors).keys():
+                if bw:
+                    # Assuming _insns_draw_line can handle hatching; modify if not.
+                    _insns_draw_line(ax, 1, parsed_data[method][classification], facecolor='white', hatch=patterns[classification])
+                else:
+                    _insns_draw_line(ax, 1, parsed_data[method][classification], colors[classification])
             ax.set_title(method)
             ax.set_yticks([])
             ax.set_xlim(overall_min, overall_max)
             ax.grid(True)
-            ax.legend(custom_lines, colors.keys())
+            ax.legend(custom_elements, patterns.keys() if bw else colors.keys())
 
     plt.tight_layout()
     plt.savefig(output_file)
