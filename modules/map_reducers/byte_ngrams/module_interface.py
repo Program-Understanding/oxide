@@ -24,6 +24,9 @@ THE SOFTWARE.
 
 DESC = " Produce byte ngrams from a binary file"
 NAME = "byte_ngrams"
+USG = "This module returns a dictionary containing the produced byte n-grams from a binary file as a frequency distribution. The dictionary \
+it returns has a string that represents an n-gram sequence as the key and the byte values of the ngram as the key value pair of the \
+dictionary."
 
 import logging
 from collections import defaultdict
@@ -39,7 +42,7 @@ opts_doc = {"n": {"type": int, "mangle": True, "default": 3}}
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
 
 
 def mapper(oid: str, opts: dict, jobid: str = False) -> Optional[str]:

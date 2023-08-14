@@ -24,6 +24,9 @@ THE SOFTWARE.
 
 desc = " Calculate a histogram of opcodes"
 name = "opcode_histogram"
+USG = "This module returns a dictionary containing a calculated histogram of opcodes extracted from binary files. In the dictionary, each \
+opcode serves as a key, and its corresponding value represents the frequency count of that opcode within the analyzed binary file."
+
 
 from collections import defaultdict
 import logging
@@ -35,7 +38,7 @@ logger.debug("init")
 opts_doc = {}
 
 def documentation():
-    return {"description":desc, "opts_doc":opts_doc, "set":False, "atomic":True }
+    return {"description":desc, "opts_doc":opts_doc, "set":False, "atomic":True, "usage": USG }
 
 def mapper(oid, opts, jobid=False):
     logger.debug("mapper()")

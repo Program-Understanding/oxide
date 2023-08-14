@@ -24,6 +24,9 @@ THE SOFTWARE.
 
 desc = " Produce opcode ngrams"
 NAME = "opcode_ngrams"
+USG = "This module returns a dictionary containing the produced opcode n-grams from a binary file. The dictionary it returns has a string \
+that represents an n-gram sequence of opcodes as the key, and the frequency counts of the n-grams serve as the corresponding values in the \
+dictionary."
 
 import logging
 import api

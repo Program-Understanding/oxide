@@ -24,6 +24,8 @@ THE SOFTWARE.
 
 DESC = " This module produces a histogram of the bytes in a file."
 NAME = "byte_histogram"
+USG = "This module returns a histogram that shows the frequency distribution of byte values across all the binary files in the collection \
+It represents this information as a dictionary with the byte value being the key and the frequency count being the key value"
 
 import logging
 from collections import defaultdict
@@ -39,7 +41,7 @@ opts_doc = {}
 
 
 def documentation() -> str:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
 
 
 def mapper(oid: str, opts: dict, jobid=False) -> Optional[str]:
