@@ -27,7 +27,6 @@ NAME = "scoped_features"
 
 # imports
 import logging
-
 from typing import Dict, Any, List
 
 from core import api
@@ -55,11 +54,12 @@ def extract_features(oid, object_header, functions, basic_blocks, instructions):
         'arch': object_header.machine,
         'format': object_header.type
     }
+    if global_features['format'] == 'ELF': global_features['os'] = 'linux'
     
     # File_Features
-    # Need modules: export
-    file_features = {}
-
+    file_features = {
+    }
+    
     # Temp implementation. Need to pull from inst.
     file_features['string'] = list(api.retrieve("strings", oid).get(oid).items())
     file_features['export'] = []
@@ -70,49 +70,67 @@ def extract_features(oid, object_header, functions, basic_blocks, instructions):
     file_features['function-name'] = [functions[f].get('name') for f in functions]
     file_features['sections'] = object_header.section_names
 
-    # Function Features - This is currently boilerplate, subject to change.
-    # Need modules: loop, recursive_call, calls_from, calls_to
-    function_features = {}
-    for function_offset, function_data in functions.items():
-        function_features[function_offset] = {
-            'loop': None,
-            'recursive_call': None,
-            'calls_from':  None,
-            'calls_to': None
+    # Function Features - {Function Address: Feature,}
+    function_features = {
+            'loop': {},
+            'recursive_call': {},
+            'calls_from': {},
+            'calls_to': {}
             }
 
 
-    # Basic Block Features - Most likely will pull addresses from functions.
-    basic_block_features = {}
-    for bb_offset, bb_data in basic_blocks.items():
-        basic_block_features[bb_offset] = {
-            'tight_loop': None,
-            'stack_string': None,
+    # Basic Block Features - {Block Address: Feature,}
+    basic_block_features = {
+            'tight_loop': {},
+            'stack_string': {},
             }
         
 
-    # Instruction Feature - Most likely will pull this information from the blocks.
-    instruction_features = {}
-    for inst_offset, inst_data in instructions.items():
-        instruction_features[inst_offset] = {
-            'namespace': None,
-            'class': None,
-            'api': None,
-            'property': None,
-            'number': None,
-            'string': None,
-            'bytes': None,
-            'offset': None,
-            'mnemonic': None,
-            'operand': None,
+    # Instruction Features - {Instruction Address: Feature,}
+    instruction_features = {
+            'namespace': {},
+            'class': {},
+            'api': api.retrieve("function_calls", oid),
+            'property': {}, 
+            'number': {},
+            'string': {},
+            'bytes': {},
+            'offset': {},
+            'mnemonic': api.retrieve("mnemonics_operands", oid, {'option': 'mnemonic'}),
+            'operand': api.retrieve("mnemonics_operands", oid, {'option': 'operand'}),
             }
-        
-    extracted_features = {
-        'file_features': file_features, 
-        'function_features': function_features, 
-        'basic_block_features': basic_block_features, 
-        'instruction_features': instruction_features}
-    return extracted_features
+            
+    formatted_features = {}
+    formatted_features["global_features"] = global_features
+    formatted_features["file_features"] = file_features
+    formatted_features["functions"] = {}
+    for function_addr, function_data in functions.items():
+        formatted_features['functions'][function_addr] = {
+            'function_data': function_data,
+            'function_features': {key: function_features[key].get(function_addr, None) for key in function_features.keys()}
+        } 
+        block_list = []
+        for b in function_data['blocks']:
+            if b in basic_blocks:
+                block_list.append(b)
+            elif b-4 in basic_blocks:
+                block_list.append(b-4)
+
+        for block_address in block_list:
+            # This check shouldnt be needed but there a few issues with mapping the blocks.
+            # if block_address in basic_blocks:
+            formatted_features['functions'][function_addr]['blocks'] = {}
+            formatted_features['functions'][function_addr]['blocks'][block_address] = {
+                'block_data': basic_blocks[block_address],
+                'block_features': {key: basic_block_features[key].get(block_address, None) for key in basic_block_features.keys()}
+            }
+            formatted_features['functions'][function_addr]['blocks'][block_address]['instructions'] = {}
+            for instruction_address, instruction_data in formatted_features['functions'][function_addr]['blocks'][block_address]['block_data']['members']:
+                formatted_features['functions'][function_addr]['blocks'][block_address]['instructions'][instruction_address] = {
+                    'instruction_data': instruction_data,
+                    'instruction_features': {key: instruction_features[key].get(instruction_address, None) for key in instruction_features.keys()}
+                }
+    return formatted_features
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     logger.debug("process()")
@@ -123,7 +141,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         if not file_meta:
             logger.debug("Not able to process (%s)", oid)
             results[oid] = None
-
         object_header= api.get_field("object_header", oid, oid)
         functions = api.get_field("ghidra_disasm", oid, "functions")
         basic_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
