@@ -140,6 +140,7 @@ def parse_api(value: str, scoped_features, global_features, scope, *args):
     if scope == 'function':
         for block_addr in scoped_features['blocks']:
             for instruction_addr in scoped_features['blocks'][block_addr]['instructions']:
+               api_value = scoped_features['blocks'][block_addr]['instructions'][instruction_addr]['instruction_features']['api']
                if scoped_features['blocks'][block_addr]['instructions'][instruction_addr]['instruction_features']['api'] == None:
                 continue
                elif value == scoped_features['blocks'][block_addr]['instructions'][instruction_addr]['instruction_features']['api']['func_name']: 
@@ -168,33 +169,33 @@ def parse_number(value: str | int | float, matching_features: list, global_featu
     return False
 
 def parse_characteristic(value: str, matching_features: list, global_features, scope, *args):
-    for element in matching_features.characteristic:
-        if value == element:
-            return True
+    # for element in matching_features.characteristic:
+    #     if value == element:
+    #         return True
     return False
 
 def parse_mnemonic(value: str, matching_features: list, global_features, scope, *args):
-    for element in matching_features.mnemonic:
-        if value == element:
-            return True
+    # for element in matching_features.mnemonic:
+    #     if value == element:
+    #         return True
     return False
 
 def parse_property_write(value: str, matching_features: list, global_features, scope, *args):
-    for element in matching_features.property_write:
-        if value == element:
-            return True
+    # for element in matching_features.property_write:
+    #     if value == element:
+    #         return True
     return False
 
 def parse_property_read(value: str, matching_features: list, global_features, scope, *args):
-    for element in matching_features.property_read:
-        if value == element:
-            return True
+    # for element in matching_features.property_read:
+    #     if value == element:
+    #         return True
     return False
 
 def parse_section(value: str, matching_features: list, global_features, scope, *args):
-    for element in matching_features.section:
-        if value == element:
-            return True
+    # for element in matching_features.section:
+    #     if value == element:
+    #         return True
     return False
 
 
@@ -255,11 +256,21 @@ def rules_engine(scoped_features, rule_path):
         pass
         # output += parse_rule(loaded_rule['rule']['features'], scoped_features, scope)
     elif scope == 'function':
+        
         for function_address, function_data in scoped_features['functions'].items():
+            output_bool = False
             if function_data['function_data']['name'] == 'main':
                 pass
             if 'blocks' in function_data:
-                output += (function_address, parse_rule(loaded_rule['rule']['features'], function_data, global_features, scope))
+                output_bool = parse_rule(loaded_rule['rule']['features'], function_data, global_features, scope)
+                if output_bool:
+                    output += [
+                        loaded_rule['rule']['meta'],
+                        function_address,
+                        function_data['function_data']['name'],
+                        scope,
+                        global_features
+                    ]
     elif scope == 'basic block':
         pass
         # for function in scoped_features['functions']:
@@ -267,20 +278,7 @@ def rules_engine(scoped_features, rule_path):
         #         for basic_block_address, basic_block_data in scoped_features['functions'][function]['blocks'].items():
         #             # print(basic_block_address)
         #             output += (basic_block_address, parse_rule(loaded_rule['rule']['features'], basic_block_data, scope))
-    if output == True:
-        print('\n')
-        print('found output')
-        # file_name = matching_features.name
-        # oid = matching_features.oid
-        # offset = matching_features.offset
-        # name = loaded_rule['rule']['meta']['name']
-        # if 'att&ck' in loaded_rule['rule']['meta']:
-        #     vector = loaded_rule['rule']['meta']['att&ck'][0].replace("::", "\n\t- ")
-        # elif 'mbc' in loaded_rule['rule']['meta']:
-        #     vector = loaded_rule['rule']['meta']['mbc'][0].replace("::", "\n\t- ")
-        # else:
-        #     vector = 'No descriptor'
-        # print("File Name: {}\nOID: {}\nStarting Offset: {}\nRule Name: {}\nAttack Vector: {}\n".format(file_name, oid,offset, name, vector))
+    return output
 
 def match_capa_rules(oid):
     scoped_features = api.retrieve('scoped_features', oid, oid)[oid]
@@ -291,12 +289,28 @@ def match_capa_rules(oid):
         if rule == 'datasets/capa_rules/collection/get-current-user-on-linux.yml':
             pass
         if rule.endswith('.yml'):   
-            matched_rules.append(rules_engine(scoped_features, rule))
+            matched_rule = rules_engine(scoped_features, rule)
+            if matched_rule:
+                matched_rules.append(matched_rule)
     return matched_rules
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     logger.debug("process()")
+    matched_rules = []
     for oid in oid_list:
-        match_capa_rules(oid)
+        matched_rules += match_capa_rules(oid)
+    results = {}
+    for rule in matched_rules:
+        results[rule[0]['name']] = {
+            'namespace': rule[0]['namespace'],
+            'attack_tactic': rule[0]['att&ck'][0].split("::")[0],
+            'attack_technique': rule[0]['att&ck'][0].split("::")[1],
+            'scope': rule[3],
+            "address_found": rule[1],
+            "function_found": rule[2],
+            "os": rule[4]["os"],
+            'arch': rule[4]['arch'],
+            'format': rule[4]['format']
 
+        }
     return results
