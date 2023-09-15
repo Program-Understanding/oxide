@@ -125,6 +125,15 @@ def extract_features(oid, object_header, functions, basic_blocks, instructions):
                 'block_features': {key: basic_block_features[key].get(block_address, None) for key in basic_block_features.keys()}
             }
             formatted_features['functions'][function_addr]['blocks'][block_address]['instructions'] = {}
+            '''
+            if formatted_features['functions'][function_addr]['blocks'][block_address]['block_data']['dests'] != None: #Checking to see if there is any dests
+                for member in formatted_features['functions'][function_addr]['blocks'][block_address]['block_data']['members']: #We want to see if there is a call within the members
+                    if member[1][0:4] == "call":
+                        formatted_features['functions'][function_addr]['function_features']['calls_to'] = {} #Set the calls_to to a dict
+                        for dest in formatted_features['functions'][function_addr]['blocks'][block_address]['block_data']['dests']: #For each dest in the block add to the calls_to
+                            formatted_features['functions'][function_addr]['function_features']['calls_to'][dest] = member[1][6:] #Will be the vaddr or some variables for the call
+                        break'''
+            
             for instruction_address, instruction_data in formatted_features['functions'][function_addr]['blocks'][block_address]['block_data']['members']:
                 formatted_features['functions'][function_addr]['blocks'][block_address]['instructions'][instruction_address] = {
                     'instruction_data': instruction_data,
