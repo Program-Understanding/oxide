@@ -36,6 +36,7 @@ import tempfile
 import socket
 import string
 import logging
+from modules.extractors.elf.interpret_elf import ElfRepr
 from collections import defaultdict
 
 from typing import List, Dict, Optional, Any, Union, Iterable
@@ -506,6 +507,41 @@ def type_filter(args: List[str], opts: dict) -> List[str]:
                 oids.append(oid)
     return oids
 
+def type_filter1(args: List[str], opts: dict) -> List[str]:
+    """
+        Use without args to find all files with that type, use with args to filter
+        Syntax: type_filter %<oid> --type=[ PE | ELF | DEBUG | PDF | etc...]
+
+        Note: DEBUG cannot be used for type, as DEBUG is processed as logging level
+    """
+    if not "type" in opts:
+        raise ShellSyntaxError("type_filter requires a --type=[ PE | ELF | DBG | PDF | RTTI | etc...] option")
+
+    categorized_files = {
+        "linker": [],
+        "stripped": [],
+    }
+
+    valid, invalid = api.valid_oids(args)
+    valid = api.expand_oids(valid)
+
+    if not args:
+        valid = api.retrieve_all_keys("files")
+
+    for oid in valid:
+        data_type = api.get_field("src_type", oid, "type")
+        if data_type:
+            if any(item.lower() == 'linker' for item in data_type):
+                elf_header = api.get_field("elf", oid, oid)
+                if elf_header:
+                    sections = elf_header.get("symbols", {})
+                    if any("symbols" in sections.keys()):
+                        categorized_files["linker"].append(oid)
+                    else:
+                        categorized_files["stripped"].append(oid) 
+    return categorized_files
+
+
 
 def key_filter(args: List[str], opts: dict) -> List[str]:
     """
@@ -558,7 +594,7 @@ def extension_filter(args, opts):
 
 exports = [random_sample, random_shuffle, top_n, count, expand, clean, file_io, membership, select,
            extract_field, export_file, intersection, cat, summarize, size_filter, name_filter,
-           byte_filter, type_filter, key_filter, extension_filter]
+           byte_filter, type_filter, key_filter, extension_filter, type_filter1]
 
 
 # ---------------------------- UTILS -------------------------------------------------------------
