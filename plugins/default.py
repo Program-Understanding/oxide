@@ -509,12 +509,12 @@ def type_filter(args: List[str], opts: dict) -> List[str]:
 
 def symbol_filter(args: List[str], opts: dict) -> List[str]:
     """
-        Use without args to find all files with that type, use with args to filter
-        Syntax: type_filter %<oid> --type=[ linker | stripped | dbg ]
+        Use without args to find all files with symbols and filter by symbol type: linker symbols, stripped, or debug
+        Syntax: symbol_filter %<oid> --type=[ linker | stripped | dbg ]
 
     """
     if not "type" in opts:
-        raise ShellSyntaxError("type_filter requires a --type=[ linker | stripped | dbg ] option")
+        raise ShellSyntaxError("symbol_filter requires a --type=[ linker | stripped | dbg ] option")
 
     categorized_files = {
         "linker": [],
