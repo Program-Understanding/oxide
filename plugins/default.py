@@ -507,7 +507,7 @@ def type_filter(args: List[str], opts: dict) -> List[str]:
                 oids.append(oid)
     return oids
 
-def type_filter1(args: List[str], opts: dict) -> List[str]:
+def symbol_filter(args: List[str], opts: dict) -> List[str]:
     """
         Use without args to find all files with that type, use with args to filter
         Syntax: type_filter %<oid> --type=[ PE | ELF | DEBUG | PDF | etc...]
@@ -520,6 +520,7 @@ def type_filter1(args: List[str], opts: dict) -> List[str]:
     categorized_files = {
         "linker": [],
         "stripped": [],
+        "dbg": []
     }
 
     valid, invalid = api.valid_oids(args)
@@ -530,16 +531,34 @@ def type_filter1(args: List[str], opts: dict) -> List[str]:
 
     for oid in valid:
         data_type = api.get_field("src_type", oid, "type")
-        if data_type:
-            if any(item.lower() == 'linker' for item in data_type):
-                elf_header = api.get_field("elf", oid, oid)
-                if elf_header:
-                    sections = elf_header.get("symbols", {})
-                    if any("symbols" in sections.keys()):
-                        categorized_files["linker"].append(oid)
-                    else:
-                        categorized_files["stripped"].append(oid) 
-    return categorized_files
+        if (data_type and (opts["type"].lower() == "linker") and
+             any(item.lower() == 'elf' for item in data_type)):
+                header = api.get_field("object_header", oid, oid)
+                sections = header.section_info
+                if sections:
+                    if any(string_table in sections.keys()
+                        for string_table in ['.strtab']):
+                            categorized_files["linker"].append(oid)
+        elif (data_type and (opts["type"].lower() == "stripped") and
+               any(item.lower() == 'elf' for item in data_type)):
+                    header = api.get_field("object_header", oid, oid)
+                    sections = header.section_info
+                    if sections:
+                        if not any(string_table in sections.keys()
+                            for string_table in ['.strtab']):
+                                categorized_files["stripped"].append(oid)
+                
+        elif (data_type and opts["type"].lower() == "dbg" and
+             any(item.lower() == 'elf' for item in data_type)):
+            header = api.get_field("object_header", oid, oid)
+            if header:
+                sections = header.section_info
+                if sections:
+                    if any(dwarf_name in sections.keys()
+                        for dwarf_name in ['.debug_info', '.zdebug_info']):
+                            categorized_files["dbg"].append(oid)
+    filtered_categorized_files = {category: categoryOid for category, categoryOid in categorized_files.items() if categoryOid}
+    return filtered_categorized_files
 
 
 
@@ -594,7 +613,7 @@ def extension_filter(args, opts):
 
 exports = [random_sample, random_shuffle, top_n, count, expand, clean, file_io, membership, select,
            extract_field, export_file, intersection, cat, summarize, size_filter, name_filter,
-           byte_filter, type_filter, key_filter, extension_filter, type_filter1]
+           byte_filter, type_filter, key_filter, extension_filter, symbol_filter]
 
 
 # ---------------------------- UTILS -------------------------------------------------------------
