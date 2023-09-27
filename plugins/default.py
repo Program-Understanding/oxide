@@ -510,12 +510,11 @@ def type_filter(args: List[str], opts: dict) -> List[str]:
 def symbol_filter(args: List[str], opts: dict) -> List[str]:
     """
         Use without args to find all files with that type, use with args to filter
-        Syntax: type_filter %<oid> --type=[ PE | ELF | DEBUG | PDF | etc...]
+        Syntax: type_filter %<oid> --type=[ linker | stripped | dbg ]
 
-        Note: DEBUG cannot be used for type, as DEBUG is processed as logging level
     """
     if not "type" in opts:
-        raise ShellSyntaxError("type_filter requires a --type=[ PE | ELF | DBG | PDF | RTTI | etc...] option")
+        raise ShellSyntaxError("type_filter requires a --type=[ linker | stripped | dbg ] option")
 
     categorized_files = {
         "linker": [],
