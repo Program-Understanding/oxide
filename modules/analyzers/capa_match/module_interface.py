@@ -140,18 +140,19 @@ def parse_api(value: str, scoped_features, global_features, scope, *args):
     if scope == 'function':
         for block_addr in scoped_features['blocks']:
             for instruction_addr in scoped_features['blocks'][block_addr]['instructions']:
-               api_value = scoped_features['blocks'][block_addr]['instructions'][instruction_addr]['instruction_features']['api']
                if scoped_features['blocks'][block_addr]['instructions'][instruction_addr]['instruction_features']['api'] == None:
                 continue
                elif value == scoped_features['blocks'][block_addr]['instructions'][instruction_addr]['instruction_features']['api']['func_name']: 
                    return True
                
     elif scope == 'basic block':
-        matching_features = scoped_features['instructions']
-        for instruction in matching_features:
-            if value == matching_features[instruction]['instruction_features']['api']:
-                return True
+        for instruction_addr in scoped_features['instructions']:
+            if scoped_features['instructions'][instruction_addr]['instruction_features']['api'] == None:
+                continue
+            elif value == scoped_features['instructions'][instruction_addr]['instruction_features']['api']['func_name']: 
+                   return True
     return False
+
 
 def parse_os(value: str, matching_features: list, global_features, scope, *args):
     if value == global_features['os']:
@@ -256,7 +257,6 @@ def rules_engine(scoped_features, rule_path):
         pass
         # output += parse_rule(loaded_rule['rule']['features'], scoped_features, scope)
     elif scope == 'function':
-        
         for function_address, function_data in scoped_features['functions'].items():
             output_bool = False
             if function_data['function_data']['name'] == 'main':
@@ -272,12 +272,19 @@ def rules_engine(scoped_features, rule_path):
                         global_features
                     ]
     elif scope == 'basic block':
-        pass
-        # for function in scoped_features['functions']:
-        #     if 'blocks' in scoped_features['functions'][function]:
-        #         for basic_block_address, basic_block_data in scoped_features['functions'][function]['blocks'].items():
-        #             # print(basic_block_address)
-        #             output += (basic_block_address, parse_rule(loaded_rule['rule']['features'], basic_block_data, scope))
+        for function_address, function_data in scoped_features['functions'].items():
+            output_bool = False
+            if 'blocks' in function_data:
+                for block_address, block_data in function_data['blocks'].items():
+                    output_bool = parse_rule(loaded_rule['rule']['features'], block_data, global_features, scope)
+                    if output_bool:
+                        output += [
+                            loaded_rule['rule']['meta'],
+                            function_address,
+                            function_data['function_data']['name'],
+                            scope,
+                            global_features
+                        ]
     return output
 
 def match_capa_rules(oid):
@@ -286,8 +293,6 @@ def match_capa_rules(oid):
     matched_rules = []
     rules_list = [os.path.join(dirpath,f) for (dirpath, dirnames, filenames) in os.walk(rule_directory) for f in filenames]
     for rule in rules_list:
-        if rule == 'datasets/capa_rules/collection/get-current-user-on-linux.yml':
-            pass
         if rule.endswith('.yml'):   
             matched_rule = rules_engine(scoped_features, rule)
             if matched_rule:
@@ -301,16 +306,28 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         matched_rules += match_capa_rules(oid)
     results = {}
     for rule in matched_rules:
-        results[rule[0]['name']] = {
-            'namespace': rule[0]['namespace'],
-            'attack_tactic': rule[0]['att&ck'][0].split("::")[0],
-            'attack_technique': rule[0]['att&ck'][0].split("::")[1],
-            'scope': rule[3],
-            "address_found": rule[1],
-            "function_found": rule[2],
-            "os": rule[4]["os"],
-            'arch': rule[4]['arch'],
-            'format': rule[4]['format']
-
-        }
+        if 'att&ck' in rule[0]:
+            results[rule[0]['name']] = {
+                # 'namespace': rule[0]['namespace'],
+                'attack_tactic': rule[0]['att&ck'][0].split("::")[0],
+                'attack_technique': rule[0]['att&ck'][0].split("::")[1],
+                'scope': rule[3],
+                "address_found": rule[1],
+                "function_found": rule[2],
+                "os": rule[4]["os"],
+                'arch': rule[4]['arch'],
+                'format': rule[4]['format']
+            }
+        else: 
+            results[rule[0]['name']] = {
+                # 'namespace': rule[0]['namespace'],
+                'attack_tactic': "Unknown",
+                'attack_technique': "Unknown",
+                'scope': rule[3],
+                "address_found": rule[1],
+                "function_found": rule[2],
+                "os": rule[4]["os"],
+                'arch': rule[4]['arch'],
+                'format': rule[4]['format']
+            }
     return results
