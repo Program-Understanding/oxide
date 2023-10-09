@@ -516,11 +516,13 @@ def symbol_filter(args: List[str], opts: dict) -> List[str]:
     if not "type" in opts:
         raise ShellSyntaxError("symbol_filter requires a --type=[ linker | stripped | dbg ] option")
 
-    categorized_files = {
-        "linker": [],
-        "stripped": [],
-        "dbg": []
-    }
+    #categorized_files = {
+        #"linker": [],
+        #"stripped": [],
+        #"dbg": []
+    #}
+
+    oids = []
 
     valid, invalid = api.valid_oids(args)
     valid = api.expand_oids(valid)
@@ -531,33 +533,37 @@ def symbol_filter(args: List[str], opts: dict) -> List[str]:
     for oid in valid:
         data_type = api.get_field("src_type", oid, "type")
         if (data_type and (opts["type"].lower() == "linker") and
-             any(item.lower() == 'elf' for item in data_type)):
+             (any(item.lower() in ['pe', 'elf', 'macho', 'osx universal binary'] for item in data_type))):
                 header = api.get_field("object_header", oid, oid)
                 sections = header.section_info
                 if sections:
                     if any(string_table in sections.keys()
                         for string_table in ['.strtab']):
-                            categorized_files["linker"].append(oid)
+                            #categorized_files["linker"].append(oid)
+                            oids.append(oid)
         elif (data_type and (opts["type"].lower() == "stripped") and
-               any(item.lower() == 'elf' for item in data_type)):
+               (any(item.lower() in ['pe', 'elf', 'macho', 'osx universal binary'] for item in data_type))):
                     header = api.get_field("object_header", oid, oid)
                     sections = header.section_info
                     if sections:
                         if not any(string_table in sections.keys()
                             for string_table in ['.strtab']):
-                                categorized_files["stripped"].append(oid)
+                                #categorized_files["stripped"].append(oid)
+                                oids.append(oid)
                 
         elif (data_type and opts["type"].lower() == "dbg" and
-             any(item.lower() == 'elf' for item in data_type)):
+             (any(item.lower() in ['pe', 'elf', 'macho', 'osx universal binary'] for item in data_type))):
             header = api.get_field("object_header", oid, oid)
             if header:
                 sections = header.section_info
                 if sections:
                     if any(dwarf_name in sections.keys()
                         for dwarf_name in ['.debug_info', '.zdebug_info']):
-                            categorized_files["dbg"].append(oid)
-    filtered_categorized_files = {category: categoryOid for category, categoryOid in categorized_files.items() if categoryOid}
-    return filtered_categorized_files
+                            #categorized_files["dbg"].append(oid)
+                            oids.append(oid)
+    #filtered_categorized_files = {category: categoryOid for category, categoryOid in categorized_files.items() if categoryOid}
+    #return filtered_categorized_files
+    return oids
 
 
 
