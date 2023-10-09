@@ -143,14 +143,25 @@ public class ghidra_extract extends GhidraScript {
             Parms += "]";
 
             String Blocks = "[";
-            DecompileResults res = ifc.decompileFunction(function, 0, null);
-            HighFunction hf = res.getHighFunction();
+            AddressSetView addresses = function.getBody();
+            CodeBlockIterator iterator = sbm.getCodeBlocksContaining(addresses, monitor);
             first = true;
-            for (PcodeBlockBasic var : hf.getBasicBlocks()){
-                if (first == false) { Blocks += ", "; }
+            while (iterator.hasNext()) {
+                if (!first) {
+                    Blocks += ", ";
+                }
                 first = false;
-                Blocks += Long.parseLong(var.getStart()+ "", 16);
+                CodeBlock in = iterator.next();
+                Blocks += Long.parseLong(in.getFirstStartAddress() +"", 16);
             }
+            // DecompileResults res = ifc.decompileFunction(function, 0, null);
+            // HighFunction hf = res.getHighFunction();
+            // first = true;
+            // for (PcodeBlockBasic var : hf.getBasicBlocks()){
+            //     if (first == false) { Blocks += ", "; }
+            //     first = false;
+            //     Blocks += Long.parseLong(var.getStart()+ "", 16);
+            // }
             Blocks += "]";
 
             print("\nRESULTF: {\"name\":\"" + function.getName() + "\","          +

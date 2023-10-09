@@ -1,4 +1,4 @@
-""" Plugin: Utility functions for managing truth files.
+""" Plugin: Prints out capa results for an oid.
 """
 import os
 import json
