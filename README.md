@@ -106,9 +106,14 @@ pip3 install
 * Termcolor
 * Networkx
 * numpy
+* graphviz
+* pydot
+* matplotlib
 
 If you are using **MacOS**, you will need to install GNU objdump.
 With Brew, `brew install binutils` and symlink `gobjdump` to `/usr/local/bin/gobjdump`.
+
+If you are using **linux** and want to print a call graph, you may need to install 'python3-tk'
 ....
 
 
