@@ -197,11 +197,14 @@ def file_io(args: List[str], opts: dict) -> Union[List[str], Any]:
             except UnicodeDecodeError:
                 # wasn't json, try pickle?
                 try:
+                    fd.seek(0)  # reset file pointer
                     p = pickle.load(fd)
                 except EOFError:
                     # one clue pickle was bad
+                    print('wut')
                     err = True
             except NotImplementedError:
+                print('huh')
                 err = True
         if err:
             raise ShellSyntaxError(f'Import file was not a valid ({"pickle" if "pickle" in opts else "json"}) file. Did you need to include `--pickle`')
