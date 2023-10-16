@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 """ Plugin: Utility functions for manipulating files and collections
@@ -27,6 +27,7 @@ THE SOFTWARE.
 NAME = "default_plugin"
 
 import random
+import json
 import pickle
 import os
 import zipfile
@@ -164,16 +165,32 @@ def file_io(args: List[str], opts: dict) -> Union[List[str], Any]:
     fname = args[0]
     args = args[1:]
     if args: # Writing to a file
-        fd = open(fname, 'wb')
-        pickle.dump(args, fd)
-        fd.close()
+
+        if 'pickle' in opts:
+            fd = open(fname, 'wb')
+            pickle.dump(args, fd)
+            fd.close()
+        else:
+            fd = open(fname, 'w')
+            logger.info('Note: All sets in results are converted to lists. This is unique behavior when compared to pickle export.')
+            json.dump(_sets_to_lists(args), fd)
+            fd.close()
+
         return args
 
     else: # Reading from a file
         if not os.path.isfile(fname):
             raise ShellSyntaxError("File %s not found." % fname)
         fd = open(fname, 'rb')
-        p = pickle.load(fd)
+
+        try:
+            if 'pickle' in opts:
+                p = pickle.load(fd)
+            else:
+                p = json.load(fd)
+        except ValueError:  # FIXME:: incorrect error
+            logger.error(f'Import file was not a valid ({"pickle" if "pickle" in opts else "json"}) file')
+
         fd.close()
         return p
 
@@ -550,7 +567,7 @@ def symbol_filter(args: List[str], opts: dict) -> List[str]:
                             for string_table in ['.strtab']):
                                 #categorized_files["stripped"].append(oid)
                                 oids.append(oid)
-                
+
         elif (data_type and opts["type"].lower() == "dbg" and
              (any(item.lower() in ['pe', 'elf', 'macho', 'osx universal binary'] for item in data_type))):
             header = api.get_field("object_header", oid, oid)
@@ -564,7 +581,6 @@ def symbol_filter(args: List[str], opts: dict) -> List[str]:
     #filtered_categorized_files = {category: categoryOid for category, categoryOid in categorized_files.items() if categoryOid}
     #return filtered_categorized_files
     return oids
-
 
 
 def key_filter(args: List[str], opts: dict) -> List[str]:
@@ -735,3 +751,13 @@ def tmp_file(name, data):
     fd.write(data)
     fd.close()
     return tmp
+
+def _sets_to_lists(obj):
+    if isinstance(obj, set):
+        return list(obj)
+    elif isinstance(obj, dict):
+        return {k: _sets_to_lists(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_sets_to_lists(e) for e in obj]
+    else:
+        return obj

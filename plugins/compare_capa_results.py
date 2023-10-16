@@ -45,13 +45,13 @@ def compare_capa_results(args, opts):
             result[oid]["oxide_capabilities"].append(oxide_entry)
         for capa_category in capa_dict['CAPABILITY']:
             for capa_entry in capa_dict['CAPABILITY'][capa_category]:
-                result[oid]["capa_capabilities"].append(capa_entry)       
-    
+                result[oid]["capa_capabilities"].append(capa_entry)
+
     wb = Workbook()
     sheet1=wb.add_sheet('Sheet1')
     entry_index = 0
     for oid,results in result.items():
-        
+
         sheet1.write(entry_index, 0, str(results["filepath"]))
         for index, entry in enumerate(results["oxide_capabilities"]):
             sheet1.write(entry_index, index + 1 , str(entry))
@@ -59,8 +59,6 @@ def compare_capa_results(args, opts):
             sheet1.write(entry_index+1, index + 1 , str(entry))
         entry_index += 2
     wb.save('xlwt temp.xls')
-        
-    
 
 
 exports = [compare_capa_results]

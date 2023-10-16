@@ -677,7 +677,7 @@ def _inst_comparison(
         tool_list.append("disasm_min")
         tool_list.append("disasm_max")
     if "exclude" in opts:
-        excludes = opts['exclude'].split(",") 
+        excludes = opts['exclude'].split(",")
         for exclude in excludes:
             try:
                 tool_list.remove(exclude)
@@ -781,8 +781,6 @@ def _inst_comparison(
 
         with open(output_file, 'w') as f:
             json.dump(output_data, f)
-
-
 
     if "graph" in opts:
         bw = False
@@ -1197,11 +1195,11 @@ def _insns_plot_data(
     """
     methods = list(parsed_data.keys())
     overall_min, overall_max = _insns_get_overall_min_max(parsed_data)
-    
+
     colors = {'Correct': 'green', 'False Positive': 'red', 'False Negative': 'orange'}
     patterns = {'Correct': '.....', 'False Positive': '+++', 'False Negative': '---'}
     blank_color = 'gray'
-    
+
     if bw:
         custom_elements = [mpatches.Patch(facecolor='white', hatch=patterns[label]) for label in patterns.keys()]
         blank_color = 'white'

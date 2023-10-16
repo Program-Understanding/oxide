@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 import os
@@ -71,6 +71,7 @@ def get_oid_from_data(data: bytes) -> str:
     """ Given the a blob of data return the <oid>. This is hard coded to sha1sum
         for now.
     """
+    print(type(data))
     return hashlib.sha1(data).hexdigest()
 
 

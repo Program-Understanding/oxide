@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 """ Wrapper for scripts for Ghidra, in which decompilation is associated with addresses
@@ -89,7 +89,7 @@ def extract(file_test: str, header: dict) -> dict:
         LOAD_ADDR = int(LOAD_ADDR, 16)
 
         del mapping['meta']
-        
+
         for elem in mapping:
             if elem == 'None':
                 continue

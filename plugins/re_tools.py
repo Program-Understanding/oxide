@@ -88,8 +88,8 @@ def dos_stub(args, opts):
             args = [current_file]
         else:
             raise ShellSyntaxError("Must provide an oid")
-    
-    cap = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)    
+
+    cap = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)
     for oid in args:
         src_type = api.get_field("src_type", oid, "type")
         if "PE" not in src_type:
@@ -163,7 +163,6 @@ def sections(args, opts):
         print_sections(header, opts)
 
 
-
 def import_table(args, opts):
     """
         Displays the import table
@@ -196,7 +195,6 @@ def import_table(args, opts):
             macho_import_table(header, opts)
         else:
             print("  - Source type %s is unsupported" % (src_type))
-
 
 
 def ordinal_file_exists():
@@ -684,7 +682,6 @@ def print_sections(header, opts, indent=False):
         print("%s  - Sections: %s" %  (tab, ", ".join([str(s) for s in header.section_names])))
 
 
-
 def macho_import_table(header, opts):
     print("  --------------------------")
     print("  - Import Address Table :")
@@ -877,7 +874,6 @@ def pe_header(oid, opts):
     if header.is_64bit():
         addr_size = "64 bit"
 
-
     entry_string = ""
     for e in header.get_entry_points():
         entry_string += "%s (%s)  " % (hex(e), (e))
@@ -897,7 +893,6 @@ def pe_header(oid, opts):
 
     print_sections(header, opts)
     pe_import_table(header, opts)
-
 
 
 def print_internal_functions(names):

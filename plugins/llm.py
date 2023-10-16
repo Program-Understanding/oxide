@@ -263,7 +263,7 @@ class Block(nn.Module):
         self.sa = MultiHeadAttention(n_head, head_size)
         self.ln2 = LayerNorm(n_embed, bias=False)
         self.mlp = MLP(n_embed)
-        
+
     def forward(self, x):
         x = x + self.sa(self.ln1(x))
         x = x + self.mlp(self.ln2(x))

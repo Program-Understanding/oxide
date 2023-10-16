@@ -32,7 +32,6 @@ def read_truth(args, opts):
     return args
 
 
-
 exports = [read_truth]
 
 ##################### UTILS ############################
@@ -49,7 +48,7 @@ def process_insn_truth(oid: str, data: dict, meta: dict):
 
 
 def process_block_truth(oid: str, data: dict, meta: dict):
-    print("INFO:Truth: processing block file {}".format(oid)) 
+    print("INFO:Truth: processing block file {}".format(oid))
     data = data[1:]
     data_dict = {}
     for d in data:

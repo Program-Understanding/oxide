@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 """ disasm_utils.py
@@ -338,7 +338,7 @@ def get_eflag_name(eflag: int) -> str:
         return "SET_DF"
     elif eflag == capstone.x86.X86_EFLAGS_SET_IF:
         return "SET_IF"
-    else: 
+    else:
         return None
 
 
@@ -347,7 +347,7 @@ def dump_x86(insn, instruction) -> None:
 
         reference code: https://github.com/capstone-engine/capstone/blob/master/bindings/python/test_x86.py#L133
             * Omits most functionality as specific to cpu arch
-        
+
         # TODO:: integrate more
     """
     try:
@@ -371,7 +371,7 @@ def dump_x86(insn, instruction) -> None:
 
 def dump_arm(insn, instruction) -> None:
     """ Compute ARM specific features of an insn, populate instruction dictionary
-    
+
         reference code: https://github.com/capstone-engine/capstone/blob/master/bindings/python/test_arm.py#L95
     """
     if insn.update_flags:
@@ -461,7 +461,7 @@ def dump_arm_operands(insn) -> dict:
 
         reference code: https://github.com/capstone-engine/capstone/blob/master/bindings/python/test_arm.py#L36
             * remove prints, and convert to dictionary storing
-            * omitted some fields to keep main features, but keep relatively aligned with x86 features     
+            * omitted some fields to keep main features, but keep relatively aligned with x86 features
     """
     operands = {}
     if len(insn.operands) > 0:

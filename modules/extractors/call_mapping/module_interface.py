@@ -39,7 +39,7 @@ def call_mapping(functions, basic_blocks):
             for function_addr, function_data in functions.items():
                 if function_addr == called_file_offset:
                     call_mapping[function_addr]['calls_from'][calling_function_addr] = functions[calling_function_addr]['vaddr']
-    
+
     return call_mapping
 
 def process(oid: str, opts: dict) -> bool:

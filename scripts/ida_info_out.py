@@ -56,7 +56,7 @@ def main():
     ea = get_screen_ea()
     # Necessary to allow auto-analysis to complete
     auto_wait()
-    
+
     if len(ARGV) < 2:
         sys.exit(0)
 

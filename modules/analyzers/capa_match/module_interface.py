@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 DESC = " This module matches features to the Capa Rules dataset"
@@ -75,7 +75,7 @@ def boolean_filter(current_value, matching_features, global_features, scope, **k
 
 # Logic operations within the algorithm
 def parse_and(current_values: list, matching_features, global_features, scope, **kwargs):
-    for current_value in current_values: 
+    for current_value in current_values:
         bool_test = boolean_filter(current_value, matching_features, global_features, scope)
         if bool_test == False:
             return False
@@ -83,7 +83,7 @@ def parse_and(current_values: list, matching_features, global_features, scope, *
 
 def parse_or(current_values: list, matching_features, global_features, scope, **kwargs):
     bool_list = []
-    for current_value in current_values: 
+    for current_value in current_values:
         bool_test = boolean_filter(current_value, matching_features, global_features, scope)
         bool_list.append(bool_test)
         if any(bool_list):
@@ -93,7 +93,7 @@ def parse_or(current_values: list, matching_features, global_features, scope, **
 def parse_N_or_more(current_values: list, matching_features, global_features, scope, **kwargs):
     bool_list = []
     n = int(kwargs.get('n'))
-    for current_value in current_values: 
+    for current_value in current_values:
         bool_test = boolean_filter(current_value, matching_features, global_features, scope)
         bool_list.append(bool_test)
         if bool_list.count(True) >= n:
@@ -102,7 +102,7 @@ def parse_N_or_more(current_values: list, matching_features, global_features, sc
 
 def parse_optional(current_values: list, matching_features, global_features, scope, **kwargs):
     bool_list = []
-    for current_value in current_values: 
+    for current_value in current_values:
         bool_test = boolean_filter(current_value, matching_features, global_features, scope)
         bool_list.append(bool_test)
         if bool_list.count(True):
@@ -119,7 +119,7 @@ def parse_count(current_values: list, matching_features, global_features, scope,
     else:
         n = int(n)
         if getattr(matching_features, current_values[0]).count(current_values[1]) >= n:
-            return True       
+            return True
     return False
 # Parses anything that would not need to be recursed. Most likely literals. A lot of these could
 # be condensed into one function. I have left them seperate for testing and debugging.
@@ -142,15 +142,15 @@ def parse_api(value: str, scoped_features, global_features, scope, *args):
             for instruction_addr in scoped_features['blocks'][block_addr]['instructions']:
                if scoped_features['blocks'][block_addr]['instructions'][instruction_addr]['instruction_features']['api'] == None:
                 continue
-               elif value == scoped_features['blocks'][block_addr]['instructions'][instruction_addr]['instruction_features']['api']['func_name']: 
+               elif value == scoped_features['blocks'][block_addr]['instructions'][instruction_addr]['instruction_features']['api']['func_name']:
                    return True
-               
+
     elif scope == 'basic block':
         for instruction_addr in scoped_features['instructions']:
             if scoped_features['instructions'][instruction_addr]['instruction_features']['api'] == None:
                 continue
-            elif value == scoped_features['instructions'][instruction_addr]['instruction_features']['api']['func_name']: 
-                   return True
+            elif value == scoped_features['instructions'][instruction_addr]['instruction_features']['api']['func_name']:
+                return True
     return False
 
 
@@ -203,13 +203,13 @@ def parse_section(value: str, matching_features: list, global_features, scope, *
 # Handles functions so that new keys could be added quickly.
 function_handler = {
     # Logic Functions
-    'and': parse_and, 
+    'and': parse_and,
     'or': parse_or,
     'or more': parse_N_or_more,
     'optional': parse_optional,
     'count': parse_count,
 
-    # Non List Functions 
+    # Non List Functions
     'string': parse_string,
     'substring': parse_substring,
     'api': parse_api,
@@ -235,20 +235,20 @@ def parse_rule(rule_features, scoped_features, global_features, scope):
                 Global_Checklist.append(key)
                 print(e)
                 return False
-            if output == True: 
+            if output == True:
                 return True
     return False
 
 # Loads the individual rule.
 def rules_engine(scoped_features, rule_path):
-    
+
     with open(rule_path, "r") as stream:
         try:
             loaded_rule = yaml.safe_load(stream)
-            
+
         except yaml.YAMLError as exc:
             print(exc)
-        
+
     # pprint.pprint(loaded_rule['rule']['features'])
     global_features = scoped_features['global_features']
     scope = loaded_rule['rule']['meta']['scope']
@@ -293,7 +293,7 @@ def match_capa_rules(oid):
     matched_rules = []
     rules_list = [os.path.join(dirpath,f) for (dirpath, dirnames, filenames) in os.walk(rule_directory) for f in filenames]
     for rule in rules_list:
-        if rule.endswith('.yml'):   
+        if rule.endswith('.yml'):
             matched_rule = rules_engine(scoped_features, rule)
             if matched_rule:
                 matched_rules.append(matched_rule)
@@ -318,7 +318,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                 'arch': rule[4]['arch'],
                 'format': rule[4]['format']
             }
-        else: 
+        else:
             results[rule[0]['name']] = {
                 # 'namespace': rule[0]['namespace'],
                 'attack_tactic': "Unknown",

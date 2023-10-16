@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 """ Pharos processing script for basic blocks, and instructions
@@ -247,7 +247,7 @@ def extract(file_test: str, header_interface, scratch_dir: str) -> Optional[dict
     # Instruction level CFG
     _record_blocks(output_map, instr, edges)
     _record_data(output_map, data)
-    
+
     _update_blocks_with_insns(output_map)
 
     return output_map

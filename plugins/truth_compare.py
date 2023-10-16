@@ -12,17 +12,11 @@ NAME = "truth_compare"
 compare_logger = logging.getLogger(NAME)
 
 
-
-
-
-
-
-
 def compare_min_truth(args, opts):
     """
         Compares where instructions in the min_truth are either missing or not the same.
         Returns ranges where the tool either agrees or disagrees with the min_truth
-        Example of output: 
+        Example of output:
             {
                 "Bap": {
                 "Correct" : [(0,100),(600,750)]
@@ -34,13 +28,13 @@ def compare_min_truth(args, opts):
             file - specifies dumping to output file. Defaults to stdout.
             path - specifies where the json in min truth comparison is dumped. Default = "/localstore/(file_name)_min_truth_distances.json"
             graph - If graph is set, Uses matplotlib to plot out these distances. Outputs the fig output to localstore/graphs
-            exclude - Exclude a particular disasm. Disasms included in this comparison: 
+            exclude - Exclude a particular disasm. Disasms included in this comparison:
                     ['objdump', 'ghidra_disasm', 'ida_disasm', 'fst_angr_disasm', 'emu_angr_disasm',
-                    'radare_disasm', 'radare_linear', 'bap_disasm', 'pharos_disasm', 'binja_disasm', 
+                    'radare_disasm', 'radare_linear', 'bap_disasm', 'pharos_disasm', 'binja_disasm',
                     'ddisasm_disasm', 'problstc_ref', 'problstc_disasm', 'min_truth', 'max_truth']
             only - Only compare with disassembler(s). Delimit with a comma ",".
             min_range - Set the X-axis to the range of min truth
-    """ 
+    """
     function_mapping = {}
     valid, invalid = api.valid_oids(args)
     if not valid:
@@ -52,7 +46,6 @@ def compare_min_truth(args, opts):
         pipe = open(opts['file'], 'w')
     except KeyError:
         pipe = sys.stdout
-    
 
     for oid in valid:
         fname = _name(oid)
@@ -86,14 +79,14 @@ def compare_min_truth(args, opts):
         for tool in tool_list:
             # compare_logger.info
             compare_logger.info("\tOn tool %s", tool)
-            
+
             module_name = tool
             if tool == "min_truth":
                 module_name = 'truth_store'
-                options = {'type': 'disasm_min'}  
+                options = {'type': 'disasm_min'}
             elif tool == "max_truth":
                 module_name = 'truth_store'
-                options = {'type': 'disasm_max'}    
+                options = {'type': 'disasm_max'}
             else:
                 options = {'disassembler': module_name}
 
@@ -130,7 +123,6 @@ def compare_min_truth(args, opts):
                 # Add tool to list of tools to remove
                 compare_logger.info("Removing (%s) in instruction comparison", module_name)
                 to_remove.append(tool)
-            
 
         for tool in to_remove:
             if tool in tool_list:
@@ -141,13 +133,10 @@ def compare_min_truth(args, opts):
 
         if 'min_truth' not in tool_list:
             raise ShellSyntaxError("Min truth not found for this oid")
-            
+
         _min_truth_compare(fname, oid, disasm_maps, function_mapping, tool_list, opts, pipe, file_path)
-        
 
 
-
-                
 exports = [compare_min_truth]
 
 
@@ -165,7 +154,7 @@ def _output_graph(name, opts, range_data):
         graph_output_directory = "localstore/graphs/"
     else:
         graph_output_directory = opts['graph']
-    
+
     if not os.path.exists(graph_output_directory):
         os.makedirs(graph_output_directory)
         print("Directory", graph_output_directory, "created.")
@@ -190,7 +179,7 @@ def _output_graph(name, opts, range_data):
             return 0
 
     sorted_tool_labels = sorted(range_data.keys(), key=sort_tool_labels)
-    
+
     fig, ax = plt.subplots()
 
     y_labels = []
@@ -231,7 +220,7 @@ def _output_graph(name, opts, range_data):
             if tool == "min_truth" or tool == 'max_truth':
                 if color == 'red':
                     continue
-            
+
             for start, end in ranges:
                 if start == 1:
                     continue
@@ -258,13 +247,11 @@ def _output_graph(name, opts, range_data):
     bbox = 'tight'
     output = graph_output_directory + f"{name}.eps"
     plt.savefig(output, format='eps', bbox_inches = bbox)
-    
-    
-    
+
 
 def _min_truth_compare(sample: str, oid: str, disasm_maps: dict, function_mapping: dict,
                      tool_list: List[str], opts: dict, pipe: BinaryIO, file_path) -> None:
-    
+
     # blocks located in out_maps
     inst_maps = []
     offsets_lists = []
@@ -277,7 +264,7 @@ def _min_truth_compare(sample: str, oid: str, disasm_maps: dict, function_mappin
 
         if 'meta' in inst_map:
             del inst_map['meta']
-        
+
         # create list of items, and list of offsets with items for comparison
         offsets = [item for item in inst_map]
 
@@ -305,14 +292,14 @@ def _min_truth_compare(sample: str, oid: str, disasm_maps: dict, function_mappin
         offset_set.discard(None)
         union_offsets = union_offsets.union(offset_set)
     union_offsets = sorted(list(union_offsets))
-    
+
     min_truth_distances = _compute_min_truth_distance(offsets_lists, tool_list)
     output = open(file_path, 'w')
     json.dump(min_truth_distances, output, indent=4)
-    
+
     for x, y in min_truth_distances.items():
         print(x,y, "\n",file=pipe)
-    
+
     if 'graph' in opts:
         _output_graph(_name(oid),opts, min_truth_distances)
 
@@ -329,7 +316,7 @@ def _compute_min_truth_distance(offsets_list, tool_list):
         Output -
             min_truth_distances (dict) - dict that stores where each tool disagrees with min_truth
     """
-    
+
     min_truth_distances = {}
     if 'min_truth' not in tool_list:
         raise ShellSyntaxError("Min_truth not found in oid")
@@ -346,7 +333,7 @@ def _compute_min_truth_distance(offsets_list, tool_list):
         max_truth = offsets_list[max_truth_index]
         max_truth_range = (min(max_truth), max(max_truth))
         max_truth_set = set(offsets_list[max_truth_index])
-    
+
     #Gets ranges for each tool intersection or difference
     #Max_distance = 8 for the reason that most x86 instructions are 1-6 bytes.
     def get_ranges(offsets, max_distance=8):
@@ -390,13 +377,13 @@ def _compute_min_truth_distance(offsets_list, tool_list):
             new_correct_ranges.extend(temp_ranges)
         return new_correct_ranges
     for tool_index in range(len(tool_list)):
-        tool_set = set(offsets_list[tool_index]) 
+        tool_set = set(offsets_list[tool_index])
         tool_name = tool_list[tool_index]
         incorrect = sorted((tool_set - max_truth_set).union(max_truth_set - tool_set))
         correct = sorted(list(max_truth_set.intersection(tool_set)))
         # extra_incorrect = set(filter(lambda x: x < min_truth_min_range or x > min_truth_max_range, offsets_list[tool_index]))
         # # Combine the incorrect sets
-        # incorrect = set(incorrect).union(extra_incorrect) 
+        # incorrect = set(incorrect).union(extra_incorrect)
         # with open("test.txt", 'a') as f:
         #     f.write(f"{tool_name} : \n")
         #     f.write(f"correct = {correct}\n")
@@ -408,7 +395,7 @@ def _compute_min_truth_distance(offsets_list, tool_list):
         #     else:
         #         print(f"Excluding {tool_name}: has incorrect length {len(incorrect)}, correct_length {len(correct)}")
         #         continue
-        
+
         if tool_name == "min_truth":
             ##Puts one incorrect instruction in min truth to make graph work
             incorrect_ranges = [(min_truth_range[0] - 1, min_truth_range[0] - 1)]
@@ -421,7 +408,6 @@ def _compute_min_truth_distance(offsets_list, tool_list):
             correct_ranges = get_ranges(sorted(list(correct)))
             incorrect_ranges = get_ranges(sorted(list(incorrect)))
             correct_ranges = split_ranges_on_intersection(correct_ranges, incorrect_ranges)
-
 
         min_truth_distances[tool_name] = {
             "Correct": correct_ranges,

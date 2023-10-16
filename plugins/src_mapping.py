@@ -419,7 +419,6 @@ class ObjectFile():
         self.construct_memmap()
         self.construct_functtab()
 
-
     def get_xml(self) -> str:
         return self.xml
 
@@ -437,7 +436,7 @@ class ObjectFile():
         """
         if "PROCESSOR" not in self.xml_map or "LANGUAGE_PROVIDER" not in self.xml_map["PROCESSOR"]:
             return None
-        
+
         return self.xml_map["PROCESSOR"]["LANGUAGE_PROVIDER"]
 
     def get_compilerspec(self) -> Optional[str]:
@@ -446,7 +445,7 @@ class ObjectFile():
         """
         if "PROCESSOR" not in self.xml_map or "LANGUAGE_PROVIDER" not in self.xml_map["PROCESSOR"]:
             return None
-        
+
         try:
             cspec_index = self.xml_map["PROCESSOR"]["LANGUAGE_PROVIDER"].rindex(':')
         except:
@@ -463,9 +462,8 @@ class ObjectFile():
         """
         if "PROG_INFO" not in self.xml_map or "IMAGE_BASE" not in self.xml_map["PROG_INFO"]:
             return None
-        
-        image_base = int(self.xml_map["PROG_INFO"]["IMAGE_BASE"], 16)
 
+        image_base = int(self.xml_map["PROG_INFO"]["IMAGE_BASE"], 16)
         return image_base
 
     def get_intfuncttab(self) -> Dict:
@@ -485,7 +483,7 @@ class ObjectFile():
         """
         if "PROGRAM_ENTRY_POINTS" not in self.xml_map:
             return None
-        
+
         return [int(entry, 16) for entry in self.xml_map["PROGRAM_ENTRY_POINTS"]]
 
     def construct_memmap(self) -> None:
@@ -494,7 +492,7 @@ class ObjectFile():
         self.memmap = {}
         if "MEMORY_MAP" not in self.xml_map:
             return None
-        
+
         for start, contents in self.xml_map["MEMORY_MAP"].items():
             # Only care about segments, not sections
             if "MEM_CONTENTS" not in contents:
@@ -506,7 +504,7 @@ class ObjectFile():
             except ValueError:
                 print(f'section \"{contents["NAME"]}\" did not have valid start ({start})')
                 continue
-            
+
             section_ref.seek(int(contents["MEM_CONTENTS"]["FILE_OFFSET"], 16))
             sec_data = section_ref.read(start)
             self.memmap[contents["NAME"]] = {'start': start,
@@ -522,13 +520,13 @@ class ObjectFile():
         if "FUNCTIONS" not in self.xml_map:
             print('functions entry in XML not found, no symbol map created.')
             return None
-        
+
         for function, meta in self.xml_map["FUNCTIONS"].items():
             # Can't look for Library Call, as library calls show as n as well
             if '<EXTERNAL>::' in meta['NAME']:
                 self.extfuncttab[int(function, 16)] = meta['NAME'].replace('<EXTERNAL>::', '')
             else:
-                self.intfuncttab[meta['NAME']] = int(function, 16)                
+                self.intfuncttab[meta['NAME']] = int(function, 16)
 
         # print(f'External symbolMap {self.extfuncttab}')
         # print(f'Internal symbolMap {self.intfuncttab}')
@@ -541,9 +539,9 @@ class Memory:
     def __init__(self, binary_memory: Dict) -> None:
         self.segments: dict = binary_memory
         self.last_segment_access = None
-        
+
         print(f'Constructed memory map with {len(self.segments)} segments of memory.')
-    
+
     def find_segment_waddr(self, addr: int) -> Tuple[Optional[str], Optional[dict]]:
         """ Given an address, find the relevant section containg this address
         """
@@ -565,7 +563,7 @@ class Memory:
             if segment is None:
                 print(addr, f'Invalid memory access into non-loaded memory at {addr}')
                 return
-            
+
             # Commenting out to make analysis more readable
             # debug(segment)
             offset = addr - segment['start']
@@ -581,7 +579,7 @@ class Memory:
             if segment is None:
                 print(addr, f'Invalid memory access into non-loaded memory at {addr}')
                 return
-            
+
             # Commenting out to make analysis more readable
             # debug(segment)
             offset = addr - segment['start']
@@ -590,7 +588,7 @@ class Memory:
             return segment['value'][offset:offset+(end-addr)]
         else:
             raise TypeError("Invalid addr type")
-        
+
     def _performance_sort_segments(self):
         if self.last_segment_access is None:
             return
@@ -608,7 +606,7 @@ class Memory:
         keys.insert(0, keys.pop(last_recent_index))
 
         self.segments = {k: self.segments[k] for k in self.segments}
-        
+
 
 def all_things(args, opts):
     """
@@ -641,7 +639,7 @@ def all_things(args, opts):
         disasm = api.retrieve('disassembly', oid, options)
         if not disasm:
             continue
-        
+
         disasm = disasm.pop(list(disasm.keys())[0])["instructions"]
         ghidra_disasm = api.get_field("ghidra_disasm", oid, "instructions", {'rebase-off': True})
         decomp_mapping = api.get_field("ghidra_decmap", oid, "decompile")
@@ -714,7 +712,7 @@ def all_things(args, opts):
                     file, line = file_and_line.split(':')
                     res[oid][offset]['src'] = {"file": file, "line": line}
                     res[oid][offset]['mapped_src'] = {"file": file, "line": line}
-                    
+
                     res[oid][offset]['src_line'] = ""
                 # res[oid][offset]['dbg_src'] = src_line
                 if decomp_mapping and offset in decomp_mapping:
@@ -725,10 +723,9 @@ def all_things(args, opts):
 
         for _, fd in file_cache.items():
             fd.close()
-                
-                
+
     import json
     print(json.dumps(res, indent=4))
-        
+
 
 exports = [all_things]
