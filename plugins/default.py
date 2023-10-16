@@ -183,13 +183,28 @@ def file_io(args: List[str], opts: dict) -> Union[List[str], Any]:
             raise ShellSyntaxError("File %s not found." % fname)
         fd = open(fname, 'rb')
 
-        try:
-            if 'pickle' in opts:
+        err = False
+        if 'pickle' in opts:
+            try:
                 p = pickle.load(fd)
-            else:
+            except pickle.UnpicklingError:
+                # tried pickle, but not pickle, syntax error
+                err = True
+        else:
+            # json mode
+            try:
                 p = json.load(fd)
-        except ValueError:  # FIXME:: incorrect error
-            logger.error(f'Import file was not a valid ({"pickle" if "pickle" in opts else "json"}) file')
+            except UnicodeDecodeError:
+                # wasn't json, try pickle?
+                try:
+                    p = pickle.load(fd)
+                except EOFError:
+                    # one clue pickle was bad
+                    err = True
+            except NotImplementedError:
+                err = True
+        if err:
+            raise ShellSyntaxError(f'Import file was not a valid ({"pickle" if "pickle" in opts else "json"}) file. Did you need to include `--pickle`')
 
         fd.close()
         return p
