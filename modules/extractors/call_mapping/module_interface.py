@@ -31,7 +31,7 @@ def call_mapping(functions, basic_blocks):
                     for offset in basic_blocks[block_addr]['dests']:
                         if offset in function_addresses:
                             called_file_offset = offset
-                    call_mapping[function_addr]['calls_to'][called_file_offset] = functions[called_file_offset]['vaddr']
+                            call_mapping[function_addr]['calls_to'][called_file_offset] = functions[called_file_offset]['vaddr']
 
     #using the calls_to to map out a calls_from
     for calling_function_addr, calls in call_mapping.items():
@@ -48,7 +48,8 @@ def process(oid: str, opts: dict) -> bool:
     functions = api.get_field("ghidra_disasm", oid, "functions")
     basic_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
 
-    result = call_mapping(functions, basic_blocks)
+    if functions != None or basic_blocks != None:
+        result = call_mapping(functions, basic_blocks)
 
-    api.store(NAME, oid, result, opts)
-    return result
+        api.store(NAME, oid, result, opts)
+        return result

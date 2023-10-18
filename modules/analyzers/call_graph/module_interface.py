@@ -36,10 +36,11 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     
     for oid in oid_list:
         call_map = api.retrieve("call_mapping", oid)
-        result = create_graph(call_map)
-        if result != None:
-            results[oid] = result
-    
+        if call_map != None:
+            result = create_graph(call_map)
+            if result != None:
+                results[oid] = result
+        
     return results
 
 #Generating our call graph from the database
