@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 import os, logging, time, pickle, types, traceback, sys, shutil
@@ -29,8 +29,6 @@ import shlex
 
 from cmd import Cmd
 from code import InteractiveConsole, InteractiveInterpreter
-
-
 
 from typing import List, Tuple, Any
 
@@ -289,7 +287,6 @@ class OxideShell(Cmd):
 
             keepstate.restore()
 
-
     @error_handler
     def do_history(self, line):
         """
@@ -335,7 +332,6 @@ class OxideShell(Cmd):
             raise ShellSyntaxError("")
         commands = self.parse_line("drop "+line)
         self.parse_pipe(commands)
-
 
     @error_handler
     def do_load(self, line):
@@ -509,7 +505,6 @@ class OxideShell(Cmd):
         commands = self.parse_line("run " + line)
         self.parse_pipe(commands)
 
-
     @error_handler
     def do_import(self, line):
         """
@@ -520,7 +515,6 @@ class OxideShell(Cmd):
             raise ShellSyntaxError("")
         commands = self.parse_line("import " + line)
         self.parse_pipe(commands)
-
 
     @error_handler
     def do_plugin(self, line):
@@ -592,7 +586,6 @@ class OxideShell(Cmd):
                         print(("  - Missing exports in plugin %s. Plugin load aborted." %p))
                     else:
                         print((traceback.print_exc()))
-
 
     @error_handler
     def do_collection(self, line):
@@ -684,7 +677,6 @@ class OxideShell(Cmd):
             print()
             print((self.do_help.__doc__))
 
-
     ### FUNCTIONALITY FOR DO COMMANDS ------------------------------------------------------------
     def configure(self, args, opts):
         if args or not opts:
@@ -735,7 +727,6 @@ class OxideShell(Cmd):
             self.oxide.apply_tags(items, {tag:value})
             print(("  - Applied tag %s:%s to %s item(s)" % (tag, value, len(items))))
             return items
-
 
     def collection(self, args, opts):
         if len(args) < 2:
@@ -862,7 +853,6 @@ class OxideShell(Cmd):
                 print(args)
         return args
 
-
     def drop(self, args, opts):
         if not args:
             print("  - Nothing to drop")
@@ -978,7 +968,6 @@ class OxideShell(Cmd):
 
         return [ entry[0] for entry in self.context ]
 
-
     def run_module(self, args: List[str], opts: dict) -> None:  # run <module> oid ...
         show = False
         mod_list = self.oxide.modules_list()
@@ -1075,7 +1064,6 @@ class OxideShell(Cmd):
                     args.append(arg)
             commands.append((args, opts))
         return commands
-
 
     def parse_pipe(self, commands):
         """ Peel off a command and pass the results to the next command in the pipe
@@ -1483,7 +1471,6 @@ class OxideShell(Cmd):
 
         self.print_header()
 
-
     def print_context(self, verbose=False):
         """ Print function for the command: show context
         """
@@ -1545,7 +1532,6 @@ class OxideShell(Cmd):
             for mod in mod_list:
                 self.print_mod_details(mod, short=True)
         self.print_header()
-
 
     def print_mod_details(self, name, short=False):
         """ Print function for the command: show modules <module_name>

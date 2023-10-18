@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 DESC = " This module extracts features from the ELF header."
@@ -591,7 +591,7 @@ def get_e_machine(val: int) -> str:
     elif val == 143:
         machine = "Texas Instruments App. Specific RISC"
     elif val == 144:
-        machine = "Texas Instruments Prog. Realtime Unit"    
+        machine = "Texas Instruments Prog. Realtime Unit"
     elif val == 160:
         machine = "STMicroelectronics 64bit VLIW DSP"
     elif val == 161:

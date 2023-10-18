@@ -46,7 +46,7 @@ def process(oid, opts):
     blocks = api.get_field("ghidra_disasm", [oid], "original_blocks")
     functions = api.get_field("ghidra_disasm", [oid], "functions")
     results = {}
-    
+
     if not blocks or not functions:
         return False
 
@@ -54,7 +54,7 @@ def process(oid, opts):
         E = 0  # Edges
         N = 0  # Nodes/Blocks
         P = 0  # Components
-   
+
         func_graph = DiGraph()
         logger.debug(func)
         N = len(functions[func]['blocks'])

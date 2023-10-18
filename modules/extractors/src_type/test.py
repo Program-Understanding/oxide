@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 import unittest
@@ -28,7 +28,7 @@ import os
 # This file needs to be named test.py and reside in the same folder as the module itself.
 # Class name must be <modulename>_test and must inherit from unittest.TestCase
 # Function names must start with test_
-   
+
 
 class src_type_test(unittest.TestCase):
     def test_src_type(self):

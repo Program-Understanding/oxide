@@ -87,7 +87,6 @@ def _extract_insn_facts(block_fact_file: str, header_interface, exaustive_facts)
     """
     instruction_map = {}
 
-    
     # use block information to pull out instructions found in CFG
     if os.path.exists(block_fact_file) is False:
         logger.error("Could not find block facts file: %s", block_fact_file)
@@ -129,7 +128,7 @@ def _parse_exaustive(complete_facts_path, header_interface):
             vaddr = int(inst_comp_tokens[0], 16)
             # print("debugging, where is operands" + str(inst_comp_tokens))
             instruction_map[_get_offset(vaddr, header_interface)] = {'mneu': inst_comp_tokens[2] + ' ' + inst_comp_tokens[3], 'size': int(inst_comp_tokens[1])}
-    
+
     return instruction_map
 
 
@@ -203,7 +202,7 @@ def extract(file_test, header, scratch_dir):
     else:
         insns_facts = "instruction.facts"
         block_info = "block_information.csv"
-        
+
     inst_facts = os.path.join(scratch_dir, "ddisasm", basename, insns_facts)
     exaustive_facts = _parse_exaustive(inst_facts, header)
     block_fact_file = os.path.join(scratch_dir, "ddisasm", basename, block_info)

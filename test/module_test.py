@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 import _path_magic
@@ -51,7 +51,7 @@ def module_test(singlemodule=None):
                     print("Running the %s module test." % (module))
                     sys.path.insert(0,os.path.join(moduletypepath,module)) # Prepend the path
                     class_str = str(module) + ".test"
-                    try:     
+                    try:
                         mod = __import__(class_str, globals(), locals(), [str(module) + "_test"])
                         try:
                             test_class = getattr(mod, str(module) + "_test")

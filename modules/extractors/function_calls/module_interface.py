@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 DESC = "Extracts function calls from instructions."
@@ -52,7 +52,7 @@ def process(oid: str, opts: dict) -> bool:
         if ' ' not in insn_data:
             mnemonic = insn_data
             operands = []
-        else: (mnemonic, operands) = insn_data.split(maxsplit=1) 
+        else: (mnemonic, operands) = insn_data.split(maxsplit=1)
         if (mnemonic == 'CALL' or mnemonic == 'call') and "0x" in operands:
             v_address = operands[2:]
             for function in functions:

@@ -13,7 +13,8 @@ logger = logging.getLogger(NAME)
 logger.debug("init")
 
 opts_doc = {}
-    
+
+
 def documentation() -> Dict[str, Any]:
     """ Documentation for this module
         private - Whether module shows up in help
@@ -33,7 +34,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     oid_list = api.expand_oids(oid_list)
     results = {}
-    
+
     for oid in oid_list:
         call_map = api.retrieve("call_mapping", oid)
         if call_map != None:

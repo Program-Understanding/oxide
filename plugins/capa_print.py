@@ -13,9 +13,7 @@ def capa_print(args, opts):
     """
     oid, invalid = api.valid_oids(args)
     output = api.retrieve("capa_match", oid, oid)
-   
 
-    
     for rule in output:
         print("OS: " + output[rule]['os'] + '\n' + "Architecure: " + output[rule]['arch'] + '\n'+ "Format: " + output[rule]['format'] + '\n')
         print(
@@ -27,8 +25,6 @@ def capa_print(args, opts):
         "Namespace: " + output[rule]['namespace'] + '\n' +
         "Found At Function: " + str(output[rule]['function_found']) + ' - ' +  str(output[rule]['address_found']) + '\n'
         )
-    
-
 
 
 exports = [capa_print]

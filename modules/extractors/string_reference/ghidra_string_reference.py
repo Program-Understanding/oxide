@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 """ Wrapper for scripts for Ghidra to extract basic block and
@@ -67,7 +67,7 @@ def _sort_lines(extract_lines: str) -> Tuple[list, list, list]:
             logger.error("json decoding error %s", line[space_index + 1:])
             # ensure line can be decoded
             continue
-      
+
         if line[0:7] == "RESULTS":
             ghidra_str_ref.append(line[space_index + 1:])
         else:
@@ -113,7 +113,6 @@ def extract(file_test: str, header) -> dict:
     output_map = {}
     output_map["meta"] = {}
     output_map["string_reference"] = {}
-    
 
     if not header.known_format:
         logger.warning("File Sample unknown format, Ghidra returning empty. (%s)", file_test)

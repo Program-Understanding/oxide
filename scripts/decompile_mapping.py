@@ -29,7 +29,7 @@ ghidra_default_dir = os.getcwd()
 #get ghidra jython directory
 jython_dir = os.path.join(ghidra_default_dir, "Ghidra", "Features", "Python", "lib", "Lib", "site-packages")
 
-#insert jython directory into system path 
+#insert jython directory into system path
 sys.path.insert(0,jython_dir)
 
 OUTFILE = open(getScriptArgs()[0], "w")
@@ -60,7 +60,7 @@ for fun in functionManager.getFunctions(True):
         unicode_line = hex_escape(line.toString())
         if len(unicode_line) > 30 and "WARNING:" in unicode_line[:30]:
             continue
-            
+
         tokens = line.allTokens
         for tok_in_line in tokens:
             minAddr = str(tok_in_line.getMinAddress())
@@ -82,7 +82,7 @@ for fun in functionManager.getFunctions(True):
                 output_map[minAddr]['tokens'].append(hex_escape(tok_in_line.toString()))
             else:
                 output_map[minAddr]['tokens'] = [hex_escape(tok_in_line.toString())]
-        
+
 
 print(output_map)
 # Some instructions do not map to anything, including anything in prologue of function

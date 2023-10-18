@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 DESC = " This module extracts features at the file, function, basic block and instruction levels and formats them into a single dictionary."
@@ -55,11 +55,11 @@ def extract_features(oid, object_header, functions, basic_blocks, instructions):
         'format': object_header.type
     }
     if global_features['format'] == 'ELF': global_features['os'] = 'linux'
-    
+
     # File_Features
     file_features = {
     }
-    
+
     # Temp implementation. Need to pull from inst.
     file_features['string'] = list(api.retrieve("strings", oid).get(oid).items())
     file_features['export'] = []
@@ -78,20 +78,18 @@ def extract_features(oid, object_header, functions, basic_blocks, instructions):
             'calls_to': {}
             }
 
-
     # Basic Block Features - {Block Address: Feature,}
     basic_block_features = {
             'tight_loop': {},
             'stack_string': {},
             }
-        
 
     # Instruction Features - {Instruction Address: Feature,}
     instruction_features = {
             'namespace': {},
             'class': {},
             'api': api.retrieve("function_calls", oid),
-            'property': {}, 
+            'property': {},
             'number': {},
             'string': {},
             'bytes': {},
@@ -99,7 +97,7 @@ def extract_features(oid, object_header, functions, basic_blocks, instructions):
             'mnemonic': api.retrieve("mnemonics_operands", oid, {'option': 'mnemonic'}),
             'operand': api.retrieve("mnemonics_operands", oid, {'option': 'operand'}),
             }
-            
+
     formatted_features = {}
     formatted_features["global_features"] = global_features
     formatted_features["file_features"] = file_features
@@ -108,7 +106,7 @@ def extract_features(oid, object_header, functions, basic_blocks, instructions):
         formatted_features['functions'][function_addr] = {
             'function_data': function_data,
             'function_features': {key: function_features[key].get(function_addr, None) for key in function_features.keys()}
-        } 
+        }
         block_list = []
         for b in function_data['blocks']:
             if b in basic_blocks:
@@ -132,7 +130,7 @@ def extract_features(oid, object_header, functions, basic_blocks, instructions):
             #             for dest in formatted_features['functions'][function_addr]['blocks'][block_address]['block_data']['dests']: #For each dest in the block add to the calls_to
             #                 formatted_features['functions'][function_addr]['function_features']['calls_to'][dest] = member[1][6:] #Will be the vaddr or some variables for the call
             #             break'''
-            
+
             for instruction_address, instruction_data in formatted_features['functions'][function_addr]['blocks'][block_address]['block_data']['members']:
                 formatted_features['functions'][function_addr]['blocks'][block_address]['instructions'][instruction_address] = {
                     'instruction_data': instruction_data,

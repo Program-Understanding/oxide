@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 """ Objdump processing script for instructions, largely just reference for linear dis
@@ -196,7 +196,7 @@ def _objdump_parse_dasm(dasm_output, header_interface, output_map):
                     (list) - list of disassembly of non-compiler functions
     """
     exec_section = True #False
-    
+
     dasm_lines = dasm_output.split("\n")
 
     for dasm_line in dasm_lines:

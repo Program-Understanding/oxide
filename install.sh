@@ -2,7 +2,7 @@
 
 # Check if the script is executed as sudo
 if [[ $EUID -eq 0 ]]; then
-   echo "This script should not be run as root" 
+   echo "This script should not be run as root"
    exit 1
 fi
 

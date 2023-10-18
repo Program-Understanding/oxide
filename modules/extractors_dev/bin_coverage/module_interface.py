@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 DESC = "this module will look at a binary and see what percentage of the binary has been analyzed and what is known about it. Ouputs a coverage.json containing module-specific and overall coverage including padding"
@@ -57,7 +57,7 @@ def process(oid: str, opts: Dict[str, Any]) -> dict:
     """
     modules = {}
 
-    #Get binary data 
+    #Get binary data
     src_type = api.get_field("src_type", oid, "type")
     src = api.source(oid)
     modules["data"] = api.get_field(src, oid, "data", {})
@@ -68,7 +68,7 @@ def process(oid: str, opts: Dict[str, Any]) -> dict:
     modules["elf"] = api.retrieve("elf", oid)
     modules["disasm"] = api.get_field("disassembly", oid, oid)
     modules["ghidra_data"] = api.retrieve("ghidra_data", oid)
-    
+
     #Modules to be added once working
     modules["dwarf_info"] = None
     modules["rtti"] = None

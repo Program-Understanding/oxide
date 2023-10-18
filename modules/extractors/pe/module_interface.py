@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 DESC = " This module builds a general header object from the pe_parse module."
@@ -50,7 +50,7 @@ def process(oid: str, opts: dict = {}) -> bool:
 
     if 'PE' not in src_type:
         return False
-    
+
     src = api.source(oid)
     data = api.get_field(src, oid, "data", {})
     if not data:

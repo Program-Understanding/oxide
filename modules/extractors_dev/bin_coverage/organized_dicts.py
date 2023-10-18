@@ -19,12 +19,12 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 """
 
 """ For all major catagories of findings from oxide modules about a file
     break down where known bytes are.
-    
+
     e.g. elf header + ghidra disassembly + ghidra data + padding = N% known
 """
 
@@ -72,7 +72,7 @@ class module_organizer:
         '''
         coverage = {}
         total_bytes_covered = 0
-        
+
         # Offsets covered without overlap is a way to keept track of all of the binary's covered offsets across all used modules excluding offsets that are covered more than once by another module
         offsets_covered_without_overlap = []
 
@@ -82,9 +82,9 @@ class module_organizer:
             coverage["pe"]["coverage"] = {}
 
             offsets = self.pe["offsets"]
-            
+
             #Implicit offsets are offsets that are within other offsets meaning the same bytes are being covered as multiple pieces of information, data, instructions, or etc. Implicit offsets are removed from consideration to get more accurate binary coverage.
-            implicit_offsets=[] 
+            implicit_offsets=[]
 
             for p in offsets:
                 coverage["pe"]["coverage"][p] = offsets[p][0]
@@ -111,7 +111,7 @@ class module_organizer:
             coverage["disasm"]["coverage"] = {}
 
             # don't count me toward the total bytes / overlap list
-            implicit_offsets = []  
+            implicit_offsets = []
 
             coverage["disasm"]["coverage"] = self.disasm["instructions"]
 
@@ -210,7 +210,6 @@ class module_organizer:
             offsets_covered_without_overlap.append((p, int(self.padding[self.oid][p]["count"])))
             overlap = 0
 
-
             for offset in offsets_covered_without_overlap:
                 if (offset[0] < p and (offset[0] + offset[1]) > p) or offset[0] == p:
                     overlap=1
@@ -234,7 +233,6 @@ class module_organizer:
                 coverage[c]["percent_covered_with_binary_size_not_including_padding"] = str(coverage[c]["total_bytes_covered"] / coverage["padding"]["bin_size_no_padding"])
                 total_percent_no_padding = total_percent_no_padding + coverage[c]["total_bytes_covered"] / coverage["padding"]["bin_size_no_padding"]
 
-
         #Overall
         overall=0
         for c in coverage:
@@ -251,7 +249,6 @@ class module_organizer:
 
         coverage["overall"]["percent_covered_with_padding"] = str(coverage["padding"]["percent_covered"] + coverage["overall"]["percent_covered"])
         coverage["overall"]["percent_covered_without_padding"] = str(total_percent_no_padding)
-
 
         #No Overlap
         coverage["no_overlap"] = {}
