@@ -160,6 +160,7 @@ class ElfRepr:
         """ Return the cumulative size of the segments (sections mapped into memory)
         """
         size = 0
+        if not header["segments"]: return size
         for _, segment_info in header["segments"].items():
             size += segment_info["filesz"]
         return size
