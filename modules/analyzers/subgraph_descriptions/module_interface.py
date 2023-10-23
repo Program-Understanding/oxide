@@ -38,7 +38,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         capa_descriptions = api.retrieve("capa_match", oid, oid)
         if call_graph != {} and capa_descriptions != {}:
             for oid, graph in call_graph.items():
-                result = subgraph_descriptions(graph, capa_descriptions)
+                new_descriptions, count_of_subgraph_appearances = subgraph_descriptions(graph, capa_descriptions)
+                result = {'All Descriptions': new_descriptions, 'Count of Subgraph Appearances': count_of_subgraph_appearances}
             results[oid] = result
             
     return results
@@ -50,8 +51,7 @@ def subgraph_descriptions(call_graph, capa_descriptions):
     new_descriptions, all_descriptions_combinations = finding_relationships(subgraphs)
     new_descriptions = addOldDescriptions(call_graph, new_descriptions)
     count_of_subgraph_appearances = calculateTimesASubgraphAppears(all_descriptions_combinations)
-    print(count_of_subgraph_appearances) #Just for anlaysis to build rule groupings, we are seeing which subgraphs appear together the most
-    return new_descriptions
+    return new_descriptions, count_of_subgraph_appearances
 
 
 def calculateTimesASubgraphAppears(all_descriptions_combinations):
@@ -122,15 +122,16 @@ def getSubgraphs(call_graph):
 def finding_relationships(subgraphs):
     new_descriptions = {}
     combination_of_subgraph_descriptions = []
+    
     for subgraph in subgraphs:
         for grouping in subgraphs[subgraph]:
             for rule_grouping in rule_groupings:
-
                 if grouping[0][1] in rule_groupings[rule_grouping] and grouping[1][1] in rule_groupings[rule_grouping]:
+                    generated_from = {'Description Generated From Offsets': [grouping[0][0], grouping[1][0]]}
                     if subgraph not in new_descriptions:
-                        new_descriptions[subgraph] = [rule_grouping]
+                        new_descriptions[subgraph] = [{rule_grouping: generated_from}]
                     elif rule_grouping not in new_descriptions[subgraph]: 
-                        new_descriptions[subgraph].append(rule_grouping)
+                        new_descriptions[subgraph].append({rule_grouping: generated_from})
 
             if grouping[0][1] != 'No description available' and grouping[1][1] != 'No description available':
                 combination_of_subgraph_descriptions.append([grouping[0][1], grouping[1][1]])
