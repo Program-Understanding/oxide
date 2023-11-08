@@ -202,7 +202,7 @@ def disassemble_wcap(file_size, data, header, tool_insns) -> Optional[dict]:
         instruction['id']       = insn.id
         instruction['mnemonic'] = insn.mnemonic
         instruction['address']  = insn.address
-        instruction['bytes']    = insn.bytes
+        #instruction['bytes']    = insn.bytes
         instruction['op_str']   = insn.op_str
         instruction['size']     = insn.size
         instruction["str"]      = insn.mnemonic + " " + insn.op_str
