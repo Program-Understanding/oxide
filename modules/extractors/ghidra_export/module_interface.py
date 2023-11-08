@@ -67,12 +67,16 @@ def process(oid: str, opts: dict) -> bool:
 
     project = api.ghidra_project
     operating_system = platform.system()
-    print(operating_system)
+
     if 'Linux' in operating_system or 'Darwin' in operating_system:
         ghidra_xmldump.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless")
     elif 'Windows' in operating_system:
         ghidra_xmldump.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless.bat")
 
+    if not os.path.exists(ghidra_xmldump.GHIDRA_PATH):#Checks to see if the path exists
+        logger.error('The provided ghidra path is incorrect, please make sure everything is spelt correctly and the path points to the folder that contains ghidraRun: \' %s \' ', path)
+        return False
+    
     # disambiguates database name between cores
     ghidra_xmldump.GHIDRA_Project_NAME = "{}_{}".format(project, multiprocessing.current_process().name)
     ghidra_xmldump.GHIDRA_Project_PATH = api.scratch_dir

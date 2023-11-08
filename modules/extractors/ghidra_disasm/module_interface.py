@@ -69,9 +69,14 @@ def process(oid: str, opts: dict) -> bool:
         logger.warning('No ghidra path was set or configured to None')
         return False
 
-    logger.info("Using ghidra path: %s", path)
+    logger.info("Using ghidra path: %s", path)    
     project = api.ghidra_project
     ghidra_extract.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless")
+    
+    if not os.path.exists(ghidra_extract.GHIDRA_PATH):#Checks to see if the path exists
+        logger.error('The provided ghidra path is incorrect, please make sure everything is spelt correctly and the path points to the folder that contains ghidraRun: \' %s \' ', path)
+        return False
+    
     # disambiguates database name between cores
     ghidra_extract.GHIDRA_Project_NAME = "{}_{}".format(project, multiprocessing.current_process().name)
     ghidra_extract.GHIDRA_Project_PATH = api.scratch_dir

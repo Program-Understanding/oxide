@@ -72,6 +72,11 @@ def process(oid: str, opts: dict) -> bool:
         ghidra_decompiler_mapping.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless")
     elif 'Windows' in operating_system:
         ghidra_decompiler_mapping.GHIDRA_PATH = os.path.join(path, "support", "analyzeHeadless.bat")
+
+    if not os.path.exists(ghidra_decompiler_mapping.GHIDRA_PATH):#Checks to see if the path exists
+        logger.error('The provided ghidra path is incorrect, please make sure everything is spelt correctly and the path points to the folder that contains ghidraRun: \' %s \' ', path)
+        return False
+    
     # disambiguates database name between cores
     ghidra_decompiler_mapping.GHIDRA_Project_NAME = f"{project}_{multiprocessing.current_process().name}"
     ghidra_decompiler_mapping.GHIDRA_Project_PATH = api.scratch_dir
