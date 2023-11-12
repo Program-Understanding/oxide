@@ -1,6 +1,3 @@
-[submodule "capa-rules"]
-	path = capa-rules
-	url = https://github.com/mandiant/capa-rules
-[submodule "modules/extractors_dev/parse_capa/capa-rules"]
-	path = modules/extractors_dev/parse_capa/capa-rules
+[submodule "src/oxide/modules/extractors_dev/parse_capa/capa-rules"]
+	path = src/oxide/modules/extractors_dev/parse_capa/capa-rules
 	url = https://github.com/mandiant/capa-rules

@@ -29,8 +29,8 @@ Oxide CLI entrypoint module
 import argparse
 import sys
 
-from core import rshell
-from core import oshell
+from oxide.core import rshell
+from oxide.core import oshell
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-r', '--remote', action='store', type=str, dest='remote',
