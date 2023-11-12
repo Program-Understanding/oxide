@@ -66,7 +66,7 @@ except ImportError:
 for d in list(config.get_section("dir").values()):
     sys_utils.ensure_dir_exists(d)
 
-DEBUG = True
+DEBUG = False
 
 initialized_modules = {}  # Used to call modules
 module_types = ["source", "extractors", "analyzers", "map_reducers"]

@@ -57,7 +57,7 @@ DATA_DIRECTORY = None  # Update in set_application_directories
 # This is updated in the init function, when system preferred directories are identified
 DIR_DEFAULTS = None
 
-interface_defaults = {"page_size": "48",  # Pagination, None disables all pagination of output 
+interface_defaults = {"page_size": "0",  # Pagination, None disables all pagination of output, 48 is a good default value
                       }
 
 logging_defaults = {"level": "INFO",
@@ -199,7 +199,7 @@ def set_application_directories() -> None:
     else:
         path = os.getenv('XDG_CONFIG_HOME', os.path.expanduser("~/.config"))
         if APPLICATION:
-            path = path / APPLICATION
+            path = Path(path) / APPLICATION
 
     ''' Usual Data directories
         Windows:                C:\\Users\\<username>\\AppData\\Local\\<Organization>\\<App>
