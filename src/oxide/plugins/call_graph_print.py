@@ -4,9 +4,10 @@
 import networkx as nx
 import matplotlib.pyplot as plt
 import logging
-from typing import Dict, Any, List
 
 from oxide.core import api
+
+from typing import Dict, Any, List
 
 #You must run the following commands to have the correct dependencies:
 #pip install networkx
@@ -22,7 +23,7 @@ def call_graph_print(args, opts):
 
     for oid in oids:
         call_graph = api.retrieve("call_graph", oid, opts=None)
-        if call_graph != None:
+        if call_graph is not None:
             for oid, call_graph in call_graph.items():
                 pos = nx.nx_pydot.graphviz_layout(call_graph, prog="dot")
                 nx.draw(call_graph, pos=pos, with_labels=True, node_size=1400, arrows=True)

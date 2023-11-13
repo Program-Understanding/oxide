@@ -29,9 +29,12 @@ import sys
 import logging
 import configparser
 from pathlib import Path
+import shutil
 
 from oxide.core import sys_utils
+from oxide.core import user_directories
 from oxide.core.otypes import cast_string, convert_logging_level
+from oxide.core.user_directories import get_win_path_environ, get_win_path_registry, get_win_path_jna, get_win_path_ctypes
 
 from typing import Dict, Optional
 
@@ -42,8 +45,8 @@ logger = logging.getLogger(NAME)
 AUTHOR = "ProgramUnderstandingLab"
 APPLICATION = "oxide"
 
-dir_root = Path(sys_utils.ROOT_DIR)
-dir_oxide = Path(sys_utils.OXIDE_DIR)
+dir_root = Path(sys_utils.ROOT_DIR).absolute()
+dir_oxide = Path(sys_utils.OXIDE_DIR).absolute()
 
 # Filename and path for configuration
 CONFIG_FILE = ".config.txt"
@@ -127,25 +130,13 @@ if sys.platform == "win32":
             try:
                 import winreg as _winreg
             except ImportError:
-                _get_win_path = _get_win_path_environ
+                _get_win_path = get_win_path_environ
             else:
-                _get_win_path = _get_win_path_registry
+                _get_win_path = get_win_path_registry
         else:
-            _get_win_path = _get_win_path_jna
+            _get_win_path = get_win_path_jna
     else:
-        _get_win_path = _get_win_path_ctypes
-
-def _get_win_path_environ(x):
-    pass
-
-def _get_win_path_registry(x):
-    pass
-
-def _get_win_path_jna(x):
-    pass
-
-def _get_win_path_ctypes(x):
-    pass
+        _get_win_path = get_win_path_ctypes
 
 def user_data_directory():
     global CONFIG_FILE_PATH
@@ -158,7 +149,7 @@ def user_data_directory():
         if AUTHOR is None:
             AUTHOR = APPLICATION
         const = "CSIDL_LOCAL_APPDATA"
-        path = os.path.normpath(_get_win_path(const))
+        path = Path(_get_win_path(const))
         if APPLICATION:
             if AUTHOR:
                 path = path / AUTHOR / APPLICATION
@@ -227,6 +218,8 @@ def set_oxide_config_defaults() -> None:
                     "oxide"          : str(dir_oxide),
                     "libraries"      : str(dir_oxide / "libraries"),
                     "modules"        : str(dir_root / "modules"),
+                    "plugins"        : str(DATA_DIRECTORY / "plugins"),
+                    "plugins_dev"    : str(DATA_DIRECTORY / "plugins_dev"),
                     "data_dir"       : str(DATA_DIRECTORY),
                     "datasets"       : str(DATA_DIRECTORY / "datasets"),
                     "datastore"      : str(DATA_DIRECTORY / "db"),
@@ -368,8 +361,6 @@ def validate_dir_root() -> None:
     global config_changed
 
     logger.debug("Asserting that root dir in the config is valid for this environment.")
-    print("1", os.path.realpath(dir_root))
-    print("2", os.path.realpath(sys_utils.ROOT_DIR))
     if os.path.realpath(dir_root) != os.path.realpath(sys_utils.ROOT_DIR):
         logger.warning("root dir in config invalid for this environment, resetting")
         dir_root = sys_utils.ROOT_DIR

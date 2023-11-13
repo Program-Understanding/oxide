@@ -22,3 +22,4 @@ dependencies = [
 [project.scripts]
 oxide = "oxide.shell:main"
 oxide-remote = "oxide.rshell:main"
+oxide-server = "oxide.server:main"

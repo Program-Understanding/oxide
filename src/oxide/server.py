@@ -33,7 +33,7 @@ import os
 # Hack to import sister module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from core import oxide_server
+from oxide.core import oxide_server
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-l", "--listen", action="store", type=str, dest="listen", nargs='?',

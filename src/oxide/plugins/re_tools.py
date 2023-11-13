@@ -28,7 +28,7 @@ THE SOFTWARE.
 import os, tempfile, struct, capstone
 
 from oxide.core import api
-from re_lib import instruction_to_string, get_slice
+from oxide.core.libraries.re_lib import instruction_to_string, get_slice
 from oxide.core.oshell import OxideShell, ShellSyntaxError
 
 myshell = OxideShell()

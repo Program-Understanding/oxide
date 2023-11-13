@@ -2,8 +2,6 @@ import contextlib
 import builtins
 import sys
 import shutil
-import tty
-import termios
 import platform
 import logging
 
@@ -21,6 +19,8 @@ def getch() -> int:
         res = msvcrt.getch().decode()
         return res
     else:
+        import tty
+        import termios
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         try:

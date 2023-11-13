@@ -26,6 +26,7 @@ import os, logging, time, pickle, types, traceback, sys, shutil
 from collections import defaultdict
 from glob import glob
 import shlex
+from pathlib import Path
 from cmd import Cmd
 from code import InteractiveConsole, InteractiveInterpreter
 
@@ -159,6 +160,22 @@ class OxideShell(Cmd):
         self.commands["quit"] = ()
         self.commands["q"] = ()
 
+        # Populate plugins into data directory
+        plugin_path = Path(self.oxide.config.dir_plugins)
+        plugin_dev_path = Path(self.oxide.config.dir_plugins_dev)
+
+        try:
+            shutil.copytree(Path(self.oxide.config.dir_root) / "plugins",
+                            plugin_path, dirs_exist_ok=True)
+        except FileNotFoundError:
+            pass
+        try:
+            shutil.copytree(Path(self.oxide.config.dir_root) / "plugins_dev",
+                            plugin_dev_path, dirs_exist_ok=True)
+        except FileNotFoundError:
+            pass
+        sys.path.append(str(self.oxide.config.dir_data_dir))
+        
         for i in dir(self):
             if i.startswith("do_") and i.lower() not in ("do_eof", "q"):
                 self.commands[i.replace("do_", "")] = ()
@@ -394,10 +411,15 @@ class OxideShell(Cmd):
         print(f'Data files (scratch, db) located at: "{local_oxide.config.dir_data_dir}"')
 
     @error_handler
+    def do_see_plugins(self, line) -> None:
+        print(f'Plugins located at: "{local_oxide.config.dir_plugins}"')
+
+    @error_handler
     def do_important_locations(self, line) -> None:
         self.do_see_config_path(line)
         self.do_see_data_path(line)
         self.do_see_log_path(line)
+        self.do_see_plugins(line)
         print(f'History file located at: "{local_oxide.config.history_file}"')
 
     @error_handler
@@ -551,15 +573,14 @@ class OxideShell(Cmd):
         plugin_dirs = ["plugins", "plugins_dev"]
 
         # Attempt to load from each plugin directory, plugins first, then plugins_dev
-        for plugin_dir in plugin_dirs:
-            # Ensure plugin directory exists
-            try:
-                __import__(plugin_dir)
-            except ModuleNotFoundError:
-                continue
+        for p in line:
+            found = False
 
-            for p in line:
+            for plugin_dir in plugin_dirs:
+                if found:
+                    break
                 plugin_path = "{}.{}".format(plugin_dir, p)
+
                 try:
                     plugin_obj = __import__(plugin_path)
                     if p in self.plugins:
@@ -591,7 +612,7 @@ class OxideShell(Cmd):
                         self.plugin_vars[p] = getattr(plugin_obj, p).variables
 
                     # plugin successfully loaded, stop looking
-                    continue
+                    found = True
 
                 except (ShellRuntimeError, ImportError) as e:
                     if type(e) is ImportError and e.__str__() != 'No module named ' + p:

@@ -37,7 +37,7 @@ import tempfile
 import socket
 import string
 import logging
-from modules.extractors.elf.interpret_elf import ElfRepr
+from oxide.modules.extractors.elf.interpret_elf import ElfRepr
 from collections import defaultdict
 
 from typing import List, Dict, Optional, Any, Union, Iterable
