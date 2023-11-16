@@ -19,6 +19,12 @@ dependencies = [
     "flare-capa"
 ]
 
+[project.urls]  # Optional
+# "Homepage" = "https://myhomepage.com"
+"HomePage" = "https://github.com/Program-Understanding/oxide"
+"Bug Reports" = "https://github.com/Program-Understanding/oxide/issues"
+"Source" = "https://github.com/Program-Understanding/oxide"
+
 [project.scripts]
 oxide = "oxide.shell:main"
 oxide-remote = "oxide.rshell:main"
