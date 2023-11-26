@@ -19,7 +19,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE. 
+THE SOFTWARE.
 */
 
 import java.util.Iterator;
@@ -143,14 +143,25 @@ public class ghidra_extract extends GhidraScript {
             Parms += "]";
 
             String Blocks = "[";
-            DecompileResults res = ifc.decompileFunction(function, 0, null);
-            HighFunction hf = res.getHighFunction();
+            AddressSetView addresses = function.getBody();
+            CodeBlockIterator iterator = sbm.getCodeBlocksContaining(addresses, monitor);
             first = true;
-            for (PcodeBlockBasic var : hf.getBasicBlocks()){
-                if (first == false) { Blocks += ", "; }
+            while (iterator.hasNext()) {
+                if (!first) {
+                    Blocks += ", ";
+                }
                 first = false;
-                Blocks += Long.parseLong(var.getStart()+ "", 16);
+                CodeBlock in = iterator.next();
+                Blocks += Long.parseLong(in.getFirstStartAddress() +"", 16);
             }
+            // DecompileResults res = ifc.decompileFunction(function, 0, null);
+            // HighFunction hf = res.getHighFunction();
+            // first = true;
+            // for (PcodeBlockBasic var : hf.getBasicBlocks()){
+            //     if (first == false) { Blocks += ", "; }
+            //     first = false;
+            //     Blocks += Long.parseLong(var.getStart()+ "", 16);
+            // }
             Blocks += "]";
 
             print("\nRESULTF: {\"name\":\"" + function.getName() + "\","          +

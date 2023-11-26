@@ -1,15 +1,15 @@
-Oxide is a flexible, modular, distributed framework for performing analysis of 
-executable code. It separates the user interface components from the storage 
-components and from the analysis components. The system is designed such that a 
+Oxide is a flexible, modular, distributed framework for performing analysis of
+executable code. It separates the user interface components from the storage
+components and from the analysis components. The system is designed such that a
 module writer who is a domain expert in the specific area of the module does not
-need much knowledge of the rest of the system. The same modules work no matter 
+need much knowledge of the rest of the system. The same modules work no matter
 how or where the data is stored or what sort of interface the user is seeing.
 
 # Decoders
 
 ## How to get Capstone to work
 
-Capstone is an open-source, multi-platform, multi-architecture decoder. 
+Capstone is an open-source, multi-platform, multi-architecture decoder.
 
 Installation is accomplished through pip
 
@@ -48,7 +48,7 @@ IDAPro is one of the most prevalent disassemblers, with the Hex-Rays decompilers
 market. Once purchased the IDAPATH must be set in the configuration file.
 
 ## How to get Radare2
-Radare is a command line software reverse engineering tool, with capstone backend. 
+Radare is a command line software reverse engineering tool, with capstone backend.
 
 Installation is accomplished through running install script from within the radare directory. Furthermore, a python interface is required.
 * https://github.com/radareorg/radare2
@@ -105,5 +105,24 @@ python3 <binary ninja home>/scripts/install_api.py
 pip3 install
 * Termcolor
 * Networkx
+* numpy
+* graphviz
+* pydot
+* matplotlib
 
-....
+If you are using **MacOS**, you will need to install GNU objdump.
+With Brew, `brew install binutils` and symlink `gobjdump` to `/usr/local/bin/gobjdump`
+
+If you are using **linux** and want to print a call graph, you may need to install 'python3-tk'
+.....
+
+
+# Remote Shell
+
+Launch a server like:
+
+`Python3 utils/server.py -l 127.0.0.1:1492`
+
+Then, in another shell connect with:
+
+`Python3 rshell.py -r 127.0.0.1:1492`

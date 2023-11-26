@@ -1,5 +1,7 @@
 # these files are ignored by git
 
+src/oxide.egg-info/
+
 # residual oxide directories and files
 !datastore/sample_datasets
 __pycache__/
@@ -32,6 +34,7 @@ localstore/*
 
 # editor files:
 .idea
+.vscode
 
 # pytorch saves
 *.pt

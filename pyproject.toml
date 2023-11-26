@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oxide-re"
+version = "4.0.0"
+description = "Oxide is a flexible, modular, distributed framework for performing analysis of data files, including executables."
+readme = "README.md"
+requires-python = ">=3.6"
+classifiers=[
+    "Programming Language :: Python :: 3"
+]
+dependencies = [
+    "colorama",
+    "termcolor",
+    "r2pipe",
+    "flare-capa"
+]
+
+[project.urls]  # Optional
+# "Homepage" = "https://myhomepage.com"
+"HomePage" = "https://github.com/Program-Understanding/oxide"
+"Bug Reports" = "https://github.com/Program-Understanding/oxide/issues"
+"Source" = "https://github.com/Program-Understanding/oxide"
+
+[project.scripts]
+oxide = "oxide.shell:main"
+oxide-remote = "oxide.rshell:main"
+oxide-server = "oxide.server:main"
