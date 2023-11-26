@@ -35,6 +35,7 @@ from oxide.core import sys_utils
 from oxide.core.otypes import cast_string
 from oxide.core.oxide import modules_available, documentation
 from oxide.core.context_managers import paginated_print_context
+from oxide.core import datastore_filesystem as datastore
 
 from typing import List, Tuple, Any
 
@@ -355,6 +356,27 @@ class OxideShell(Cmd):
         self.parse_pipe(commands)
 
     @error_handler
+    def do_scratchdb(self, line: str):
+        """ Description: Intelligently clone current database to allow temporarily 
+            uncached analysis
+
+        Syntax:
+            scrachdb
+        """
+        self.scratchdb()
+
+    @error_handler
+    def do_originaldb(self, line: str):
+        """ Description: Revert Oxide database to original configuration. Primarily
+                         undoes the `scrachdb` command. Used for temporary uncaching.
+
+        Syntax:
+            originaldb
+        """
+        self.originaldb()
+
+
+    @error_handler
     def do_load(self, line):
         """ Description: Load a file and execute the commands in it
             Syntax: load <file>
@@ -402,6 +424,9 @@ class OxideShell(Cmd):
         """
         self.do_exit(line)
 
+    # Alias for quit or exit
+    do_q = do_quit
+
     @error_handler
     def do_see_config_path(self, line) -> None:
         print(f'Config file located at: "{local_oxide.config.dir_config}"')
@@ -415,6 +440,11 @@ class OxideShell(Cmd):
         print(f'Data files (scratch, db) located at: "{local_oxide.config.dir_data_dir}"')
 
     @error_handler
+    def do_see_db(self, line) -> None:
+        print(f'Database located at: "{datastore.datastore_dir}"')
+
+
+    @error_handler
     def do_see_plugins(self, line) -> None:
         print(f'Plugins located at: "{local_oxide.config.dir_plugins}"')
 
@@ -422,16 +452,10 @@ class OxideShell(Cmd):
     def do_important_locations(self, line) -> None:
         self.do_see_config_path(line)
         self.do_see_data_path(line)
+        self.do_see_db(line)
         self.do_see_log_path(line)
         self.do_see_plugins(line)
         print(f'History file located at: "{local_oxide.config.history_file}"')
-
-    @error_handler
-    def do_q(self, line: str) -> None:
-        """ Descriptoin: Alias for quit or exit
-            Sytnax: q
-        """
-        self.do_exit(line)
 
     @error_handler
     def do_exit(self, line: str) -> None:
@@ -976,6 +1000,19 @@ class OxideShell(Cmd):
                     pass
 
         return args
+
+
+    def scratchdb(self):
+        self.logger.info('Setting to temporary database')
+        datastore.scratchdb()
+
+    def originaldb(self):
+        """ Revert database to oxide's original databse.
+
+        This does nothing if `scratchdb` command was not used.
+        """
+        self.logger.info('Setting to Original database')
+        datastore.originaldb()
 
 
     def context_command(self, args, opts):
