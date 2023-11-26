@@ -1,10 +1,9 @@
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
-include = ["oxide/data/*"]
 
 [project]
-name = "oxide"
+name = "oxide-re"
 version = "4.0.0"
 description = "Oxide is a flexible, modular, distributed framework for performing analysis of data files, including executables."
 readme = "README.md"
