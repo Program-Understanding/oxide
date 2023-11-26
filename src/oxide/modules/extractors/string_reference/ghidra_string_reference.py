@@ -32,9 +32,10 @@ import json
 import logging
 import time
 import re
-from typing import Optional, Tuple
 
-from oxide.core.libraries.ghidra_utils import get_file_offset
+from oxide.core.libraries.ghidra_utils import get_file_offset, python_grep
+
+from typing import Optional, Tuple
 
 NAME = "string_reference"
 logger = logging.getLogger(NAME)
@@ -44,12 +45,13 @@ LOAD_ADDR = 0
 def extract_ghidra_disasm(file_test: str) -> Optional[str]:
     cmd = "{} {} {} ".format(GHIDRA_PATH, GHIDRA_Project_PATH, GHIDRA_Project_NAME) + \
           "-import {} -overwrite -scriptPath {} ".format(file_test, SCRIPTS_PATH)   + \
-          "-postScript {} | grep RESULT".format(EXTRACT_SCRIPT)
+          "-postScript {}".format(EXTRACT_SCRIPT)
     logger.info("cmd: %s", cmd)
     output = None
     with open(os.devnull, "w") as null:
         try:
             output = subprocess.check_output(cmd, universal_newlines=True, shell=True, stderr=null)
+            output = python_grep(output, 'RESULT')
         except subprocess.CalledProcessError as e:
             logger.warning(e.output)
     return output

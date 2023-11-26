@@ -54,3 +54,11 @@ def get_file_offset(vaddr: int, header_interface, load_addr: int, offsets_off: b
     if not res:
         res = vaddr - load_addr
     return res
+
+
+def python_grep(text: str, pattern: str = 'RESULT') -> str:
+    matches = []
+    for line in text.split('\n'):
+        if pattern in line:
+            matches.append(line)
+    return '\n'.join(matches)

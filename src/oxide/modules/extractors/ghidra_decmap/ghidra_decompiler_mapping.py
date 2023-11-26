@@ -32,10 +32,10 @@ import logging
 import time
 
 from oxide.core.libraries.ghidra_utils import get_file_offset
+from oxide.core import sys_utils
 
 from typing import Optional
 
-from oxide.core import sys_utils
 
 NAME = "ghidra_decmap"
 logger = logging.getLogger(NAME)
