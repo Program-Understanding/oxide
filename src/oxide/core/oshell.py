@@ -164,17 +164,21 @@ class OxideShell(Cmd):
         plugin_path = Path(self.oxide.config.dir_plugins)
         plugin_dev_path = Path(self.oxide.config.dir_plugins_dev)
 
-        try:
-            shutil.copytree(Path(self.oxide.config.dir_root) / "plugins",
-                            plugin_path, dirs_exist_ok=True)
-        except FileNotFoundError:
-            pass
-        try:
-            shutil.copytree(Path(self.oxide.config.dir_root) / "plugins_dev",
-                            plugin_dev_path, dirs_exist_ok=True)
-        except FileNotFoundError:
-            pass
-        sys.path.append(str(self.oxide.config.dir_data_dir))
+        if str(plugin_path) != str(Path(self.oxide.config.dir_root) / "plugins"):
+            try:
+                shutil.copytree(Path(self.oxide.config.dir_root) / "plugins",
+                                plugin_path, dirs_exist_ok=True)
+            except FileNotFoundError:
+                pass
+            sys.path.append(str(self.oxide.config.dir_data_dir))
+
+        if str(plugin_dev_path) != str(Path(self.oxide.config.dir_root) / "plugins_dev"):
+            try:
+                shutil.copytree(Path(self.oxide.config.dir_root) / "plugins_dev",
+                                plugin_dev_path, dirs_exist_ok=True)
+            except FileNotFoundError:
+                pass
+            sys.path.append(str(self.oxide.config.dir_data_dir))
         
         for i in dir(self):
             if i.startswith("do_") and i.lower() not in ("do_eof", "q"):
@@ -577,6 +581,7 @@ class OxideShell(Cmd):
             found = False
 
             for plugin_dir in plugin_dirs:
+                # As soon as a plugin is found to load, stop
                 if found:
                     break
                 plugin_path = "{}.{}".format(plugin_dir, p)
@@ -613,6 +618,11 @@ class OxideShell(Cmd):
 
                     # plugin successfully loaded, stop looking
                     found = True
+
+                    # Debug, print list of commands a user could try
+                    if p != 'default':
+                        plugin_commands = [x.__name__ for x in getattr(plugin_obj, p).exports][:3]
+                        print(f'[-] Plugin ({p}) successfully loaded, cmds [{", ".join(plugin_commands)}...]', file=sys.stderr)
 
                 except (ShellRuntimeError, ImportError) as e:
                     if type(e) is ImportError and e.__str__() != 'No module named ' + p:
