@@ -37,7 +37,7 @@ from oxide.core.oxide import modules_available, documentation
 from oxide.core.context_managers import paginated_print_context
 from oxide.core import datastore_filesystem as datastore
 
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Optional
 
 dict_type = (dict, defaultdict)
 collection_type = (list, set, tuple)
@@ -1446,9 +1446,17 @@ class OxideShell(Cmd):
 
 
     ### PRINT ##################################################################
-    def print_item(self, item, header=None, bullet=""):
+    def print_item(self, item, opts: Optional[dict], header=None, bullet=""):
         """ Given an item recursively iterate over it and print it's leaf nodes
+
+        Options:
+                hex - render hex string with integer objects
+                sort - Sort collections
         """
+        # Initialize opts if not passed in
+        if opts is None:
+            opts = {}
+
         if header:
             self.print_header(text=header)
 
@@ -1462,18 +1470,24 @@ class OxideShell(Cmd):
 
             for k in keys:
                 v = item[k]
+                # Option to also display as hex ints
+                if isinstance(k, int) and "hex" in opts:
+                    hex_str = f" ({hex(k)})"
+                else:
+                    hex_str = ""
+
                 if isinstance(v, dict_type) or isinstance(v, collection_type):
-                    print((bullet + repr(k) + ": "))
-                    self.print_item(v, bullet=TAB + bullet)
+                    print((bullet + repr(k) + hex_str + ": "))
+                    self.print_item(v, opts, bullet=TAB + bullet)
 
                 elif isinstance(k, str) and k.find("time") != -1 and isinstance(v, (int, float)):
-                    print(bullet + repr(k) + ": " + time.ctime(v))
+                    print(bullet + repr(k) + hex_str + ": " + time.ctime(v))
 
                 else:
                     try:
-                        print(bullet + repr(k) + ": " + str(v))
+                        print(bullet + repr(k) + hex_str + ": " + str(v))
                     except UnicodeEncodeError:
-                        print(bullet + repr(k) + ": " + v.encode('ascii', 'replace'))
+                        print(bullet + repr(k) + hex_str + ": " + v.encode('ascii', 'replace'))
 
         elif isinstance(item, collection_type):  # List, tuple or set
             if not isinstance(item, list):
@@ -1488,24 +1502,27 @@ class OxideShell(Cmd):
 
             # if list to print is Emtpy, make that apparent
             if len(item) == 0:
-                self.print_item(None, bullet=bullet)
+                self.print_item(None, opts, bullet=bullet)
 
             for i in list_item:
                 if isinstance(i, dict_type) or isinstance(i, collection_type):
-                    self.print_item(i, bullet=TAB + bullet)
+                    self.print_item(i, opts, bullet=TAB + bullet)
                     # If list of container, pretty printing appearance is identical
                     # FIXME:: pretty printing of list of containers
                     print()
                 else:
-                    self.print_item(i, bullet=bullet)
+                    self.print_item(i, opts, bullet=bullet)
 
         elif isinstance(item, types.FunctionType):  # Function
-            self.print_item(item.__name__, bullet=bullet)
+            self.print_item(item.__name__, opts, bullet=bullet)
 
         else:  # Other type
-            # import pprint
-            # pprint.pprint(item)
-            print(bullet, item)
+            # Option to also display as hex ints
+            if isinstance(item, int) and "hex" in opts:
+                hex_str = f" ({hex(item)})"
+            else:
+                hex_str = ""
+            print(bullet, item, hex_str)
 
 
     def print_header(self, text=None, fill="-"):
@@ -1547,7 +1564,7 @@ class OxideShell(Cmd):
                     files[oid] = oid_desc
 
                 cm["oids"] = files
-            self.print_item(cm, header="Collection %s" % item)
+            self.print_item(cm, opts, header="Collection %s" % item)
             self.print_tags(item)
 
         elif ( isinstance(item, str) and self.oxide.source(item)
@@ -1555,7 +1572,7 @@ class OxideShell(Cmd):
             and "meta" in self.oxide.documentation(self.oxide.source(item)) ): # file or other source
                 names = self.oxide.get_names_from_oid(item)
                 names = " - Names: " + ", ".join(names)
-                self.print_item(names, header="Metadata %s" % item)
+                self.print_item(names, opts, header="Metadata %s" % item)
                 meta_mod = self.oxide.documentation(self.oxide.source(item))["meta"]
                 size = self.oxide.get_field(meta_mod, item, "size")
                 if size:
@@ -1563,7 +1580,7 @@ class OxideShell(Cmd):
                 self.print_tags(item)
 
         else:
-            self.print_item(item, header="Info")
+            self.print_item(item, opts, header="Info")
 
         self.print_header()
 
@@ -1594,13 +1611,13 @@ class OxideShell(Cmd):
         """ Print funtcion for the command: show collections
         """
         if "verbose" in opts:
-            self.print_item(self.oxide.retrieve_all("collections_meta"), header="Collections")
+            self.print_item(self.oxide.retrieve_all("collections_meta"), opts, header="Collections")
         else:
             cm = self.oxide.retrieve_all("collections_meta")
             collections = {}
             for c in cm:
                 collections[cm[c]["name"]] = cm[c]["num_oids"]
-            self.print_item(collections, header="Collections")
+            self.print_item(collections, opts, header="Collections")
         self.print_header()
 
 
@@ -1623,7 +1640,7 @@ class OxideShell(Cmd):
             mod_list = self.oxide.modules_list(type, show_private)
             mod_list.sort()
             self.print_header()
-            self.print_item(type.capitalize())
+            self.print_item(type.capitalize(), opts)
             self.print_header()
             for mod in mod_list:
                 self.print_mod_details(mod, short=True)
