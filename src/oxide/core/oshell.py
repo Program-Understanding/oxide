@@ -516,8 +516,7 @@ class OxideShell(Cmd):
         if not line:
             raise ShellSyntaxError("")
         commands = self.parse_line("show "+line)
-        with paginated_print_context(page_size=local_oxide.config.interface_page_size):
-            self.parse_pipe(commands)
+        self.parse_pipe(commands)
 
     @error_handler
     def do_reload(self, line: str) -> None:
@@ -526,6 +525,15 @@ class OxideShell(Cmd):
                 reload
         """
         local_oxide.initialize_all_modules()
+
+    def do_ls(self, line: str) -> None:
+        """ Description: Print info about available collections
+            Syntax:
+                ls
+        """
+        opts = {}
+        self.print_collections({}, opts)
+
 
     @error_handler
     def do_context(self, line: str) -> None:
@@ -744,7 +752,7 @@ class OxideShell(Cmd):
                 return
 
             print((f.__doc__))
-
+        else:
             self.print_header("Oxide Shell Help")
             commands = list(self.commands.keys())
             commands.sort()
@@ -1180,7 +1188,8 @@ class OxideShell(Cmd):
         elif command == "context": # ... | context ... | ...
             res = self.context_command(args, opts)
         elif command == "show": # ... | show ... | ...
-            res = self.show(args, opts)
+            with paginated_print_context(page_size=local_oxide.config.interface_page_size):
+                res = self.show(args, opts)
         elif command == "drop": # ... | drop ... | ...
             res = self.drop(args, opts)
         elif command == "configure":
