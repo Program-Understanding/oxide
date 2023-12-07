@@ -1,5 +1,19 @@
 ######## Oxide Shell Overview ###############
 
+#To install oxide using the 'pip' command
+$pip install oxide-re 
+
+#To confirm installation and view information about the oxide package including the location of oxide on your local machine
+pip show oxide-re
+
+#After installing oxide, navigate to the directory where Oxide is installed using the cd command
+$cd /path/to/oxide
+
+#Once you're inside the Oxide directory, you can run oxide using the following command:
+$oxide
+--------   Oxide   --------
+oxide >
+
 # Open the Oxide shell and display the help
 $ ./oxide.sh
  --------   Oxide   --------
