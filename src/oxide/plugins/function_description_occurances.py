@@ -1,5 +1,5 @@
 
-from oxide.core import api
+from core import api
 from typing import Dict, Any, List
 def function_description_occurances(args, opts):
 
@@ -34,8 +34,17 @@ def function_description_occurances(args, opts):
 
                 subgraphAppearancesFound = function_descriptions['Count of Subgraph Appearances']
                 for description, count in subgraphAppearancesFound.items():
+                    descriptionReversed = ''
+                    firstHalf = description.split('and')[0]
+                    secondHalf = description.split('and')[1]
+                    descriptionReversed = secondHalf.strip() + ' and ' + firstHalf.strip()
+                    
                     if description in subgraphAppearances:
                         subgraphAppearances[description] += count
+
+                    elif descriptionReversed in subgraphAppearances:
+                        subgraphAppearances[descriptionReversed] += count
+
                     else:
                         subgraphAppearances[description] = count
 

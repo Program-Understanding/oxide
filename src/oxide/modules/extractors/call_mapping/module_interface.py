@@ -6,7 +6,7 @@ import logging
 
 from typing import Dict, Any
 
-from oxide.core import api
+from core import api
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -23,6 +23,7 @@ def call_mapping(functions, basic_blocks):
     call_mapping = {}
     function_addresses = functions.keys()
     #Generating calls_to
+    called_file_offset = None
     for function_addr, function_data in functions.items():
         call_mapping[function_addr] = {'calls_to': {}, 'calls_from': {}}
         for block_addr in function_data['blocks']:
@@ -31,15 +32,16 @@ def call_mapping(functions, basic_blocks):
                     for offset in basic_blocks[block_addr]['dests']:
                         if offset in function_addresses:
                             called_file_offset = offset
-                            call_mapping[function_addr]['calls_to'][called_file_offset] = functions[called_file_offset]['name']
+                    if called_file_offset != None:
+                        call_mapping[function_addr]['calls_to'][called_file_offset] = functions[called_file_offset]['vaddr']
 
     #using the calls_to to map out a calls_from
     for calling_function_addr, calls in call_mapping.items():
         for called_file_offset, called_function_address in calls['calls_to'].items():
             for function_addr, function_data in functions.items():
                 if function_addr == called_file_offset:
-                    call_mapping[function_addr]['calls_from'][calling_function_addr] = functions[calling_function_addr]['name']
-
+                    call_mapping[function_addr]['calls_from'][calling_function_addr] = functions[calling_function_addr]['vaddr']
+    
     return call_mapping
 
 def process(oid: str, opts: dict) -> bool:
@@ -48,8 +50,10 @@ def process(oid: str, opts: dict) -> bool:
     functions = api.get_field("ghidra_disasm", oid, "functions")
     basic_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
 
-    if functions != None or basic_blocks != None:
+    if functions is None or basic_blocks is None:
+        return None
+    else:
         result = call_mapping(functions, basic_blocks)
 
-        api.store(NAME, oid, result, opts)
-        return result
+    api.store(NAME, oid, result, opts)
+    return result

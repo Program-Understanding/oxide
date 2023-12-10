@@ -3,13 +3,10 @@ NAME = "call_graph"
 
 # imports
 import networkx as nx
-import matplotlib.pyplot as plt
 import logging
-
-from oxide.core import api
-
 from typing import Dict, Any, List
 
+from core import api
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
