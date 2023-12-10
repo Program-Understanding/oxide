@@ -11,12 +11,16 @@ requires-python = ">=3.6"
 classifiers=[
     "Programming Language :: Python :: 3"
 ]
-dependencies = [
+dependencies = []
+
+[project.optional-dependencies]
+full = [
     "colorama",
     "termcolor",
     "r2pipe",
     "flare-capa"
-]
+]  # or include minimal dependencies if there are any
+
 
 [project.urls]  # Optional
 # "Homepage" = "https://myhomepage.com"
