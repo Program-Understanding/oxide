@@ -29,8 +29,6 @@ import struct
 import logging
 from collections import defaultdict
 
-from typing import Optional, List, Tuple
-
 from elf_enums import (ELF_IDENT_STR, ELF_IDENT_SPEC,
                        ELF_32_HEADER_STR, ELF_32_HEADER_SPEC,
                        ELF_64_HEADER_STR, ELF_64_HEADER_SPEC,
@@ -44,6 +42,9 @@ from elf_enums import (ELF_IDENT_STR, ELF_IDENT_SPEC,
                        # machine specific relocations
                        ELF_RELOCATION_ARM_TYPE_E,
                        RELOCATIONS_64_STRINGS, RELOCATIONS_32_STRINGS)
+
+from typing import Optional, List, Tuple
+
 
 logger = logging.getLogger(NAME)
 logger.debug("init")

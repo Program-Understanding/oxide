@@ -31,10 +31,11 @@ with read, write and execute permissions and the number of standard section name
 
 import logging
 
-from typing import Dict, Any, List
-
 from oxide.core import api
 import detect_packer
+
+from typing import Dict, Any, List
+
 
 logger = logging.getLogger(NAME)
 logger.debug("init")

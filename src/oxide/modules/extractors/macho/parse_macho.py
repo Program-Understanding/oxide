@@ -26,8 +26,6 @@ import struct
 import logging
 from collections import defaultdict
 
-from typing import Optional, Union, List
-
 from macho_enums import (MACHO_MAGIC_STR, MACHO_MAGIC_SPEC,
                          MH_MAGIC, MH_CIGAM, MH_MAGIC_64, MH_CIGAM_64, FAT_MAGIC, FAT_CIGAM,
                          NFAT_ARCH_STR, ARCH_STR, NFAT_ARCH_SPEC, ARCH_SPEC, MACHO_HEADER32_STR,
@@ -38,6 +36,9 @@ from macho_enums import (MACHO_MAGIC_STR, MACHO_MAGIC_SPEC,
                          SYMTAB_STR, SYMTAB_SPEC, NLIST32_STR, NLIST64_STR, NLIST32_SPEC,
                          SECTION32_SPEC, SECTION32_STR, SECTION64_SPEC, SECTION64_STR,
                          DYSYMTAB_STR, DYSYMTAB_SPEC)
+
+from typing import Optional, Union, List
+
 
 NAME = "parse_macho"
 logger = logging.getLogger(NAME)

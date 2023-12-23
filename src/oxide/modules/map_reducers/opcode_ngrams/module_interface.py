@@ -29,9 +29,11 @@ that represents an n-gram sequence of opcodes as the key, and the frequency coun
 dictionary."
 
 import logging
-import api
-from histogram import build_ngrams, merge_histo
 from collections import defaultdict
+
+import api
+from oxide.core.libraries.histogram import build_ngrams, merge_histo
+
 logger = logging.getLogger(NAME)
 logger.debug("init")
 

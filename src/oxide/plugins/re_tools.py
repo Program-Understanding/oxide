@@ -927,7 +927,7 @@ def print_internal_functions(names):
 def name(oid):
     if api.exists("file_meta", oid):
         return api.get_field("file_meta", oid, "names").pop()
-    elif api.exists("collections_meta", oid):
+    elif api.exists("ocollections_meta", oid):
         return api.get_colname_from_oid(oid)
     return None
 

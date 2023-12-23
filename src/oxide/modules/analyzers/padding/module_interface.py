@@ -32,13 +32,14 @@ consecutive occurences."
 import logging
 import ctypes
 
+import api
+from oxide.core import otypes
+
 from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-import api
-import otypes
 
 opts_doc = {"value": {"type": int, "mangle": False, "default": -1},
             "number": {"type": int, "mangle": False, "default": 9}}

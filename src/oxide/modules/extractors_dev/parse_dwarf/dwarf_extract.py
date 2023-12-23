@@ -21,7 +21,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
-
 NAME = "dwarf_extract"
 
 """ Implementation loosely based on readelf/pyelftools, but primarily https://dwarfstd.org/doc/DWARF4.pdf
@@ -32,8 +31,6 @@ import struct
 from typing import Optional, Tuple
 from collections import defaultdict
 
-logger = logging.getLogger(NAME)
-
 from dwarf_enums import (DWARF_FORM_MAP_E, DWARF_TAG_MAP_E,
                          DWARF_LANGUAGE_MAP_E, DWARF_ATTR_MAP_E,
                          DWARF_OP_MAP_E, ADDRESS, BLOCK, CONSTANT,
@@ -43,6 +40,8 @@ from dwarf_enums import (DWARF_FORM_MAP_E, DWARF_TAG_MAP_E,
                          DIE_STR, REFERENCE1_STR, REFERENCE2_STR, REFERENCE4_STR, REFERENCE8_STR,
                          DATA1_STR, DATA2_STR, DATA4_STR, DATA8_STR,
                          LINEPTR32_STR, LINEPTR64_STR)
+
+logger = logging.getLogger(NAME)
 
 
 # ------------------ Exported interface --------------------------------

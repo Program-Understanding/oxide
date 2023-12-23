@@ -24,11 +24,11 @@ THE SOFTWARE.
 
 """ histogram.py
 """
-import collections
-from collections import defaultdict
+from collections import defaultdict, Counter
 from math import log
 
 from typing import Tuple, List, Dict, Any
+
 
 NAME = "histogram"
 
@@ -59,12 +59,12 @@ def merge_histo(main_histo: dict, new_histo: dict) -> dict:
     return main_histo
 
 
-def build_ngram_freq(data: bytes, n: int = 1) -> collections.Counter:
+def build_ngram_freq(data: bytes, n: int = 1) -> Counter:
     """ Takes a sequence containing data, typically a string of binary data.
         Returns a Counter object that has non-overlapping subsequences of
         length n as keys and the frequency that subsequence occured as the values.
     """
-    return collections.Counter(data[i:i + n] for i in range(0, len(data), n))
+    return Counter(data[i:i + n] for i in range(0, len(data), n))
 
 
 def calc_entropy(data_sequence: bytes) -> float:
@@ -90,7 +90,7 @@ def calc_entropy(data_sequence: bytes) -> float:
     """
     entropy = 0
     total = len(data_sequence)
-    histogram = collections.Counter(data_sequence)
+    histogram = Counter(data_sequence)
     for count in histogram.values():
         probability = count / total
         entropy -= probability * log(probability, 256)

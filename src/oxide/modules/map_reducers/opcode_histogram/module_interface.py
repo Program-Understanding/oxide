@@ -30,8 +30,11 @@ opcode serves as a key, and its corresponding value represents the frequency cou
 
 from collections import defaultdict
 import logging
+
 import api
-from histogram import build_histo, merge_histo
+from oxide.core.libraries.histogram import build_histo, merge_histo
+
+
 logger = logging.getLogger(name)
 logger.debug("init")
 

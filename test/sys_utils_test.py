@@ -25,7 +25,7 @@ THE SOFTWARE.
 import unittest, shutil, logging
 import os
 import _path_magic
-from core.sys_utils import (ensure_dir_exists, get_contents_of_file, get_file_stat, import_file,
+from oxide.core.sys_utils import (ensure_dir_exists, get_contents_of_file, get_file_stat, import_file,
                             delete_file, read_object_from_file, write_object_to_file,
                             get_files_from_directory, pack, unpack, pack_file, unpack_file)
 import core.oxide as oxide

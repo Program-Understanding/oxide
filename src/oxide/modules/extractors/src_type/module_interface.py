@@ -49,8 +49,8 @@ def process(oid: str, opts: dict = {}) -> bool:
     src_type = {"source":src}
     #src_type = api.get_field("src_type", oid, "type")
     logger.debug("Processing file %s", str(oid))
-    if src == "collections":
-        src_type["type"] = "collection"
+    if src == "ocollections":
+        src_type["type"] = "ocollection"
     else:
         src_type["type"] = file_type.file_type(api.get_field(src, oid, "data"))
 

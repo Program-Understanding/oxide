@@ -22,7 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-""" Plugin: Utility functions for manipulating files and collections
+""" Plugin: Utility functions for manipulating files and oxide collections
 """
 NAME = "default_plugin"
 
@@ -52,7 +52,7 @@ logger.debug("init")
 
 def membership(args: List[str], opts: dict) -> Dict[str, List[str]]:
     """
-        Prints the set of collections to which a file belongs.
+        Prints the set of oxide collections to which a file belongs.
                 If a collection is passed its membership will not be printed
         Syntax: membership %<oid> ...
     """
@@ -60,7 +60,7 @@ def membership(args: List[str], opts: dict) -> Dict[str, List[str]]:
     if not valid:
         raise ShellSyntaxError("No valid oids found")
 
-    exclude_cids = [oid for oid in valid if api.exists("collections", oid)]
+    exclude_cids = [oid for oid in valid if api.exists("ocollections", oid)]
     main_oids = set(api.expand_oids(valid))
 
     membership_cids = {}
@@ -138,15 +138,15 @@ def summarize(args: List[str], opts: dict) -> None:
 
 def intersection(args: List[str], opts: dict) -> List[str]:
     """
-        Returns the intersection of the collections passed in, non-collection IDs will be ignored
+        Returns the intersection of the oxide collections passed in, non-collection IDs will be ignored
         Syntax: intersection &col1 &col2 ...
     """
     valid, invalid = api.valid_oids(args)
     if not valid:
         raise ShellSyntaxError("No valid oids found")
-    cids = [oid for oid in valid if api.exists("collections", oid)]
+    cids = [oid for oid in valid if api.exists("ocollections", oid)]
     if not cids:
-        raise ShellSyntaxError("No valid collections found")
+        raise ShellSyntaxError("No valid oxide collections found")
     oids = set(api.expand_oids(cids[0]))
     for c in cids[1:]:
         oids = oids.intersection(api.expand_oids(c))
@@ -201,10 +201,9 @@ def file_io(args: List[str], opts: dict) -> Union[List[str], Any]:
                         p = pickle.load(fd)
                     except EOFError:
                         # one clue pickle was bad
-                        print('wut')
                         err = True
                 except NotImplementedError:
-                    print('huh')
+                    # This is to identify other ways this funciton can crash
                     err = True
             if err:
                 raise ShellSyntaxError(f'Import file was not a valid ({"pickle" if "pickle" in opts else "json"}) file. Did you need to include `--pickle`')

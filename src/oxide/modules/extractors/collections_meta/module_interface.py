@@ -22,7 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-DESC = "This module is a module that handles the metadata when importing collections."
+DESC = "This module is a module that handles the metadata when importing oxide collections."
 NAME = "collections_meta"
 
 import time

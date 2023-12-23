@@ -24,11 +24,13 @@ THE SOFTWARE.
 
 import os
 import sys
-import imp
+from pathlib import Path
+import importlib.util
 import hashlib
 import logging
 
 from oxide.core import config, sys_utils, ologger, api, progress, options, tags, otypes
+sys.modules['api'] = api
 
 # Datstore settings
 from oxide.core.local_datastore import (local_store, local_retrieve, local_exists, local_available_data,
@@ -37,17 +39,13 @@ from oxide.core.local_datastore import (local_store, local_retrieve, local_exist
 
 if "filesystem" == config.datastore_datastore:
     from oxide.core import datastore_filesystem as datastore
-elif "sqlite" == config.datastore_defaults:
+elif "sqlite" == config.datastore_datastore:
     from oxide.core import datastore_sqlite as datastore
+    datastore.initialize_database()
 else:
-    raise ShellRuntimeError(f"Invalid datastore option selected ({config.datastore_defaults})")
+    raise otypes.UnrecognizedModule(f"Invalid datastore option selected: ({config.datastore_datastore}), due to syntax error, or datastore module does not exist.")
 
 from typing import List, Dict, Union, Any, Tuple, Optional, Set, Iterable
-
-# Prepend our dirs in the path
-sys.path.insert(0, config.dir_oxide)
-sys.path.insert(0, config.dir_libraries)
-
 
 # Initialize logger
 ologger.init()
@@ -57,7 +55,7 @@ logger = logging.getLogger(NAME)
 logger.debug("Starting oxide (3.1)")
 
 try:
-    import multiproc as mp
+    import oxide.core.multiproc as mp
 except ImportError:
     config.multiproc_on  = False
     config.multiproc_max = 1
@@ -113,7 +111,12 @@ def single_call_module(module_type: str, mod_name: str, oid_list: List[str], opt
     """ Calls any module type with one oid_list
     """
     if module_type in ["extractors", "source"]:
-        return initialized_modules[mod_name].process(oid_list, opts)
+        try:
+            res = initialized_modules[mod_name].process(oid_list, opts)
+        except KeyboardInterrupt:
+            print('[+] Interupt encountered. Press again to exit tool')
+            res = None
+        return res
 
     if module_type in ["analyzers"]:
         return initialized_modules[mod_name].results(oid_list, opts)
@@ -401,6 +404,7 @@ def source(oid: str, dir_override: Optional[str] = None) -> Optional[str]:
         return None
     if dir_override:
         change_db_dir(dir_override)
+
     for source in modules_available["source"]:
         if exists(source, oid, {}):
             logger.debug("Source of %s is %s", oid, source)
@@ -482,7 +486,7 @@ def modules_stats(modules="all", module_type="all", show_private=True):
 def import_file(file_location: str, dir_override: Optional[str] = None) -> Tuple[Optional[str], bool]:
     fd = sys_utils.import_file(file_location, config.file_max)
     if not fd:
-        print('no file descriptor')
+        print('[-] no file descriptor (%s), file may be empty' % file_location)
         return None, False
 
     oid = get_oid_from_data(fd["data"])
@@ -594,8 +598,21 @@ def initialize_all_modules() -> None:
                     os.path.isfile(init_file),
                     os.path.isfile(interface_file))
 
-    # ugly hack to make source module lookup faster, places collections and files first in the list
+    # ugly hack to make source module lookup faster, places oxide collections and files first in the list
     modules_available['source'].sort()
+
+
+
+def load_module(module_name: str, module_path: str) -> Any:
+    """ Function to load a module from a given path
+        Achieve parity bteween imp and importlib for python 3.12+ compatibility
+    """
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    print(type(module))
+    return module
 
 
 def initialize_module(mod_name: str, mod_dir: str) -> bool:
@@ -604,29 +621,91 @@ def initialize_module(mod_name: str, mod_dir: str) -> bool:
     # Tweak our sys.modules to import modules from another branch directory
     # TODO:: replace with importlib as imp will be deprecated in future release
 
+    # All angr ones require angr installed
+    # BAP requires bap installed
+    # Binary Ninja requires binja api
+    # TLSH requires tlsh package
+    # Exhaustive and disassembly require capstone or xed
+    known_failing_modules = ["", ""]
+    # ["exhaust_disasm"]:
+    known_failing_modules.append("emu_angr_disasm")
+    known_failing_modules.append("angr_function_id")
+    known_failing_modules.append("fst_angr_disasm")
+    known_failing_modules.append("bap_disasm")
+    known_failing_modules.append("tlshash")
+    known_failing_modules.append("binja_disasm")
+    known_failing_modules.append("exhaust_disasm")
+    known_failing_modules.append("disassembly")
+
     # DELTEME:
     if DEBUG:
-        if mod_name in ["emu_angr_disasm", "bap_disasm", "angr_function_id", "fst_angr_disasm"]:
-            return False
-        f, filename, description = imp.find_module(mod_name, [mod_dir])
-        mod = imp.load_module(mod_name, f, filename, description)
+        # This only exists to track down when modules are not loading
+        print(mod_name)
 
-        # Register the module in initialized_modules
-        f, filename, description = imp.find_module("module_interface", [filename])
-        submod = imp.load_module(mod_name, f, filename, description)
+        # Avoid modules with known issues.
+        if mod_name in known_failing_modules:
+            logger.debug('[-] %s is a known problematic module, skipping.', mod_name)
+            return False
+        # Load the main module
+        init_file = Path(mod_dir) / mod_name / "__init__.py"
+        if not init_file.is_file():
+            print('[-] %s does not contain a `__init__.py` and therefore not a valid module. Skipping.', mod_name)
+            return False
+
+        spec = importlib.util.spec_from_file_location(mod_name, init_file.absolute())
+        module = importlib.util.module_from_spec(spec)
+
+        sys.modules[mod_name] = module
+        spec.loader.exec_module(module)
+
+        # Load the module interface
+        interface_file = Path(mod_dir) / mod_name / "module_interface.py"
+        if not interface_file.is_file():
+            print('[-] %s does not contain a `module_interface.py` and therefore not a valid module. Skipping.', mod_name)
+            return False
+
+        interface_module_name = f"{mod_name}.module_interface"
+        interface_spec = importlib.util.spec_from_file_location(interface_module_name, interface_file.absolute())
+        submod = importlib.util.module_from_spec(interface_spec)
+        sys.modules[interface_module_name] = submod
+        interface_spec.loader.exec_module(submod)
+
+        # Assuming you need to set the api attribute
         submod.api = api
+
+        # Assuming you have a global dict to keep track of initialized modules
         initialized_modules[mod_name] = submod
+
     else:
         pass
 
     try:
-        f, filename, description = imp.find_module(mod_name, [mod_dir])
-        mod = imp.load_module(mod_name, f, filename, description)
+        # Load the main module
+        init_file = Path(mod_dir) / mod_name / "__init__.py"
+        if not init_file.is_file():
+            return False
 
-        # Register the module in initialized_modules
-        f, filename, description = imp.find_module("module_interface", [filename])
-        submod = imp.load_module(mod_name, f, filename, description)
+        spec = importlib.util.spec_from_file_location(mod_name, init_file.absolute())
+        module = importlib.util.module_from_spec(spec)
+
+        sys.modules[mod_name] = module
+        spec.loader.exec_module(module)
+
+        # Load the module interface
+        interface_file = Path(mod_dir) / mod_name / "module_interface.py"
+        if not interface_file.is_file():
+            return False
+
+        interface_module_name = f"{mod_name}.module_interface"
+        interface_spec = importlib.util.spec_from_file_location(interface_module_name, interface_file.absolute())
+        submod = importlib.util.module_from_spec(interface_spec)
+        sys.modules[interface_module_name] = submod
+        interface_spec.loader.exec_module(submod)
+
+        # Assuming you need to set the api attribute
         submod.api = api
+
+        # Assuming you have a global dict to keep track of initialized modules
         initialized_modules[mod_name] = submod
     except TypeError as err:
         logger.debug('TypeError: %s in module(%s)', err, mod_name)
@@ -652,8 +731,9 @@ def initialize_module(mod_name: str, mod_dir: str) -> bool:
     return True
 
 
-# -------------------------- COLLECTIONS FUNCTIONS -----------------------------------------------
+# -------------------------- OXIDE COLLECTIONS FUNCTIONS -----------------------------------------------
 def create_collection(col_name: str, oid_list: List[str], notes: str = "") -> bool:
+    print(f'TRYING TO CREATE {col_name}')
     if not oid_list:
         logger.error("Cannot create an empty collection.")
         return False
@@ -669,7 +749,7 @@ def create_collection(col_name: str, oid_list: List[str], notes: str = "") -> bo
 
     opts = {"oid_list": oid_list}
     meta_opts = {"name": col_name, "num_oids": len(oid_list), "notes": notes}
-    if not process("collections", cid, opts):
+    if not process("ocollections", cid, opts):
         logger.error("Collection creation failed")
         return False
     if not process("collections_meta", cid, meta_opts):
@@ -678,66 +758,66 @@ def create_collection(col_name: str, oid_list: List[str], notes: str = "") -> bo
     return True
 
 
-def delete_collection_by_name(col_name):
+def delete_ocollection_by_name(col_name):
     cid = get_cid_from_name(col_name)
     if not cid:
         logger.error("Cannot delete this collection, name not found:%s", col_name)
         return False
-    return delete_collection_by_cid(cid)
+    return delete_ocollection_by_cid(cid)
 
 
-def delete_collection_by_cid(cid):
+def delete_ocollection_by_cid(cid):
     source_set_dict = get_set_names()
     if cid not in source_set_dict:
         logger.error("Cannot delete this collection, cid not found:%s", cid)
         return False
     if ( not datastore.delete_oid_data("collections_meta", cid)
-         or not datastore.delete_oid_data("collections", cid)):
-        logger.error("Collection deletion failed")
+         or not datastore.delete_oid_data("ocollections", cid)):
+        logger.error("Oxide Collection deletion failed")
         return False
     return True
 
 
-def prune_collection_by_name(col_name, oid_list):
+def prune_ocollection_by_name(col_name, oid_list):
     cid = get_cid_from_name(col_name)
     if not cid:
         logger.error("Cannot prune this collection, name not found:%s", col_name)
         return False
-    return prune_collection_by_cid(cid, oid_list)
+    return prune_ocollection_by_cid(cid, oid_list)
 
 
-def prune_collection_by_cid(cid, oid_prune_list):
+def prune_ocollection_by_cid(cid, oid_prune_list):
     source_set_dict = get_set_names()
     if cid not in source_set_dict:
         logger.error("Cannot prune this collection, cid not found:%s", cid)
         return False
 
-    d = datastore.retrieve("collections", cid)
+    d = datastore.retrieve("ocollections", cid)
     md = datastore.retrieve("collections_meta", cid)
     oid_list = d["oid_list"]
     for oid in oid_prune_list:
         if oid in oid_list:
             oid_list.remove(oid)
-    if delete_collection_by_cid(cid):
+    if delete_ocollection_by_cid(cid):
         return create_collection(md["name"], oid_list, md["notes"])
     create_collection(md["name"], oid_list, md["notes"])
     return False
 
 
-def rename_collection_by_name(orig_name, new_name):
+def rename_ocollection_by_name(orig_name, new_name):
     cid = get_cid_from_name(orig_name)
     if not cid:
-        logger.error("Cannot rename this collection, name not found:%s", orig_name)
+        logger.error("Cannot rename this oxide collection, name not found:%s", orig_name)
         return False
-    return rename_collection_by_cid(cid, new_name)
+    return rename_ocollection_by_cid(cid, new_name)
 
 
-def rename_collection_by_cid(cid, new_name):
+def rename_ocollection_by_cid(cid, new_name):
     source_set_dict = get_set_names()
     if cid not in source_set_dict:
-        logger.error("Cannot rename this collection, cid not found:%s", cid)
+        logger.error("Cannot rename this oxide collection, cid not found:%s", cid)
         return False
-    d = datastore.retrieve("collections", cid)
+    d = datastore.retrieve("ocollections", cid)
     md = datastore.retrieve("collections_meta", cid)
     oid_list = d["oid_list"]
     notes = md["notes"]
@@ -745,7 +825,7 @@ def rename_collection_by_cid(cid, new_name):
     if new_name in col_names:
         logger.error("Collection by that name already exist.")
         return False
-    if delete_collection_by_cid(cid):
+    if delete_ocollection_by_cid(cid):
         return create_collection(new_name, oid_list, notes)
     create_collection(md["name"], oid_list, notes)
     return False
@@ -777,7 +857,7 @@ def get_orphan_oids() -> List[str]:
         return set()
     oids = set(oids)
     for cid in collection_cids():
-        ids = get_field('collections', cid, 'oid_list')
+        ids = get_field('ocollections', cid, 'oid_list')
         if ids:
             ids = set(ids)
             oids = oids - ids
@@ -786,16 +866,18 @@ def get_orphan_oids() -> List[str]:
 
 def get_set_names() -> dict:
     source_set_dict = {}
+
     for source_mod in modules_available["source"]:
-            doc = documentation(source_mod)
-            if doc["set"]: # Currently only source set is collections
-                data = retrieve_all(source_mod)
-                for oid in data:
-                    source_set_dict[oid] = get_colname_from_oid(oid)
+        doc = documentation(source_mod)
+        if doc["set"]: # Currently only source set is collections
+            data = retrieve_all(source_mod)
+            for oid in data:
+                source_set_dict[oid] = get_colname_from_oid(oid)
     return source_set_dict
 
 
 def collection_names() -> List[str]:
+    print('Collection Names', list(get_set_names().values()))
     return list(get_set_names().values())
 
 
@@ -823,7 +905,7 @@ def get_collection_info(col_name: str, view: str) -> dict:
 
     if view == 'all' or view == 'files':
         flist = []
-        oid_list = get_field("collections", cid, "oid_list")
+        oid_list = get_field("ocollections", cid, "oid_list")
         for oid in oid_list:
             names = get_field("file_meta", oid, "names")
             flist.extend(names)
@@ -832,13 +914,13 @@ def get_collection_info(col_name: str, view: str) -> dict:
 
     if view == 'all' or view == 'oids':
         if not oid_list:
-            oid_list = get_field("collections", cid, "oid_list")
+            oid_list = get_field("ocollections", cid, "oid_list")
         result['oid_list'] = oid_list
 
     if view == 'all' or view == 'memberships':
         cid = get_cid_from_name(col_name)
         oid_list = expand_oids(cid)
-        exclude_cids = [ o for o in oid_list if exists("collections", o) ]
+        exclude_cids = [ o for o in oid_list if exists("ocollections", o) ]
         cids = [ c for c in collection_cids() if c not in exclude_cids]
         results = {}
         for c in cids:
@@ -895,7 +977,7 @@ def cleanup_oid_list(mod_name: str, oid_list: List[str]) -> List[str]:
     if not doc_dict["atomic"]:
         for oid in oid_list:
             try:
-                if source(oid) not in ["collections"]:
+                if source(oid) not in ["ocollections"]:
                     raise otypes.BadOIDList("Atomic OIDs passed to module that only handles sets")
             except otypes.OxideError:
                 break
@@ -943,6 +1025,7 @@ def expand_oids(oids: Union[str, List[str]]) -> List[str]:
     new_oids = []
     for oid in oids:
         src = source(oid)
+
         if not src:
             logger.warning("Invalid OID to expand: %s", oid)
             continue
@@ -980,7 +1063,7 @@ def get_colname_from_oid(oid: str) -> Set[str]:
     logger.debug("Getting name for collection oid:%s", oid)
 
     for s in modules_available["source"]:
-        if s == "collections":
+        if s == "ocollections":
             s = "collections_meta"
         ds = datastore.retrieve(s,oid)
         if not ds or not isinstance(ds, dict):
@@ -1049,12 +1132,12 @@ def wire_api():
     api.expand_oids               = expand_oids
     api.get_oids_with_name        = get_oids_with_name
     api.get_colname_from_oid      = get_colname_from_oid
-    api.delete_collection_by_cid  = delete_collection_by_cid
-    api.delete_collection_by_name = delete_collection_by_name
+    api.delete_ocollection_by_cid  = delete_ocollection_by_cid
+    api.delete_ocollection_by_name = delete_ocollection_by_name
     api.get_names_from_oid        = get_names_from_oid
     api.get_oid_from_data         = get_oid_from_data
     api.get_available_modules     = get_available_modules
-    api.create_collection         = create_collection
+    api.create_ocollection         = create_ocollection
     api.scratch_dir               = config.dir_scratch
 
     scratch_dir           = config.dir_scratch

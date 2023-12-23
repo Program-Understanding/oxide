@@ -26,10 +26,11 @@ DESC = "Produce a histogram of lengths of basic blocks"
 NAME = "block_len_histogram"
 
 import logging
-import api
-
-from histogram import merge_histo
 from collections import defaultdict
+
+import api
+from oxide.core.libraries.histogram import merge_histo
+
 
 logger = logging.getLogger(NAME)
 logger.debug("init")

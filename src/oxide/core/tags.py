@@ -45,6 +45,7 @@ def apply_tags(oid_list: List[str], new_tags: List[str]) -> None:
             tags = {}
         else:
             tags = api.retrieve("tags", oid, {}, True)
+
         for tag in new_tags:
             tags[tag] = new_tags[tag]
         api.store("tags", oid, tags)
@@ -68,7 +69,7 @@ def tag_filter(oid_list: List[str], tag: str, value: str = "<empty>") -> Optiona
         if not oid_list:
             logger.error("No files exist")
             return None
-        cids = api.retrieve_all_keys("collections")
+        cids = api.retrieve_all_keys("ocollections")
         if cids:
             oid_list.extend(cids)
 

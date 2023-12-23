@@ -28,6 +28,7 @@ import os
 import sys
 import logging
 import configparser
+import multiprocessing
 from pathlib import Path
 import shutil
 
@@ -61,6 +62,7 @@ DATA_DIRECTORY = None  # Update in set_application_directories
 DIR_DEFAULTS = None
 
 interface_defaults = {"page_size": "0",  # Pagination, None disables all pagination of output, 48 is a good default value
+                      "show_timing": "true"  # Whether to show timing of each command
                       }
 
 logging_defaults = {"level": "INFO",
@@ -199,12 +201,17 @@ def set_application_directories() -> None:
     '''
     CONFIG_FILE_PATH = path / CONFIG_FILE
     DATA_DIRECTORY = user_data_directory()
+
+    # FIXME:: For main process, print location of configuration file
     print(f" - Location of configuration file   : {CONFIG_FILE_PATH}")
+
     if path and not path.exists():
         path.mkdir(parents=True, exist_ok=True)
         path.chmod(0o755)
         print(f" - created config directory: {path.absolute()}")
+    # FIXME:: For main process, print location of configuration file
     print(f" - Default location to store data and caching: {DATA_DIRECTORY}")
+
     if DATA_DIRECTORY and not DATA_DIRECTORY.exists():
         DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
         DATA_DIRECTORY.chmod(0o755)
@@ -235,7 +242,7 @@ def set_oxide_config_defaults() -> None:
                     "ghidra_path5"   : "",
                     "ida_path"       : "",
                     "ghidra_project" : str(DATA_DIRECTORY / "scratch"),
-                    "scripts"        : str(dir_root.parent.parent / "scripts")  # actual oxide_root
+                    "scripts"        : str(dir_root.parent / "scripts")  # actual oxide_root
                     }
     ALL_DEFAULTS['dir'] = DIR_DEFAULTS
     ALL_DEFAULTS['history']['file'] = str(DATA_DIRECTORY / '.history.txt')

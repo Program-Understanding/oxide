@@ -25,9 +25,9 @@ DESC = " This module uses the capa tool to extract features from an executable."
 NAME = "parse_capa"
 
 import logging
-import run_capa
 
 from oxide.core import api
+import run_capa
 
 logger = logging.getLogger(NAME)
 logger.debug("init")

@@ -251,4 +251,4 @@ def file_type(stream: bytes) -> Set[str]:
 
     if not type:
         type.add("Unknown")
-    return type
+    return list(type)

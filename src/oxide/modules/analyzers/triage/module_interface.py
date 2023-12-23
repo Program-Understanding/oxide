@@ -50,6 +50,8 @@ def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
         src_type = api.get_field("src_type", oid, "type")
         print("types: ", src_type)
+        print()
+        print()
 
         a = accounted_for
         if 'ELF' in src_type or "PE" in src_type or "MACHO" in src_type or ('ZIP' in src_type and '.jar' in exts):
@@ -91,6 +93,8 @@ def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             accounted_for += 1
             results['source']['verbose'].append(oid)
             continue
+            
+        print('Not accounted for.')
 
     if 'verbose' not in opts:
         for category in CATEGORIES:

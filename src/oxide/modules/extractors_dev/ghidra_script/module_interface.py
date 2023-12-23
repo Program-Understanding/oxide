@@ -1,14 +1,14 @@
 DESC = " This module uses ghidra to run script that produces JSON output. Uses default file as arg1."
 NAME = "ghidra_script"
 
-import logging
-import os
-import multiprocessing
+import logging          # noqa: E402
+import os               # noqa: E402
+import multiprocessing  # noqa: E402
 
-from typing import Dict, Any
+import ghidra_runscript     # noqa: E402
+from oxide.core import api  # noqa: E402
 
-import ghidra_runscript
-from oxide.core import api
+from typing import Dict, Any   # noqa: E402
 
 logger = logging.getLogger(NAME)
 logger.debug("init")

@@ -28,7 +28,6 @@ THE SOFTWARE.
 NAME = "parse_pe"
 import struct
 import logging
-from collections import defaultdict
 
 from typing import Dict, Any, Optional, Tuple
 
@@ -57,6 +56,8 @@ from pe_enums import (SUBSYSTEM_ENUM,  # noqa
                       BASE_RELOCATION_SPEC, EXPORTS_NAME_POINTER_TABLE_SPEC,
                       IMPORT_LOOKUP_TABLE_32_SPEC, IMPORT_LOOKUP_TABLE_64_SPEC,
                       BASE_RELOCATION_TYPE_ENUM)
+
+from collections import defaultdict
 
 
 logger = logging.getLogger(NAME)

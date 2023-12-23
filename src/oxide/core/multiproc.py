@@ -43,7 +43,6 @@ class MyManager(BaseManager):
 MyManager.register('Progress', Progress)
 MyManager.register('Queue', Queue)
 
-
 max_processes = config.multiproc_max
 results_q = Queue()
 
@@ -119,10 +118,9 @@ def multi_map_callable(func: Callable, oid_list: List[str], opts: dict, blocking
     
             p = manager.Progress(num_oids)
             results_q = manager.Queue()
-            
-            print(max_processes)
+
             nprocs = min(num_oids, max_processes)
-            
+
             with Pool(processes=nprocs) as pool:
                 # print('qsize before', results_q.qsize())
                 
@@ -137,7 +135,7 @@ def multi_map_callable(func: Callable, oid_list: List[str], opts: dict, blocking
                     continue
                 results.append(result_queue)
 
-        print(dir(results_q))
+        # results_q dir?
         manager.shutdown()
         del results_q
         return results, len(results)

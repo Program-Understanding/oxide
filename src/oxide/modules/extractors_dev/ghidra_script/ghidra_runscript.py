@@ -3,16 +3,12 @@
 
 import os
 import subprocess
-import json
 import logging
 import time
-import shlex
 
-from typing import Optional, Tuple
+from typing import Optional
 
-from oxide.core.libraries.ghidra_utils import get_file_offset
-
-NAME = "ghidra_disasm"
+NAME = "ghidra_runscript"
 logger = logging.getLogger(NAME)
 
 LOAD_ADDR = 0

@@ -23,7 +23,7 @@ THE SOFTWARE.
 """
 
 DESC = " Used to store collection_id and associated oids"
-NAME = "collections"
+NAME = "ocollections"
 
 import logging
 from oxide.core import api

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 import json
-import collections
-from typing import Any, Dict
+from collections import defaultdict
+from pathlib import Path
 import capa.main
 import capa.rules
 import capa.engine
@@ -15,11 +15,11 @@ import capa.features.freeze.features as frzf
 from capa.engine import *
 from capa.features.common import FORMAT_AUTO
 
-OS_AUTO = "auto"
-#RULES_PATH = "./capa-rules"
-#RULES_PATH = "/home/nathan/Documents/oxide/modules/extractors_dev/parse_capa/capa-rules"
-RULES_PATH = "/home/nzi0007/oxide/modules/extractors_dev/parse_capa/capa-rules"
+from typing import Any, Dict
 
+
+OS_AUTO = "auto"
+RULES_PATH = Path("capa-rules").absolute()
 
 FORMAT = "dictionary"
 
@@ -105,7 +105,7 @@ def render_attack(doc, result):
         }
     """
     result["ATTCK"] = dict()
-    tactics = collections.defaultdict(set)
+    tactics = defaultdict(set)
     for rule in rutils.capability_rules(doc):
         if not rule.meta.attack:
             continue
@@ -138,7 +138,7 @@ def render_mbc(doc, result):
         }
     """
     result["MBC"] = dict()
-    objectives = collections.defaultdict(set)
+    objectives = defaultdict(set)
     for rule in rutils.capability_rules(doc):
         if not rule.meta.mbc:
             continue

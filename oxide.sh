@@ -5,9 +5,7 @@
 cd "$(dirname "$0")"
 
 # Add the src directory to PYTHONPATH
-echo $pwd
 export PYTHONPATH=$PYTHONPATH:$(pwd)/src
-echo $PYTHONPATH
 
 # Execute your Python script
 python3 src/oxide/shell.py

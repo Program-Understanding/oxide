@@ -1,14 +1,20 @@
+""" Sqlite3 backend for oxide datastore
+
+Resources:
+- https://stackoverflow.com/questions/12952546/sqlite3-interfaceerror-error-binding-parameter-1-probably-unsupported-type
+"""
 import os
 import shutil
-import pickle
 import logging
 import time
 import errno
+import pickle
 from glob import glob
 import sqlite3
 from pathlib import Path
 
 from oxide.core import sys_utils, config, api, ologger
+from oxide.core.serialization import serialize, deserialize, SERIAL_METHOD
 from oxide.core.options import build_suffix
 from oxide.core.options import parse_suffix
 
@@ -36,19 +42,23 @@ def initialize_database():
     global TABLE_NAME
     global CONN
     global CURSOR
+    global VALID_SERIAL
+
     db_path = Path(datastore_dir) / 'datastore.db'
-    print(db_path.absolute)
-    with sqlite3.connect(db_path.absolute) as conn:
+
+    with sqlite3.connect(db_path.absolute()) as conn:
         CONN = conn
         CURSOR = CONN.cursor()
         # Create the table if it doesn't exist
+        # OID is BLOB to be consistent with Options
         CURSOR.execute(f'''
             CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
                 module_name TEXT NOT NULL,
-                oid TEXT NOT NULL,
-                options TEXT,
+                oid BLOB NOT NULL,
+                options BLOB,
                 data BLOB,
-                PRIMARY KEY (module_name, oid, options)
+                serial TEXT,
+                PRIMARY KEY (module_name, oid, options, serial)
             );
         ''')
         CONN.commit()
@@ -57,59 +67,85 @@ def initialize_database():
 
 def store(mod_name: str, oid: str, data: bytes, opts: dict, block: bool = True) -> bool:
     global CURSOR
-    opts_str = pickle.dumps(opts)  # Serialize opts for storage
-    CURSOR.execute("INSERT OR REPLACE INTO data (mod_name, oid, opts, data) VALUES (?, ?, ?, ?)", 
-                   (mod_name, oid, opts_str, data))
+    global SERIAL_METHOD
+    opts_str = serialize(opts)  # Serialize opts for storage
+    data_str = serialize(data)  # Serialize data for storage
+
+    CURSOR.execute("INSERT OR REPLACE INTO data (module_name, oid, options, data, serial) VALUES (?, ?, ?, ?, ?)", 
+                   (mod_name, oid.encode('utf-8'), opts_str, data_str, SERIAL_METHOD))
     CONN.commit()
     return True
 
 
 def available_data(mod_name: str) -> List[Tuple[str, Dict[str, Any]]]:
-    CURSOR.execute("SELECT oid, opts FROM data WHERE mod_name=?", (mod_name,))
-    records = cursor.fetchall()
-    data = [(oid, pickle.loads(opts)) for oid, opts in records]
+    global SERIAL_METHOD
+    CURSOR.execute("SELECT oid, options FROM data WHERE module_name=? AND serial=?", (mod_name, SERIAL_METHOD))
+    records = CURSOR.fetchall()
+    data = [(oid, deserialize(opts)) for oid, opts in records]
     return data
 
 
 def retrieve_all(mod_name: str) -> Dict[str, Any]:
-    cursor.execute("SELECT oid || opts, data FROM data WHERE mod_name=?", (mod_name,))
-    records = cursor.fetchall()
+    # print('1', mod_name, '2', SERIAL_METHOD)
+    CURSOR.execute("SELECT oid || options, data FROM data WHERE module_name=? and serial=?", (mod_name, SERIAL_METHOD))
+
+    records = CURSOR.fetchall()
     return {mangled_name: data for mangled_name, data in records}
 
 
 def retrieve_all_keys(mod_name: str) -> Optional[List[str]]:
-    cursor.execute("SELECT oid || opts FROM data WHERE mod_name=?", (mod_name,))
-    records = cursor.fetchall()
-    return [res[0] for res in records] if records else None
+    CURSOR.execute("SELECT oid || options FROM data WHERE module_name=? and serial=?", (mod_name, SERIAL_METHOD))
+    records = CURSOR.fetchall()
+    return [deserialize(res[0]) for res in records] if records else None
 
 
-def retrieve(mod_name: str, oid: str, opts: dict = {}, lock: bool = False) -> Optional[Any]:
-    opts_str = pickle.dumps(opts)
-    cursor.execute("SELECT data FROM data WHERE mod_name=? AND oid=? AND opts=?", (mod_name, oid, opts_str))
-    record = cursor.fetchone()
-    return record[0] if record else None
+def retrieve(mod_name: str, oid: str, opts: dict = None, lock: bool = False) -> Optional[Any]:
+    if opts is None:
+        opts = {}
+    opts_str = serialize(opts)
+
+    CURSOR.execute("SELECT data FROM data WHERE module_name=? AND oid=? and serial=?", (mod_name, oid.encode('utf-8'), SERIAL_METHOD))
+    record = CURSOR.fetchone()
+
+    res = deserialize(record[0]) if record else None
+    return res
+
+
+def retrieve_lock(mod_name: str, oid: str, opts: dict = None) -> Optional[bytes]:
+    if opts is None:
+        opts = {}
+    return retrieve(mod_name, oid, opts, True)
 
 
 def count_records(mod_name: str) -> int:
-    cursor.execute("SELECT COUNT(*) FROM data WHERE mod_name=?", (mod_name,))
-    return cursor.fetchone()[0]
+    CURSOR.execute("SELECT COUNT(*) FROM data WHERE module_name=? and serial=?", (mod_name, SERIAL_METHOD))
+    return CURSOR.fetchone()[0]
 
 
-def exists(mod_name: str, oid: str, opts: dict = {}) -> bool:
-    opts_str = pickle.dumps(opts)
-    cursor.execute("SELECT 1 FROM data WHERE mod_name=? AND oid=? AND opts=?", (mod_name, oid, opts_str))
-    return bool(cursor.fetchone())
+def exists(mod_name: str, oid: str, opts: dict = None) -> bool:
+    if opts is None:
+        opts = {}
+    opts_str = serialize(opts)
+    # AND options=?
+    CURSOR.execute("SELECT 1 FROM data WHERE module_name=? AND oid=? and serial=?", (mod_name, oid.encode('utf-8'), SERIAL_METHOD))
+    return bool(CURSOR.fetchone())
 
 
 def delete_module_data(mod_name: str) -> bool:
-    cursor.execute("DELETE FROM data WHERE mod_name=?", (mod_name,))
-    conn.commit()
+    CURSOR.execute("DELETE FROM data WHERE module_name=? and serial=?", (mod_name, SERIAL_METHOD))
+    CONN.commit()
     return True
 
 
 def delete_oid_data(mod_name: str, oid: str) -> bool:
-    cursor.execute("DELETE FROM data WHERE mod_name=? AND oid=?", (mod_name, oid))
-    conn.commit()
+    CURSOR.execute("DELETE FROM data WHERE module_name=? AND oid=?", (mod_name, oid))
+    CONN.commit()
     return True
+
+def cleanup() -> None:
+    """ NotImplemented
+    """
+    pass
+
 
 # ... [rest of the code]

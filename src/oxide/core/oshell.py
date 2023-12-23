@@ -134,6 +134,7 @@ class OxideShell(Cmd):
         self.config = { "promptcolor"     : "cyan",
                         #"prompt"          : self.colorize("\n oxide > ", "cyan"),
                         "prompt"          : " oxide > ",
+                        # FIXME:: this should use os.sched.cpu_affinity as max
                         "max_processes"   : local_oxide.config.multiproc_max,
                         "multiprocessing" : local_oxide.config.multiproc_on,
                         "header_len"      : 40,
@@ -187,12 +188,12 @@ class OxideShell(Cmd):
 
         self.logger.debug("Initializing subcommands")
         self.commands["tag"] = ("apply", "get", "filter")
-        self.commands["show"] = ("collections", "context", "modules", "stats",
+        self.commands["show"] = ("ocollections", "context", "modules", "stats",
                                  "orphans", "vars", "plugins", "aliases")
-        self.show_completions = ("collections", "context", "modules ", "stats",
+        self.show_completions = ("ocollections", "context", "modules ", "stats",
                                  "orphans", "vars", "plugins ", "aliases")
         self.commands["context"] = ("add", "clear", "remove", "set", "load", "save")
-        self.commands["collection"] = ("create", "delete", "rename", "add", "remove")
+        self.commands["ocollection"] = ("create", "delete", "rename", "add", "remove")
         self.commands["history"] = ("clear")
         self.commands["drop"] = ("database", "scratch", "localstore", "orphans")
 
@@ -215,15 +216,25 @@ class OxideShell(Cmd):
 
     # -- PRE/POST FUNCTIONS ----------------------------------------------------------------------
     def preloop(self):
-        pass
+        # Initialization function for cmd loop
+        self.last_cmd_success = True
 
     def postloop(self):
         pass
 
     def precmd(self, line):
+        self.prev_time = time.time()
+        # Default, command will work, putting good vibes into the universe
+        self.last_cmd_success = True  # This will reduce number of value assignments
         return line
 
     def postcmd(self, stop, line):
+        if local_oxide.config.interface_show_timing:
+            # prints duration of previous command, whether it failed, and what was ran
+            print(f'[+] [{"OK  " if self.last_cmd_success else "FAIL"}] {time.time() - self.prev_time:4f}: Cmd [{line}]')
+            self.logger.debug(f'[+] [{"OK  " if self.last_cmd_success else "FAIL"}] {time.time() - self.prev_time:4f}: Cmd [{line}]')
+
+        # Restore default settings
         if self.config["multiprocessing"] != self.oxide.config.multiproc_on:
             self.oxide.config.multiproc_on = self.config["multiprocessing"]
 
@@ -317,6 +328,7 @@ class OxideShell(Cmd):
         """
         if not readline_enabled:
             print(" - This command is disabled because it depends on readline")
+            self.last_cmd_success = False
             return
 
         if readline_fullversion and readline.get_current_history_length() != 0:
@@ -346,9 +358,8 @@ class OxideShell(Cmd):
         drop scratch
         drop localstore
         drop orphans
-        drop &<collection>
+        drop &<ocollection>
         drop $<context>
-        show %<oid>
         """
         if not line:
             raise ShellSyntaxError("")
@@ -382,9 +393,11 @@ class OxideShell(Cmd):
             Syntax: load <file>
         """
         if not line:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
 
         if not os.path.isfile(line):
+            self.last_cmd_success = False
             raise ShellRuntimeError("File %s not found" % line)
 
         with open(line, "r") as fd:
@@ -402,6 +415,7 @@ class OxideShell(Cmd):
             Syntax: bash <command>
         """
         if not line:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
         os.system(line)
 
@@ -505,7 +519,7 @@ class OxideShell(Cmd):
                 show %<oid>
 
                 show modules [<module>] [--verbose]
-                show collections [--verbose]
+                show ocollections [--verbose]
                 show context
                 show stats
                 show orphans
@@ -514,6 +528,7 @@ class OxideShell(Cmd):
                 show aliases
         """
         if not line:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
         commands = self.parse_line("show "+line)
         self.parse_pipe(commands)
@@ -527,12 +542,12 @@ class OxideShell(Cmd):
         local_oxide.initialize_all_modules()
 
     def do_ls(self, line: str) -> None:
-        """ Description: Print info about available collections
+        """ Description: Print info about available ocollections
             Syntax:
                 ls
         """
         opts = {}
-        self.print_collections({}, opts)
+        self.print_ocollections({}, opts)
 
 
     @error_handler
@@ -553,6 +568,7 @@ class OxideShell(Cmd):
 
         """
         if not line:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
         commands = self.parse_line("context " + line)
         self.parse_pipe(commands)
@@ -568,6 +584,7 @@ class OxideShell(Cmd):
                 --year=2011  --month=12  --day=31
         """
         if not line:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
         commands = self.parse_line("tag "+line)
         self.parse_pipe(commands)
@@ -579,6 +596,7 @@ class OxideShell(Cmd):
     Syntax: run <module> %<oid> [ --<opt>=<val> ]
         """
         if not line:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
         commands = self.parse_line("run " + line)
         self.parse_pipe(commands)
@@ -590,6 +608,7 @@ class OxideShell(Cmd):
             Syntax: import <file1> | <directory1> | *.exe
         """
         if not line:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
         commands = self.parse_line("import " + line)
         self.parse_pipe(commands)
@@ -657,6 +676,7 @@ class OxideShell(Cmd):
                         print(f'[-] Plugin ({p}) successfully loaded, cmds [{", ".join(plugin_commands)}...]', file=sys.stderr)
 
                 except (ShellRuntimeError, ImportError) as e:
+                    self.last_cmd_success = False
                     if type(e) is ImportError and e.__str__() != 'No module named ' + p:
                         print(e)
                         print((traceback.print_exc()))
@@ -665,22 +685,24 @@ class OxideShell(Cmd):
                         expn_line = sys.exc_info()[-1].tb_lineno
                         print(("  - Unable to load plugin {}. {} {}:{}".format(p, e, expn_file, expn_line)))
                 except AttributeError as e:
+                    self.last_cmd_success = False
                     if e.__str__() == "'module' object has no attribute 'exports'":
                         print(("  - Missing exports in plugin %s. Plugin load aborted." %p))
                     else:
                         print((traceback.print_exc()))
 
     @error_handler
-    def do_collection(self, line):
+    def do_ocollection(self, line):
         """
     Description: Manipulate a collection which are persistent sets of items
     Syntax:
-        collection create <collection> %<oid>
-        collection delete <collection>
-        collection rename <collection> <new_name>
-        collection remove <collection> %<oid>
+        ocollection create <ocollection> %<oid>
+        ocollection delete <ocollection>
+        ocollection rename <ocollection> <new_name>
+        ocollection remove <ocollection> %<oid>
         """
         if not line:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
         commands = self.parse_line("collection "+line)
         self.parse_pipe(commands)
@@ -748,6 +770,7 @@ class OxideShell(Cmd):
                 print(module_doc)
                 return
             else:
+                self.last_cmd_success = False
                 print((" - Command %s not found" % (line)))
                 return
 
@@ -763,19 +786,23 @@ class OxideShell(Cmd):
     ### FUNCTIONALITY FOR DO COMMANDS ------------------------------------------------------------
     def configure(self, args, opts):
         if args or not opts:
+            self.last_cmd_success = False
             raise ShellSyntaxError("Invalid syntax")
 
         for opt in opts:
             if not opt in self.config:
+                self.last_cmd_success = False
                 raise ShellSyntaxError("%s is not a config key" % opt)
             self.config[opt] = opts[opt]
 
     def tag(self, args, opts):
         if len(args) < 2:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
 
         subcommand, items = args[0], args[1:]
         if subcommand not in self.commands["tag"]:
+            self.last_cmd_success = False
             raise ShellSyntaxError("Command %s invalid" % subcommand)
 
         if subcommand == "get": # tag get oid ...
@@ -800,6 +827,7 @@ class OxideShell(Cmd):
             return oid_list
 
         if len(items) < 2:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
 
         tags = items[0]
@@ -811,14 +839,17 @@ class OxideShell(Cmd):
             print(("  - Applied tag %s:%s to %s item(s)" % (tag, value, len(items))))
             return items
 
-    def collection(self, args, opts):
+    def o_collection(self, args, opts):
         if len(args) < 2:
+            self.last_cmd_success = False
             raise ShellSyntaxError("")
 
         subcommand, collection_name = args[0], args[1]
         valid, invalid = self.oxide.valid_oids(args[2:])
         valid = self.oxide.expand_oids(valid)
-        if subcommand not in self.commands["collection"]:
+
+        if subcommand not in self.commands["ocollection"]:
+            self.last_cmd_success = False
             raise ShellSyntaxError("Command %s invalid" % subcommand)
 
         notes = ""
@@ -826,24 +857,29 @@ class OxideShell(Cmd):
 
         if subcommand == "create": # collection create <collection> oid ...
             if self.oxide.exists("files", collection_name):
+                self.last_cmd_success = False
                 raise ShellSyntaxError("Attempted to create a collection with oid %s as the name" % collection_name)
             if not self.oxide.create_collection(collection_name, valid, notes):
-                print(("  - Not able to create collection %s" % (collection_name)))
+                self.last_cmd_success = False
+                print("  - Not able to create collection %s" % (collection_name))
                 return []
-            print(("  - Collection %s created" % (collection_name)))
+            print(("  - Oxide Collection %s created" % (collection_name)))
             cid = self.oxide.get_cid_from_oid_list(valid)
 
-        if not collection_name in self.oxide.collection_names():
-            raise ShellSyntaxError("Collection %s does not exist" % collection_name)
+        if collection_name not in self.oxide.collection_names():
+            self.last_cmd_success = False
+            raise ShellSyntaxError("Oxide Collection %s does not exist" % collection_name)
 
         if subcommand == "delete": # collection delete <collection>
             if self.oxide.delete_collection_by_name(collection_name):
-                print(("  - Collection %s deleted" % (collection_name)))
+                print(("  - Oxide Collection %s deleted" % (collection_name)))
             else:
+                self.last_cmd_success = False
                 print(("  - Not able to delete collection %s" % (collection_name)))
 
         elif subcommand == "rename": # collection rename <collection> <new_name>
             if len(invalid) < 1:
+                self.last_cmd_success = False
                 raise ShellSyntaxError("New name not provided")
             new_name = invalid[0]
             if not self.oxide.rename_collection_by_name(collection_name, new_name):
@@ -862,7 +898,8 @@ class OxideShell(Cmd):
             self.print_item(invalid)
 
         cid = self.oxide.get_cid_from_name(collection_name)
-        if not cid or not self.oxide.exists("collections", cid):
+        if not cid or not self.oxide.exists("ocollections", cid):
+            self.last_cmd_success = False
             return []
         return [cid]
 
@@ -875,8 +912,8 @@ class OxideShell(Cmd):
         if args[0] in self.commands["show"]:
             subcommand = args[0]
             args = args[1:]
-            if subcommand == "collections": # show collections
-                self.print_collections(args, opts)
+            if subcommand == "ocollections": # show ocollections
+                self.print_ocollections(args, opts)
 
             elif subcommand == "context": # show context
                 verbose = False
@@ -937,6 +974,10 @@ class OxideShell(Cmd):
         return args
 
     def drop(self, args, opts):
+        """ Drop data found in database or cache.
+
+        @todo drop a specific modules output
+        """
         if not args:
             print("  - Nothing to drop")
             return args
@@ -969,7 +1010,7 @@ class OxideShell(Cmd):
                     if oids:
                         oids = set(oids)
                         for cid in self.oxide.collection_cids():
-                            ids = self.oxide.get_field('collections', cid, 'oid_list')
+                            ids = self.oxide.get_field('ocollections', cid, 'oid_list')
                             if ids:
                                 ids = set(ids)
                                 oids = oids - ids
@@ -1025,15 +1066,18 @@ class OxideShell(Cmd):
 
     def context_command(self, args, opts):
         if not args:
+            self.last_cmd_success = False
             raise ShellSyntaxError("Subcommand required for context")
         subcommand = args[0]
         args = args[1:]
         if subcommand not in self.commands["context"]:
+            self.last_cmd_success = False
             raise ShellSyntaxError("Command %s invalid" % subcommand)
 
         if subcommand == "add": # context add oid ...
             new_context = self.build_context([subcommand, args])
             if not new_context:
+                self.last_cmd_success = False
                 raise ShellRuntimeError("Nothing found to add to context")
             self.context.extend(new_context)
             print(("  - %s item(s) added to the context" % (len(new_context))))
@@ -1045,6 +1089,7 @@ class OxideShell(Cmd):
         elif subcommand == "remove": # context remove oid ...
             rm_context = self.build_context([subcommand, args])
             if not rm_context:
+                self.last_cmd_success = False
                 raise ShellRuntimeError("Nothing to remove from the context")
             self.context = [ i for i in self.context if i not in rm_context ]
             print(("  - %s item(s) removed from the context" % (len(rm_context))))
@@ -1058,6 +1103,7 @@ class OxideShell(Cmd):
         elif subcommand == "set": # context set oid ...
             new_context = self.build_context([subcommand, args])
             if not new_context:
+                self.last_cmd_success = False
                 raise ShellRuntimeError("Nothing found to set the context to")
             self.context = new_context
             print(("  - Context cleared and set to %s items" % (len(new_context))))
@@ -1078,9 +1124,11 @@ class OxideShell(Cmd):
             if isinstance(o, dict):
                 this_opts = o
             else:
+                self.last_cmd_success = False
                 raise ShellSyntaxError("Invalid options specified %s" % o)
 
         if module_name not in mod_list:
+            self.last_cmd_success = False
             raise ShellSyntaxError("Unrecognized Module %s" % module_name)
         valid, invalid = self.oxide.valid_oids(args)
         print(("  - Running %s over %d items" %(module_name, len(valid))))
@@ -1094,7 +1142,11 @@ class OxideShell(Cmd):
                 self.vars[opts["var"]] = value
                 print(("  - Variable %s assigned."%opts["var"]))
         else:
-            self.oxide.process(module_name, valid, this_opts)
+            try:
+                self.oxide.process(module_name, valid, this_opts)
+            except KeyboardInterrupt:
+                print('[-] Ctrl-C encountered. Press again to exit Oxide.')
+                pass
 
         if invalid:
             print("  - Invalid oid's not processed: ")
@@ -1176,7 +1228,7 @@ class OxideShell(Cmd):
 
         res = []
         if command == "collection": # ... | collection ... | ...
-            res = self.collection(args, opts)
+            res = self.o_collection(args, opts)
         elif command == "import": # ... | import ... | ...
             res = self.import_files(args, opts)
         elif command == "run": # ... | run ... | ...
@@ -1243,6 +1295,7 @@ class OxideShell(Cmd):
             return a, None
 
         elif len(a) < 2:
+            self.last_cmd_success = False
             raise ShellSyntaxError("Argument %s is incomplete" % a)
 
         m = a[1:]
@@ -1393,7 +1446,7 @@ class OxideShell(Cmd):
                     raise ShellRuntimeError("Context corrupted")
                 elif not isinstance(i[0], str):
                     raise ShellRuntimeError("Context corrupted")
-                elif not self.oxide.source(i[0]) or self.oxide.source(i[0]) == "collections":
+                elif not self.oxide.source(i[0]) or self.oxide.source(i[0]) == "ocollections":
                     raise ShellRuntimeError("oid:%s in context does not exist" % i[0])
                 elif not isinstance(i[1], set):
                     raise ShellRuntimeError("Context corrupted")
@@ -1446,12 +1499,12 @@ class OxideShell(Cmd):
 
 
     ### PRINT ##################################################################
-    def print_item(self, item, opts: Optional[dict], header=None, bullet=""):
+    def print_item(self, item, opts: Optional[dict]= None, header=None, bullet=""):
         """ Given an item recursively iterate over it and print it's leaf nodes
 
         Options:
                 hex - render hex string with integer objects
-                sort - Sort collections
+                sort - Sort Oxide collections
         """
         # Initialize opts if not passed in
         if opts is None:
@@ -1551,7 +1604,7 @@ class OxideShell(Cmd):
         if isinstance(item, str) and self.oxide.exists("collections_meta", item, {}): # print collection
             cm = self.oxide.retrieve("collections_meta", str(item), {})
             if "verbose" in opts:
-                oids = self.oxide.get_field("collections", str(item) , "oid_list")
+                oids = self.oxide.get_field("ocollections", str(item) , "oid_list")
                 files = {}
                 for oid in oids:
                     file_meta = self.oxide.retrieve("file_meta", oid)
@@ -1607,17 +1660,17 @@ class OxideShell(Cmd):
         self.print_header()
 
 
-    def print_collections(self, items, opts):
-        """ Print funtcion for the command: show collections
+    def print_ocollections(self, items, opts):
+        """ Print funtcion for the command: show ocollections
         """
         if "verbose" in opts:
             self.print_item(self.oxide.retrieve_all("collections_meta"), opts, header="Collections")
         else:
             cm = self.oxide.retrieve_all("collections_meta")
-            collections = {}
+            ocollections = {}
             for c in cm:
-                collections[cm[c]["name"]] = cm[c]["num_oids"]
-            self.print_item(collections, opts, header="Collections")
+                ocollections[cm[c]["name"]] = cm[c]["num_oids"]
+            self.print_item(ocollections, opts, header="Collections")
         self.print_header()
 
 

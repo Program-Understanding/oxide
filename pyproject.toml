@@ -4,22 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oxide-re"
-version = "4.0.0"
+version = "5.0.0"
 description = "Oxide is a flexible, modular, distributed framework for performing analysis of data files, including executables."
 readme = "README.md"
 requires-python = ">=3.6"
 classifiers=[
     "Programming Language :: Python :: 3"
 ]
-dependencies = []
+dependencies = [
+    "pip>=23.0.0"
+]
 
 [project.optional-dependencies]
 full = [
     "colorama",
     "termcolor",
     "r2pipe",
-    "flare-capa"
-]  # or include minimal dependencies if there are any
+    "flare-capa<6.0.0",
+    "networkx",
+    "xlwt",
+    "capstone"
+]
+# or include minimal dependencies if there are any
 
 
 [project.urls]  # Optional
@@ -32,3 +38,6 @@ full = [
 oxide = "oxide.shell:main"
 oxide-remote = "oxide.rshell:main"
 oxide-server = "oxide.server:main"
+
+[tool.setuptools]
+include-package-data = true

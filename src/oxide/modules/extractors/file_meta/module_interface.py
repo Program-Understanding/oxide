@@ -57,18 +57,22 @@ def process(oid, opts):
     # If file info doesn't exist create new
     if not data:
         metadata = {import_time: {import_name: file_stat}}
-        data = {"metadata": metadata, "names": set([import_name]),
-                "original_paths": set([original_path]), "size": size
+        data = {"metadata": metadata, "names": [import_name],
+                "original_paths": [original_path], "size": size
                }
     else:
         # If data already exists append
         if "size" not in data:
             data["size"] = size
         data["metadata"][import_time] = {import_name: file_stat}
-        data["names"].add(import_name)
+        data["names"].append(import_name)
         if "original_paths" not in data:
             data["original_paths"] = set()
-        data["original_paths"].add(original_path)
+        data["original_paths"].append(original_path)
+
+    # Dedup lists
+    data["names"] = list(set(data["names"]))
+    data["original_paths"] = list(set(data["names"]))
 
     api.store(NAME, oid, data, opts)
 

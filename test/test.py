@@ -30,7 +30,7 @@ import argparse
 import unittest
 from module_test import module_test
 from sys_utils_test import SysUtilsTest
-from core_test import CoreTest
+from oxide.core_test import CoreTest
 from shell_test import ShellTest
 
 parser = argparse.ArgumentParser()

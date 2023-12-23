@@ -326,7 +326,7 @@ def cleanup() -> None:
             os.unlink(locked_files[lockid]['name'])
             del locked_files[lockid]
         except OSError as e:
-            logger.error("Unexpected os error trying to get lockfile %s.", lockfile)
+            logger.error("Unexpected os error trying to get lockfile %s.", locked_files[lockid]['name'])
             print("failed:", e)
 
 
@@ -361,11 +361,12 @@ def scratchdb():
         except OSError as exc: # python >2.5
             if exc.errno in (errno.ENOTDIR, errno.EINVAL):
                 shutil.copy(src, dst)
-            else: raise
+            else:
+                raise
 
     copy(os.path.join(original_datastore, 'files'), os.path.join(datastore_dir, 'files'))
     copy(os.path.join(original_datastore, 'file_meta'), os.path.join(datastore_dir, 'file_meta'))
-    copy(os.path.join(original_datastore, 'collections'), os.path.join(datastore_dir, 'collections'))
+    copy(os.path.join(original_datastore, 'ocollections'), os.path.join(datastore_dir, 'ocollections'))
     copy(os.path.join(original_datastore, 'collections_meta'), os.path.join(datastore_dir, 'collections_meta'))
     copy(os.path.join(original_datastore, 'tags'), os.path.join(datastore_dir, 'tags'))
 

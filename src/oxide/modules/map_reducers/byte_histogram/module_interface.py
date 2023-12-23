@@ -29,10 +29,12 @@ It represents this information as a dictionary with the byte value being the key
 
 import logging
 from collections import defaultdict
-from typing import Dict, Optional, List
 
 from oxide.core.libraries.histogram import build_histo, merge_histo
 from oxide.core import api
+
+from typing import Dict, Optional, List
+
 
 logger = logging.getLogger(NAME)
 logger.debug("init")

@@ -41,6 +41,6 @@ class collections_test(unittest.TestCase):
         col_name = "test_collection"
         col_note = "Test notes ...."
         self.assertTrue(self.oxide.create_collection(col_name, oid_list, col_note))
-        data = self.oxide.retrieve("collections", cid, {})
+        data = self.oxide.retrieve("ocollections", cid, {})
         self.assertEqual(set(data['oid_list']), set(oid_list), "OID list not equal")
         self.oxide.delete_collection_by_name(col_name)

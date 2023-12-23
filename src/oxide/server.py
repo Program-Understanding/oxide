@@ -29,11 +29,13 @@ Utility script to start Oxide server
 import argparse
 import sys
 import os
+from pathlib import Path
 
-# Hack to import sister module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-from oxide.core import oxide_server
+try:
+    from oxide.core import oxide_server
+except ImportError:
+    print('[x] Oxide must be installed. `pip install oxide-re`')
+    exit(1)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-l", "--listen", action="store", type=str, dest="listen", nargs='?',

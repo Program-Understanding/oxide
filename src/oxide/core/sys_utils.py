@@ -52,7 +52,7 @@ os.umask(0000)  # Needed for file/directory creation
 
 
 # ------------------------------ File related functions ------------------------------------
-def import_file(file_location: str, max_file_size: int) -> Optional[Dict[str, Any]]:
+def import_file(file_location: str, max_file_size: int, verbose: bool = False) -> Optional[Dict[str, Any]]:
     logger.debug("Importing file %s", file_location)
 
     if os.path.basename(file_location) in FILES_NOT_IMPORTED:
@@ -74,7 +74,11 @@ def import_file(file_location: str, max_file_size: int) -> Optional[Dict[str, An
 
     filesize = os.path.getsize(file_location) / 1048576.
     if filesize > max_file_size or filesize == 0:
-        logger.error("File size %dM exceeds max filesize %dM or is 0, (%s)", filesize, max_file_size, file_location)
+        # Show user if they ask, otherwise just log
+        if verbose:
+            logger.error("File size %dM exceeds max filesize %dM or is 0, (%s)", filesize, max_file_size, file_location)
+        else:
+            logger.debug("File size %dM exceeds max filesize %dM or is 0, (%s)", filesize, max_file_size, file_location)
         return None
 
     logger.debug("File import size %dM", filesize)
