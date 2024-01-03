@@ -57,11 +57,12 @@ def extract_ghidra_decmap(file_test: str) -> Optional[str]:
     return output
 
 
-def extract(file_test: str, header: dict) -> dict:
+def extract(file_test: str, header: dict, org_by_func: bool) -> dict:
     """ Runs instruction extraction from ghidraHEADLESS using a java language script
         Input -
             file_test - temporary file name to analyze
-            header_interface (header) - header object using header utiility lib
+            header_interface (header) - header object using header utility lib
+            org_by_func - organize output mapping by function, then offset? (default: no)
     """
     output_map = {}
     output_map["meta"] = {}
@@ -90,17 +91,28 @@ def extract(file_test: str, header: dict) -> dict:
 
         del mapping['meta']
 
-        for elem in mapping:
-            if elem == 'None':
-                continue
-            output_map['decompile'][get_file_offset(int(elem, 16), header, LOAD_ADDR)] = mapping[elem]
+        for func in mapping:
+            # If organizing by function, add empty dict at func dimension
+            if org_by_func:
+                output_map['decompile'][func] = {}
+            for addr in mapping[func]:
+                # If organizing by function, include all elements for each function, even those associated with "None" address
+                if org_by_func:
+                    if addr != 'None':
+                        output_map['decompile'][func][get_file_offset(int(addr, 16), header, LOAD_ADDR)] = mapping[func][addr]
+                    else:
+                        output_map['decompile'][func][addr] = mapping[func][addr]
+                # Otherwise, filter out lines associated with "None" address and don't include func dimension (default behavior)
+                else:
+                    if addr != 'None':
+                        output_map['decompile'][get_file_offset(int(addr, 16), header, LOAD_ADDR)] = mapping[func][addr]
     except json.decoder.JSONDecodeError:
         logger.info("Json decoding error encountered on Ghidra tmp file.")
         return None
 
     # Clean up temp file
     logger.debug("Removing tmp file")
-    sys_utils.delete_file(GHIDRA_TMP_FILE)
+    sys_utils.delete_file(GHIDRA_TMP_FILE) 
 
     end = time.time()
     output_map["meta"]["time"] = end - start

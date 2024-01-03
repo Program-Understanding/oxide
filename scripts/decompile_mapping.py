@@ -49,6 +49,9 @@ for fun in functionManager.getFunctions(True):
     # iterate in entry point order
     funEntry = fun.getEntryPoint()
     function = functionManager.getFunctionContaining(funEntry)
+    # Organize results by function name
+    functionName = function.getName()
+    output_map[functionName] = {}
 
     results = decomp.decompileFunction(function, 120, monitor)
     markup = results.getCCodeMarkup()
@@ -61,28 +64,45 @@ for fun in functionManager.getFunctions(True):
         if len(unicode_line) > 30 and "WARNING:" in unicode_line[:30]:
             continue
 
+        # Track whether we added this line to the output map. 
+        lineAdded = False
+
+        # Add tokens and source line, if associated with addresses, to map
         tokens = line.allTokens
         for tok_in_line in tokens:
             minAddr = str(tok_in_line.getMinAddress())
             maxAddr = str(tok_in_line.getMaxAddress())
 
-             # Some tokens in C do not correspond to an address such as '('
-            if minAddr is None:
+            # Some tokens in C do not correspond to an address such as '('
+            if (minAddr is None) or (minAddr == 'None'):
                 continue
+
+            # Add source line
             # Several source lines map to 1 line of assembly
-            if minAddr not in output_map:
-                output_map[minAddr] = {}
-
-            if 'line' in output_map[minAddr] and unicode_line not in output_map[minAddr]['line']:
-                output_map[minAddr]['line'].append(unicode_line)
+            if minAddr not in output_map[functionName]:
+                output_map[functionName][minAddr] = {}
+            if 'line' in output_map[functionName][minAddr] and unicode_line not in output_map[functionName][minAddr]['line']:
+                output_map[functionName][minAddr]['line'].append(unicode_line)
             else:
-                output_map[minAddr]['line'] = [unicode_line]
+                output_map[functionName][minAddr]['line'] = [unicode_line]
+            lineAdded = True
 
-            if 'tokens' in output_map[minAddr]:
-                output_map[minAddr]['tokens'].append(hex_escape(tok_in_line.toString()))
+            # Add tokens
+            if 'tokens' in output_map[functionName][minAddr]:
+                output_map[functionName][minAddr]['tokens'].append(hex_escape(tok_in_line.toString()))
             else:
-                output_map[minAddr]['tokens'] = [hex_escape(tok_in_line.toString())]
+                output_map[functionName][minAddr]['tokens'] = [hex_escape(tok_in_line.toString())]
 
+        # Add source line to the output map, associated with "None" address, if not already added.
+        # Downstream code will filter it out if not needed. 
+        if not lineAdded:
+            minAddr = 'None'
+            if minAddr not in output_map[functionName]:
+                output_map[functionName][minAddr] = {}
+            if 'line' in output_map[functionName][minAddr]:
+                output_map[functionName][minAddr]['line'].append(unicode_line)
+            else:
+                output_map[functionName][minAddr]['line'] = [unicode_line]
 
 print(output_map)
 # Some instructions do not map to anything, including anything in prologue of function

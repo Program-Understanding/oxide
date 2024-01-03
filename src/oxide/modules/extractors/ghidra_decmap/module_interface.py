@@ -40,7 +40,8 @@ logger = logging.getLogger(NAME)
 logger.debug("init")
 
 opts_doc = {"version": {"type": int, "mangle": True, "default": -1},
-            "rebase-off": {"type": bool, "mangle": True, "default": False}}
+            "rebase-off": {"type": bool, "mangle": True, "default": False},
+            "org_by_func": {"type":bool, "mangle": True, "default": False}}
 
 
 def documentation() -> Dict[str, Any]:
@@ -100,7 +101,7 @@ def process(oid: str, opts: dict) -> bool:
 
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data)
-    result = ghidra_decompiler_mapping.extract(f_name, header)
+    result = ghidra_decompiler_mapping.extract(f_name, header, opts['org_by_func'])
     # File cleaned up in extract
 
     if result is None: return False
