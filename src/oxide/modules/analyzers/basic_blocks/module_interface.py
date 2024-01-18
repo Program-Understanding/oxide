@@ -92,9 +92,14 @@ def build_basic_blocks(blocks: dict) -> dict:
         bb_info["num_insns"] = len(blocks[i]['members'])
         bb_info["members"] = [j for j in blocks[i]['members']]
         bb_info["dests"] = blocks[i]['dests']
+        bb_info["dests_prev"] = []   
         # h = hashlib.new("sha1")
         # long_str = "".join([j[1] for j in blocks[i]['members']])
         # h.update(long_str.encode())
         # bb_info["hash"] = h.digest()
         bbs[i] = bb_info
+    for i in blocks:
+        for d in blocks[i]['dests']:
+            if d in bbs:
+                bbs[d]["dests_prev"].extend([i])
     return bbs
