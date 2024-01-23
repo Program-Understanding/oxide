@@ -22,8 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-DESC = " This module is the start of work to build a tool to analyze binaries for SHSO similar to Difuzer"
-NAME = "test_nathan"
+DESC = "Performs feature extraction on binary extracting features relevant to conditional statements."
+NAME = "lb_feature_extraction"
 
 # imports
 import logging
@@ -34,7 +34,7 @@ from typing import Dict, Any, List
 from core.libraries.angr_utils import init_angr_project
 
 
-from core import api
+from oxide.core import api
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -61,12 +61,20 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     oid_list = api.expand_oids(oid_list)
     results = {}
+    opts = {}
+    opts["disassembler"] = "emu_angr_disasm"
 
     for oid in oid_list:
+        print(oid)
         f_name, header = _configure_bs(oid)
+        if f_name == False or header == False:
+            continue
+        p = init_angr_project(f_name, header)
+
+        base_addr = header.image_base
 
         disasm = api.retrieve("emu_angr_disasm", oid)
-        bbs = api.retrieve("basic_blocks", oid)[oid]
+        bbs = api.retrieve("basic_blocks", oid, opts)[oid]
 
         if disasm != None:
             functions = disasm["functions"]
@@ -77,14 +85,15 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
         triggers = _findTriggerStmts(bbs)
 
-        results = {}
-
+        # Iterate through each function found in executable.
         for function in functions:
+            # Pull information relevant to current function.
             functionTriggers = {}
             functionName = functions[function]['name']
             functionBlocks = functions[function]['blocks']
             commonBlocks = _getCommonBlocks(bbs, functionBlocks)
             function_calls = _call_mapping(function, functions[function], functions, bbs)
+            # Iterate through blocks in function
             for block in functionBlocks:
                 cb = None
                 suspicous_triggers = []
@@ -92,17 +101,15 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                     branches = _computeBranch(block, bbs, functionBlocks)
 
                     if len(branches) == 3:
-                        trigger = {}
-                        branchA = {}
-                        branchB = {}
-                        branchA_blocks, branchB_blocks, cb = _compareBranches(branches, commonBlocks)
-                        if cb == block:
-                            continue
                         functionTriggers[block] = {}
                         functionTriggers[block]["Features"] = {}
+                        branchA = {}
+                        branchB = {}
 
-                        # Trigger
-                        trigger["Blocks"] = block
+                        branchA_blocks, branchB_blocks, cb = _compareBranches(branches, commonBlocks)
+
+                        if cb == block:
+                            continue
 
                         # Branch A
                         branchA["Blocks"] = branchA_blocks
@@ -131,26 +138,21 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                         functionTriggers[block]["Features"]["S1"] = S1_A + S1_B
                         functionTriggers[block]["Features"]["J"] = branchDifference
 
-
-
                         # Determine source of variables used in trigger stmt
-                        if function_calls != {} and functionName == "main":
-                            statement = len(bbs[block]["members"]) - 2
-                            bs_chosen_statements = backward_slicing(f_name, header, block)
+                        if function_calls != {}:
+                            bs_chosen_statements = backward_slicing(p, block, base_addr)
                             for bs_block in bs_chosen_statements:
                                 if bs_block in function_calls:
                                     if function_calls[bs_block][1] in sensitive_conditional_checks:
                                         suspicous_triggers += [function_calls[bs_block][1]]
-
-                        # functionTriggers[block]["Common_Block"] = cb
                         if len(suspicous_triggers) != 0:
                             functionTriggers[block]["Features"]["C"] = True
                         else:
                             functionTriggers[block]["Features"]["C"] = False
+
             if len(functionTriggers) != 0:
                 triggerResults[functionName] = functionTriggers
-        results[oid] = triggerResults    
-        
+        results[oid] = triggerResults
     return results
 
 ##########################
@@ -158,17 +160,19 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 ##########################
     
 
-def backward_slicing(f_name, header, block):
-    b = init_angr_project(f_name, header)
-    cfg = b.analyses.CFGEmulated(keep_state=True,
+def backward_slicing(p, block, base_addr):
+    cfg = p.analyses.CFGEmulated(keep_state=True,
                                 state_add_options=angr.sim_options.refs,
                                 context_sensitivity_level=2)
-    cdg = b.analyses.CDG(cfg)
-    ddg = b.analyses.DDG(cfg)
+    
+    cdg = p.analyses.CDG(cfg)
+    ddg = p.analyses.DDG(cfg)
 
-    target_node = cfg.get_any_node(block)
+    location = int(hex(base_addr + block), base = 16)
 
-    bs = b.analyses.BackwardSlice(cfg, cdg=cdg, ddg=ddg, targets=[ (target_node, -1) ], control_flow_slice=True)
+    target_node = cfg.get_any_node(location)
+
+    bs = p.analyses.BackwardSlice(cfg, cdg=cdg, ddg=ddg, targets=[ (target_node, 0) ], control_flow_slice=True)
 
     return bs.chosen_statements
 
@@ -296,7 +300,7 @@ def _computeBranch(block, bbs, functionBlocks):
     dests = bbs[block]["dests"]
     for branch in dests:
         dominators = []
-        if branch not in functionBlocks:
+        if branch not in functionBlocks or branch not in bbs:
             pass
         else:
             dominators.extend([branch])
@@ -310,7 +314,7 @@ def _computeSubBranches(block, bbs, functionBlocks, dominators):
     triggerBranches = []
     dests = bbs[block]["dests"]
     for branch in dests:
-        if branch not in functionBlocks:
+        if branch not in functionBlocks or branch not in bbs:
             pass
         elif branch in dominators:
             triggerBranches.extend(["LOOP -> " + str(branch)])
@@ -383,6 +387,9 @@ def _configure_bs(oid):
     data = api.get_field(src, oid, "data", {})
     src_type = api.get_field("src_type", oid, "type")
     header = api.get_field("object_header", oid, oid)
+    if not header:
+        logger.info('No header found for %s in %s', oid, NAME)
+        return False, False
     header.type = src_type
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data)
@@ -392,7 +399,7 @@ def _getCommonBlocks(bbs, functionBlocks):
     # Get common blocks
     commonBlocks = {}
     for fb in functionBlocks:
-        if len(bbs[fb]["dests_prev"]) > 1:
+        if fb in bbs and len(bbs[fb]["dests_prev"]) > 1:
             commonBlocks[fb] = None
     return commonBlocks
 
@@ -404,13 +411,14 @@ def _call_mapping(function_addr, function_data, functions, basic_blocks):
     
     #Generating calls_to
     for block_addr in function_data['blocks']:
-        for instruction_offset, instruction in basic_blocks[block_addr]['members']:
-            if instruction[:4] == 'call':
-                for offset in basic_blocks[block_addr]['dests']:
-                    if offset in function_addresses:
-                        called_file_offset = offset
-                        # call_mapping[instruction_offset] = [offset, functions[called_file_offset]['name']]
-                        call_mapping[called_file_offset] = [instruction_offset, functions[called_file_offset]['name']]
+        if block_addr in basic_blocks:
+            for instruction_offset, instruction in basic_blocks[block_addr]['members']:
+                if instruction[:4] == 'call':
+                    for offset in basic_blocks[block_addr]['dests']:
+                        if offset in function_addresses:
+                            called_file_offset = offset
+                            # call_mapping[instruction_offset] = [offset, functions[called_file_offset]['name']]
+                            call_mapping[called_file_offset] = [instruction_offset, functions[called_file_offset]['name']]
     return call_mapping
 
 
