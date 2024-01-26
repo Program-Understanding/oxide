@@ -62,7 +62,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     oid_list = api.expand_oids(oid_list)
     results = {}
     opts = {}
-    opts["disassembler"] = "emu_angr_disasm"
+    opts["disassembler"] = "ghidra_disasm"
 
     for oid in oid_list:
         # Collect information and objects used for backwards slicing
@@ -95,6 +95,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                 functionBlocks = functions[function]['blocks']
                 commonBlocks = _getCommonBlocks(bbs, functionBlocks)
                 function_calls = _call_mapping(function, functions[function], functions, bbs)
+
                 # Iterate through blocks in function
                 for block in functionBlocks:
                     cb = None
@@ -110,8 +111,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
                             branchA_blocks, branchB_blocks, cb = _compareBranches(branches, commonBlocks)
 
-                            if cb == block:
-                                continue
 
                             # Branch A
                             branchA["Blocks"] = branchA_blocks
@@ -126,19 +125,19 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                             S1_A = numExclSensFunctCalls(branchA, bbs, functionBlocks)
 
                             # Feature Extraction B
-                            S_B = numSensFunctCalls(branchA, bbs)
-                            P_B = dataFlow(branchA, bbs)
-                            M1_B = numExclFunctCalls(branchA, bbs, functionBlocks)
-                            S1_B = numExclSensFunctCalls(branchA, bbs, functionBlocks)
+                            S_B = numSensFunctCalls(branchB, bbs)
+                            P_B = dataFlow(branchB, bbs)
+                            M1_B = numExclFunctCalls(branchB, bbs, functionBlocks)
+                            S1_B = numExclSensFunctCalls(branchB, bbs, functionBlocks)
 
                             # Behavior Difference
                             branchDifference = behaviorDifference(branchA, branchB, bbs)
 
-                            functionTriggers[block]["Features"]["S"] = S_A + S_B
+                            functionTriggers[block]["Features"]["Sensitive_Function_Calls"] = S_A + S_B
                             functionTriggers[block]["Features"]["P"] = P_A + P_B
-                            functionTriggers[block]["Features"]["M1"] = M1_A + M1_B
-                            functionTriggers[block]["Features"]["S1"] = S1_A + S1_B
-                            functionTriggers[block]["Features"]["J"] = branchDifference
+                            functionTriggers[block]["Features"]["Exclusive_Function_Calls"] = M1_A + M1_B
+                            functionTriggers[block]["Features"]["Exclusive_Sensitive_Calls"] = S1_A + S1_B
+                            functionTriggers[block]["Features"]["Jaccard_Distance"] = branchDifference
 
                             # Determine source of variables used in trigger stmt
                             if function_calls != {}:
@@ -148,9 +147,9 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                                         if function_calls[bs_block][1] in system_input_checks:
                                             suspicous_triggers += [function_calls[bs_block][1]]
                             if len(suspicous_triggers) != 0:
-                                functionTriggers[block]["Features"]["C"] = True
+                                functionTriggers[block]["Features"]["System_Input"] = True
                             else:
-                                functionTriggers[block]["Features"]["C"] = False
+                                functionTriggers[block]["Features"]["System_Input"] = False
 
                 if len(functionTriggers) != 0:
                     triggerResults[functionName] = functionTriggers
@@ -235,7 +234,7 @@ def _jaccard_distance(A, B):
 
     return distance
 
-def _getFunctionCalls(branch, bbs):    
+def _getFunctionCalls(branch, bbs): 
     calls = []
     for block in branch["Blocks"]:
         if isinstance(block, str):
@@ -305,11 +304,11 @@ def _computeBranch(block, bbs, functionBlocks):
         if branch not in functionBlocks or branch not in bbs:
             pass
         else:
-            dominators.extend([branch])
             if len(bbs[branch]["dests"]) > 0:
                 triggerBranches.extend([[branch, _computeSubBranches(branch, bbs, functionBlocks, dominators)]])
             elif bbs[branch]["dests"] == []:
                 triggerBranches.extend([branch])
+
     return triggerBranches
 
 def _computeSubBranches(block, bbs, functionBlocks, dominators):
@@ -399,10 +398,10 @@ def _configure_bs(oid):
 
 def _getCommonBlocks(bbs, functionBlocks):
     # Get common blocks
-    commonBlocks = {}
+    commonBlocks = []
     for fb in functionBlocks:
         if fb in bbs and len(bbs[fb]["dests_prev"]) > 1:
-            commonBlocks[fb] = None
+            commonBlocks.extend([fb])
     return commonBlocks
 
 #This will  find all calls_to. It will then add that to a dictionary and iterate back through the calls_to and assign them correctly to the correct calls_to
@@ -420,7 +419,7 @@ def _call_mapping(function_addr, function_data, functions, basic_blocks):
                         if offset in function_addresses:
                             called_file_offset = offset
                             # call_mapping[instruction_offset] = [offset, functions[called_file_offset]['name']]
-                            call_mapping[called_file_offset] = [instruction_offset, functions[called_file_offset]['name']]
+                            call_mapping[instruction_offset] = [called_file_offset, functions[called_file_offset]['name']]
     return call_mapping
 
 
@@ -429,6 +428,15 @@ def _isCall(instruction):
         return True
     else:
         return False
+    
+
+def _nextBlock(block, functionBlocks):
+    while True:
+        if block + 1 in functionBlocks:
+            nextBlock = block + 1
+            return nextBlock
+        else:
+            block = block + 1
     
 
 # Functions in the C library that check system or user inputs
