@@ -65,6 +65,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     opts["disassembler"] = "ghidra_disasm"
 
     for oid in oid_list:
+        print(oid)
         # Collect information and objects used for backwards slicing
         f_name, header = _configure_bs(oid)
         if f_name == False or header == False:
@@ -85,56 +86,52 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
         triggerResults = {}
 
-        # Iterate through each function found in executable.
+        # Iterate through each function found in the executable.
         for function in functions:
             functionName = functions[function]['name']
+
+            # Check if file is in list of compiler generate files
             if functionName not in functions_ignore:
-                # Pull information relevant to current function.
                 functionTriggers = {}
-                
+
+                # Pull information relevant to current function.
                 functionBlocks = functions[function]['blocks']
                 commonBlocks = _getCommonBlocks(bbs, functionBlocks)
                 function_calls = _call_mapping(function, functions[function], functions, bbs)
 
                 # Iterate through blocks in function
                 for block in functionBlocks:
-                    cb = None
                     suspicous_triggers = []
+
+                    # Check if block is a trigger
                     if block in triggers:       
                         branches = _computeBranch(block, bbs, functionBlocks)
 
                         if len(branches) == 3:
+                            branchA_blocks, branchB_blocks = _compareBranches(branches, commonBlocks)
+                            if branchA_blocks == [] and branchB_blocks == []:
+                                continue
+
                             functionTriggers[block] = {}
                             functionTriggers[block]["Features"] = {}
-                            branchA = {}
-                            branchB = {}
-
-                            branchA_blocks, branchB_blocks, cb = _compareBranches(branches, commonBlocks)
-
-
-                            # Branch A
-                            branchA["Blocks"] = branchA_blocks
-
-                            # Branch B
-                            branchB["Blocks"] = branchB_blocks
 
                             # Feature Extraction A
-                            S_A = numSensFunctCalls(branchA, bbs)
-                            P_A = dataFlow(branchA, bbs)
-                            M1_A = numExclFunctCalls(branchA, bbs, functionBlocks)
-                            S1_A = numExclSensFunctCalls(branchA, bbs, functionBlocks)
+                            S_A = numSensFunctCalls(branchA_blocks, bbs)
+                            P_A = dataFlow(branchA_blocks, bbs)
+                            M1_A = numExclFunctCalls(branchA_blocks, bbs, functionBlocks)
+                            S1_A = numExclSensFunctCalls(branchA_blocks, bbs, functionBlocks)
 
                             # Feature Extraction B
-                            S_B = numSensFunctCalls(branchB, bbs)
-                            P_B = dataFlow(branchB, bbs)
-                            M1_B = numExclFunctCalls(branchB, bbs, functionBlocks)
-                            S1_B = numExclSensFunctCalls(branchB, bbs, functionBlocks)
+                            S_B = numSensFunctCalls(branchB_blocks, bbs)
+                            P_B = dataFlow(branchB_blocks, bbs)
+                            M1_B = numExclFunctCalls(branchB_blocks, bbs, functionBlocks)
+                            S1_B = numExclSensFunctCalls(branchB_blocks, bbs, functionBlocks)
 
                             # Behavior Difference
-                            branchDifference = behaviorDifference(branchA, branchB, bbs)
+                            branchDifference = behaviorDifference(branchA_blocks, branchB_blocks, bbs)
 
                             functionTriggers[block]["Features"]["Sensitive_Function_Calls"] = S_A + S_B
-                            functionTriggers[block]["Features"]["P"] = P_A + P_B
+                            # functionTriggers[block]["Features"]["P"] = P_A + P_B
                             functionTriggers[block]["Features"]["Exclusive_Function_Calls"] = M1_A + M1_B
                             functionTriggers[block]["Features"]["Exclusive_Sensitive_Calls"] = S1_A + S1_B
                             functionTriggers[block]["Features"]["Jaccard_Distance"] = branchDifference
@@ -236,7 +233,7 @@ def _jaccard_distance(A, B):
 
 def _getFunctionCalls(branch, bbs): 
     calls = []
-    for block in branch["Blocks"]:
+    for block in branch:
         if isinstance(block, str):
             pass
         else:
@@ -272,12 +269,13 @@ def _call_mapping(function_addr, function_data, functions, basic_blocks):
     
     #Generating calls_to
     for block_addr in function_data['blocks']:
-        for instruction_offset, instruction in basic_blocks[block_addr]['members']:
-            if instruction[:4] == 'call':
-                for offset in basic_blocks[block_addr]['dests']:
-                    if offset in function_addresses:
-                        called_file_offset = offset
-                        call_mapping[instruction_offset] = functions[called_file_offset]['name']
+        if block_addr in basic_blocks:
+            for instruction_offset, instruction in basic_blocks[block_addr]['members']:
+                if instruction[:4] == 'call':
+                    for offset in basic_blocks[block_addr]['dests']:
+                        if offset in function_addresses:
+                            called_file_offset = offset
+                            call_mapping[instruction_offset] = functions[called_file_offset]['name']
 
     return call_mapping
 
@@ -351,7 +349,7 @@ def _compareBranches(triggerBranches, commonBlocks):
             pathA = _getPath(depthA, branchA)
             pathB = _getPath(depthB, branchB)
             break
-    return pathA, pathB, cb
+    return pathA, pathB
 
 def _getBranchMap(branchMap, blocks, level):
     if isinstance(blocks, list):
@@ -404,39 +402,12 @@ def _getCommonBlocks(bbs, functionBlocks):
             commonBlocks.extend([fb])
     return commonBlocks
 
-#This will  find all calls_to. It will then add that to a dictionary and iterate back through the calls_to and assign them correctly to the correct calls_to
-def _call_mapping(function_addr, function_data, functions, basic_blocks):
-
-    call_mapping = {}
-    function_addresses = functions.keys()
-    
-    #Generating calls_to
-    for block_addr in function_data['blocks']:
-        if block_addr in basic_blocks:
-            for instruction_offset, instruction in basic_blocks[block_addr]['members']:
-                if instruction[:4] == 'call':
-                    for offset in basic_blocks[block_addr]['dests']:
-                        if offset in function_addresses:
-                            called_file_offset = offset
-                            # call_mapping[instruction_offset] = [offset, functions[called_file_offset]['name']]
-                            call_mapping[instruction_offset] = [called_file_offset, functions[called_file_offset]['name']]
-    return call_mapping
-
 
 def _isCall(instruction):
     if instruction.startswith('call'):
         return True
     else:
         return False
-    
-
-def _nextBlock(block, functionBlocks):
-    while True:
-        if block + 1 in functionBlocks:
-            nextBlock = block + 1
-            return nextBlock
-        else:
-            block = block + 1
     
 
 # Functions in the C library that check system or user inputs
