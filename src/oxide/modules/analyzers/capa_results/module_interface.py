@@ -1,0 +1,219 @@
+"""
+Copyright 2023 National Technology & Engineering Solutions
+of Sandia, LLC (NTESS). Under the terms of Contract DE-NA0003525 with NTESS,
+the U.S. Government retains certain rights in this software.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+"""
+
+DESC = "Runs Capa and collects to results"
+NAME = "capa_results"
+
+# imports
+import logging
+
+from typing import Dict, Any, List
+
+from pathlib import *
+
+from oxide.core import api
+
+import collections
+import json
+from typing import Any
+from typing import *
+from oxide.core import api
+import capa.main
+import capa.rules
+import capa.engine
+import capa.features
+import capa.render.json
+import capa.render.utils as rutils
+import capa.render.default
+import capa.render.result_document as rd
+import capa.render.verbose
+import capa.render.vverbose
+import capa.features.freeze.features as frzf
+import capa.loader
+from pathlib import *
+from capa.features.common import OS_AUTO, FORMAT_AUTO
+import capa.features.freeze as frz
+
+logger = logging.getLogger(NAME)
+logger.debug("init")
+
+opts_doc = {}
+
+
+def documentation() -> Dict[str, Any]:
+    """ Documentation for this module
+        private - Whether module shows up in help
+        set - Whether this module accepts collections
+        atomic - TBD
+    """
+    return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
+            "atomic": True}
+
+
+def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
+    """ Entry point for analyzers, these do not store in database
+        these are meant to be very quickly computed things passed along
+        into other modules
+    """
+    logger.debug("process()")
+
+    oid_list = api.expand_oids(oid_list)
+
+    result = {}
+    for oid in oid_list:
+        paths = api.get_field("file_meta", oid, "original_paths")
+        file_path = Path(next(iter(paths)))
+        rules_path = "/home/nathan/.local/share/oxide/datasets/capa-rules"
+        # try:
+        capa_dict = run_capa(file_path, rules_path)
+        # except:
+        #     result[oid] = "Error with Capa"
+        #     continue
+        # result[oid] = {"filepath": file_path,
+        #                "capa_capabilities": {}}
+        # for capa_entry in capa_dict['rules']:
+        #     result[oid]["capa_capabilities"][capa_entry] = []
+        #     for match in capa_dict['rules'][capa_entry]['matches']:
+        #         print(match)
+        #         # result[oid]["capa_capabilities"][capa_entry].append(match)
+    return capa_dict
+
+def render_rules(doc: rd.ResultDocument):
+    """
+    like:
+
+        receive data (2 matches)
+        namespace    communication
+        description  all known techniques for receiving data from a potential C2 server
+        scope        function
+        matches      0x10003A13
+                     0x10003797
+    """
+    result = {}
+    for rule in rutils.capability_rules(doc):
+        count = len(rule.matches)
+        if count == 1:
+            capability = rule.meta.name
+        else:
+            capability = rule.meta.name + " (" + str(count) + " matches)"
+
+        result[capability] = []
+
+        rows = []
+
+        ns = rule.meta.namespace
+        if ns:
+            rows.extend(["namespace", [ns]])
+
+        desc = rule.meta.description
+        if desc:
+            rows.extend(["description", [desc]])
+
+        if doc.meta.flavor == rd.Flavor.STATIC:
+            scope = rule.meta.scopes.static
+        elif doc.meta.flavor == rd.Flavor.DYNAMIC:
+            scope = rule.meta.scopes.dynamic
+        else:
+            raise ValueError("invalid meta analysis")
+        if scope:
+            rows.extend(["scope", [scope.value]])
+
+
+        if capa.rules.Scope.FILE not in rule.meta.scopes:
+            locations = [m[0] for m in doc.rules[rule.meta.name].matches]
+            lines = []
+
+            if doc.meta.flavor == rd.Flavor.STATIC:
+                lines = [capa.render.verbose.format_address(loc) for loc in locations]
+            elif doc.meta.flavor == rd.Flavor.DYNAMIC:
+                assert rule.meta.scopes.dynamic is not None
+                assert isinstance(doc.meta.analysis.layout, rd.DynamicLayout)
+
+                if rule.meta.scopes.dynamic == capa.rules.Scope.PROCESS:
+                    lines = [capa.render.verbose.render_process(doc.meta.analysis.layout, loc) for loc in locations]
+                elif rule.meta.scopes.dynamic == capa.rules.Scope.THREAD:
+                    lines = [capa.render.verbose.render_thread(doc.meta.analysis.layout, loc) for loc in locations]
+                elif rule.meta.scopes.dynamic == capa.rules.Scope.CALL:
+                    # because we're only in verbose mode, we won't show the full call details (name, args, retval)
+                    # we'll only show the details of the thread in which the calls are found.
+                    # so select the thread locations and render those.
+                    thread_locations = set()
+                    for loc in locations:
+                        cloc = loc.to_capa()
+                        assert isinstance(cloc, capa.features.address.DynamicCallAddress)
+                        thread_locations.add(frz.Address.from_capa(cloc.thread))
+
+                    lines = [capa.render.verbose.render_thread(doc.meta.analysis.layout, loc) for loc in thread_locations]
+                else:
+                    capa.helpers.assert_never(rule.meta.scopes.dynamic)
+            else:
+                capa.helpers.assert_never(doc.meta.flavor)
+
+            rows.extend(["matches", lines])
+
+        result[capability].append(rows)
+    return result
+
+
+# ==== render dictionary helpers
+def capa_details(rules_path: Path, file_path: Path, output_format="dictionary"):
+    # load rules from disk
+    rules = capa.rules.get_rules([rules_path])
+
+    # extract features and find capabilities
+    extractor = capa.loader.get_extractor(
+        file_path, FORMAT_AUTO, OS_AUTO, capa.main.BACKEND_VIV, [], False, disable_progress=True
+    )
+    capabilities, counts = capa.main.find_capabilities(rules, extractor, disable_progress=True)
+
+    # collect metadata (used only to make rendering more complete)
+    meta = capa.loader.collect_metadata([], file_path, FORMAT_AUTO, OS_AUTO, [rules_path], extractor, counts)
+
+    meta.analysis.feature_counts = counts["feature_counts"]
+    meta.analysis.library_functions = counts["library_functions"]
+    meta.analysis.layout = capa.loader.compute_layout(rules, extractor, capabilities)
+
+    capa_output: Any = False
+
+    if output_format == "dictionary":
+        # ...as python dictionary, simplified as textable but in dictionary
+        doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
+        # doc = capa.render.vverbose.render(meta, rules, capabilities)
+        capa_output = render_rules(doc)
+    elif output_format == "json":
+        # render results
+        # ...as json
+        capa_output = json.loads(capa.render.json.render(meta, rules, capabilities))
+
+
+    elif output_format == "texttable":
+        # ...as human readable text table
+        capa_output = capa.render.vverbose.render(meta, rules, capabilities)
+
+    return capa_output
+
+
+def run_capa(file, rules):
+    results = capa_details(Path(rules), Path(file))
+    return results
