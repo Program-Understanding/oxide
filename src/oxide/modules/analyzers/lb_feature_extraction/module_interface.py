@@ -1,6 +1,6 @@
-"""
-Copyright 2023 National Technology & Engineering Solutions
-of Sandia, LLC (NTESS). Under the terms of Contract DE-NA0003525 with NTESS,
+""""
+Copyright 2023 National Technology & Engineering Solutions",
+of Sandia, LLC (NTESS). Under the terms of Contract DE-NA0003525 with NTESS,",
 the U.S. Government retains certain rights in this software.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -33,6 +33,9 @@ import angr
 from typing import Dict, Any, List
 from core.libraries.angr_utils import init_angr_project
 
+from function_lib import sensitive_functions, system_input_checks, pthread_funcs, functions_ignore
+
+import os, psutil
 
 from oxide.core import api
 
@@ -62,96 +65,104 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     oid_list = api.expand_oids(oid_list)
     results = {}
     opts = {}
-    opts["disassembler"] = "ghidra_disasm"
 
     for oid in oid_list:
-        print(oid)
-        # Collect information and objects used for backwards slicing
-        f_name, header = _configure_bs(oid)
-        if f_name == False or header == False:
-            continue
-        p = init_angr_project(f_name, header)
-        base_addr = header.image_base
-
-        # Pull disasm and basic_block module results
-        disasm = api.retrieve("emu_angr_disasm", oid)
-        bbs = api.retrieve("basic_blocks", oid, opts)[oid]
-
-        if disasm != None:
-            functions = disasm["functions"]
-        else:
-            continue
-
-        triggers = _findTriggerStmts(bbs)
-
         triggerResults = {}
+        try:
+            # Collect information and objects used for backwards slicing
+            f_name, header = _configure_bs(oid)
+            if f_name == False or header == False:
+                continue
+            p = init_angr_project(f_name, header)
+            base_addr = header.image_base
 
-        # Iterate through each function found in the executable.
-        for function in functions:
-            functionName = functions[function]['name']
+            # Pull disasm and basic_block module results
+            disasm = api.retrieve("emu_angr_disasm", oid)
+            bbs = api.retrieve("basic_blocks", oid, opts)[oid]
+            
 
-            # Check if file is in list of compiler generate files
-            if functionName not in functions_ignore:
-                functionTriggers = {}
+            if disasm != None:
+                functions = disasm["functions"]
+            else:
+                continue
 
-                # Pull information relevant to current function.
-                functionBlocks = functions[function]['blocks']
-                commonBlocks = _getCommonBlocks(bbs, functionBlocks)
-                function_calls = _call_mapping(function, functions[function], functions, bbs)
+            triggers = _findTriggerStmts(bbs)
 
-                # Iterate through blocks in function
-                for block in functionBlocks:
-                    suspicous_triggers = []
+            
 
-                    # Check if block is a trigger
-                    if block in triggers:       
-                        branches = _computeBranch(block, bbs, functionBlocks)
+            # Iterate through each function found in executable.
+            for function in functions:
+                functionName = functions[function]['name']
+                if functionName.startswith("_") or functionName.startswith("__") or functionName in functions_ignore:
+                    pass
+                else:
+                    # Pull information relevant to current function.
+                    functionTriggers = {}
+                    
+                    functionBlocks = functions[function]['blocks']
+                    commonBlocks = _getCommonBlocks(bbs, functionBlocks)
+                    function_calls = _call_mapping(function, functions[function], functions, bbs)
 
-                        if len(branches) == 3:
-                            branchA_blocks, branchB_blocks = _compareBranches(branches, commonBlocks)
-                            if branchA_blocks == [] and branchB_blocks == []:
-                                continue
+                    # Iterate through blocks in function
+                    for block in functionBlocks:
+                        cb = None
+                        suspicous_triggers = []
+                        if block in triggers:       
+                            branches = _computeBranch(block, bbs, functionBlocks)
 
-                            functionTriggers[block] = {}
-                            functionTriggers[block]["Features"] = {}
+                            if len(branches) == 3:
+                                functionTriggers[block] = {}
+                                branchA = {}
+                                branchB = {}
 
-                            # Feature Extraction A
-                            S_A = numSensFunctCalls(branchA_blocks, bbs)
-                            P_A = dataFlow(branchA_blocks, bbs)
-                            M1_A = numExclFunctCalls(branchA_blocks, bbs, functionBlocks)
-                            S1_A = numExclSensFunctCalls(branchA_blocks, bbs, functionBlocks)
+                                branchA_blocks, branchB_blocks, cb = _compareBranches(branches, commonBlocks)
 
-                            # Feature Extraction B
-                            S_B = numSensFunctCalls(branchB_blocks, bbs)
-                            P_B = dataFlow(branchB_blocks, bbs)
-                            M1_B = numExclFunctCalls(branchB_blocks, bbs, functionBlocks)
-                            S1_B = numExclSensFunctCalls(branchB_blocks, bbs, functionBlocks)
 
-                            # Behavior Difference
-                            branchDifference = behaviorDifference(branchA_blocks, branchB_blocks, bbs)
+                                # Branch A
+                                branchA["Blocks"] = branchA_blocks
 
-                            functionTriggers[block]["Features"]["Sensitive_Function_Calls"] = S_A + S_B
-                            # functionTriggers[block]["Features"]["P"] = P_A + P_B
-                            functionTriggers[block]["Features"]["Exclusive_Function_Calls"] = M1_A + M1_B
-                            functionTriggers[block]["Features"]["Exclusive_Sensitive_Calls"] = S1_A + S1_B
-                            functionTriggers[block]["Features"]["Jaccard_Distance"] = branchDifference
+                                # Branch B
+                                branchB["Blocks"] = branchB_blocks
 
-                            # Determine source of variables used in trigger stmt
-                            if function_calls != {}:
-                                bs_chosen_statements = backward_slicing(p, block, base_addr)
-                                for bs_block in bs_chosen_statements:
-                                    if bs_block in function_calls:
-                                        if function_calls[bs_block][1] in system_input_checks:
-                                            suspicous_triggers += [function_calls[bs_block][1]]
-                            if len(suspicous_triggers) != 0:
-                                functionTriggers[block]["Features"]["System_Input"] = True
-                            else:
-                                functionTriggers[block]["Features"]["System_Input"] = False
+                                # Feature Extraction A
+                                S_A = numSensFunctCalls(branchA, bbs)
+                                P_A = dataFlow(branchA, bbs)
+                                M1_A = numExclFunctCalls(branchA, bbs, functionBlocks)
+                                S1_A = numExclSensFunctCalls(branchA, bbs, functionBlocks)
 
-                if len(functionTriggers) != 0:
-                    triggerResults[functionName] = functionTriggers
+                                # Feature Extraction B
+                                S_B = numSensFunctCalls(branchB, bbs)
+                                P_B = dataFlow(branchB, bbs)
+                                M1_B = numExclFunctCalls(branchB, bbs, functionBlocks)
+                                S1_B = numExclSensFunctCalls(branchB, bbs, functionBlocks)
+
+                                # Behavior Difference
+                                branchDifference = behaviorDifference(branchA, branchB, bbs)
+
+                                functionTriggers[block]["S"] = S_A + S_B
+                                functionTriggers[block]["P"] = P_A + P_B
+                                functionTriggers[block]["M1"] = M1_A + M1_B
+                                functionTriggers[block]["S1"] = S1_A + S1_B
+                                functionTriggers[block]["J"] = branchDifference
+
+                                # Determine source of variables used in trigger stmt
+                                # if function_calls != {}:
+                                #     bs_chosen_statements = backward_slicing(p, block, base_addr)
+                                #     for bs_block in bs_chosen_statements:
+                                #         if bs_block in function_calls:
+                                #             if function_calls[bs_block][1] in system_input_checks:
+                                #                 suspicous_triggers += [function_calls[bs_block][1]]
+                                if len(suspicous_triggers) != 0:
+                                    functionTriggers[block]["C"] = 1
+                                else:
+                                    functionTriggers[block]["C"] = 0
+
+                    if len(functionTriggers) != 0:
+                        triggerResults[functionName] = functionTriggers
+        except:
+            print("Error with " +  oid)
         results[oid] = triggerResults
-    return results
+    return ghidra_disasm
 
 ##########################
 ### Feature Extraction ###
@@ -162,15 +173,13 @@ def backward_slicing(p, block, base_addr):
     cfg = p.analyses.CFGEmulated(keep_state=True,
                                 state_add_options=angr.sim_options.refs,
                                 context_sensitivity_level=2)
-    
-    cdg = p.analyses.CDG(cfg)
-    ddg = p.analyses.DDG(cfg)
 
     location = int(hex(base_addr + block), base = 16)
 
     target_node = cfg.get_any_node(location)
 
-    bs = p.analyses.BackwardSlice(cfg, cdg=cdg, ddg=ddg, targets=[ (target_node, 0) ], control_flow_slice=True)
+    # bs = p.analyses.BackwardSlice(cfg, cdg=cdg, ddg=ddg, targets=[ (target_node, 0) ], control_flow_slice=True)
+    bs = p.analyses.BackwardSlice(cfg, targets=[ (target_node, 0) ], control_flow_slice=True)
 
     return bs.chosen_statements
 
@@ -212,7 +221,6 @@ def behaviorDifference(branchA, branchB, bbs):
     branchDifference = _jaccard_distance(sensitiveCallsA, sensitiveCallsB)
 
     return branchDifference
-
 
 ###############################################
 ### Functions Supporting Feature Extraction ###
@@ -410,6 +418,174 @@ def _isCall(instruction):
         return False
     
 
+        
+
+# Functions in the C library that check system or user inputs
+system_input_checks = [
+    "assert",
+    "atexit",
+    "catgets6",
+    "catopen6",
+    "clock",
+    "fdopen5",
+    "fgetc1",
+    "fgets1",
+    "fgetwc6",
+    "fgetws6",
+    "fileno5",
+    "fopen",
+    "fread",
+    "freopen",
+    "fscanf",
+    "ftell1",
+    "fwide6",
+    "fwscanf6",
+    "getc1",
+    "getchar1",
+    "getenv",
+    "gets",
+    "getwc6",
+    "getwchar6",
+    "mbsinit4",
+    "nl_langinfo4",
+    "putenv",
+    "rand",
+    "rand_r",
+    "regcomp",
+    "scanf",
+    "setlocale",
+    "sscanf",
+    "swscanf",
+    "time",
+    "time64",
+    "vfscanf",
+    "vfwscanf",
+    "vscanf",
+    "vsscanf",
+    "vswscanf",
+    "vwscanf",
+    "wscanf6",
+]
+
+# Functions found to be vulnerable or perform sensitive operations
+sensitive_functions = {
+    "abort",
+    "assert",
+    "atexit",
+    "atof",
+    "atoi",
+    "atol",
+    "calloc",
+    "catclose6",
+    "catgets6",
+    "catopen6",
+    "clearerr",
+    "exit",
+    "fclose",
+    "fdopen5",
+    "fflush1",
+    "fgetc1",
+    "fgetpos1",
+    "fgets1",
+    "fileno5",
+    "fopen",
+    "fprintf",
+    "fputc1",
+    "fputs1",
+    "fputwc6",
+    "fputws6",
+    "fread",
+    "free",
+    "freopen",
+    "fscanf",
+    "fseek1",
+    "fsetpos1",
+    "ftell1",
+    "fwide6",
+    "fwprintf6",
+    "fwrite",
+    "fwscanf6",
+    "getc1",
+    "getchar1",
+    "getenv",
+    "gets",
+    "getwc6",
+    "getwchar6",
+    "iswprint4",
+    "longjmp",
+    "malloc",
+    "nl_langinfo4",
+    "perror",
+    "printf",
+    "putc1",
+    "putchar1",
+    "putenv",
+    "puts",
+    "putwc6",
+    "putwchar6",
+    "raise",
+    "realloc",
+    "regcomp",
+    "regfree",
+    "remove",
+    "rename",
+    "rewind1",
+    "scanf",
+    "setbuf",
+    "setjmp",
+    "setlocale",
+    "setvbuf",
+    "signal",
+    "sprintf",
+    "srand",
+    "sscanf",
+    "strcat",
+    "strcpy",
+    "strerror",
+    "swprintf",
+    "swscanf",
+    "system",
+    "tmpfile",
+    "tmpnam",
+    "ungetc1",
+    "ungetwc6",
+    "va_copy",
+    "va_end",
+    "va_start",
+    "vfprintf",
+    "vfscanf",
+    "vfwprintf6",
+    "vfwscanf",
+    "vprintf",
+    "vscanf",
+    "vsprintf",
+    "vsnprintf",
+    "vsscanf",
+    "vswprintf",
+    "vswscanf",
+    "vwprintf6",
+    "vwscanf",
+    "wcscat",
+    "wcscpy",
+    "wprintf6",
+    "wscanf6",
+}
+
+# Functions that should be ingnored as they are generated by the compiler
+functions_ignore = {
+    "__libc_start_main",
+    "__do_global_dtors_aux",
+    "__cxa_finalize",
+    "_init",
+    "frame_dummy",
+    "__libc_csu_init",
+    "register_tm_clones",
+    "deregister_tm_clones",
+    "_start",
+    "__stack_chk_fail",
+    "puts",
+    "__libc_csu_init",
+}
 # Functions in the C library that check system or user inputs
 system_input_checks = [
     "assert",

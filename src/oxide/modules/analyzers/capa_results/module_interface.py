@@ -85,32 +85,23 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         paths = api.get_field("file_meta", oid, "original_paths")
         file_path = Path(next(iter(paths)))
         rules_path = "/home/nathan/.local/share/oxide/datasets/capa-rules"
-        # try:
-        capa_dict = run_capa(file_path, rules_path)
-        # except:
-        #     result[oid] = "Error with Capa"
-        #     continue
-        # result[oid] = {"filepath": file_path,
-        #                "capa_capabilities": {}}
-        # for capa_entry in capa_dict['rules']:
-        #     result[oid]["capa_capabilities"][capa_entry] = []
-        #     for match in capa_dict['rules'][capa_entry]['matches']:
-        #         print(match)
-        #         # result[oid]["capa_capabilities"][capa_entry].append(match)
-    return capa_dict
+        try:
+            capa_dict = run_capa(file_path, rules_path)
+        except:
+            result[oid] = "Error with Capa"
+            continue
+        result[oid] = {"filepath": file_path,
+                       "capa_capabilities": {}}
+        for capa_entry in capa_dict:
+            result[oid]["capa_capabilities"][capa_entry] = []
+            for match in capa_dict[capa_entry]['matches']:
+                result[oid]["capa_capabilities"][capa_entry].append(match)
+    return result
 
 def render_rules(doc: rd.ResultDocument):
-    """
-    like:
-
-        receive data (2 matches)
-        namespace    communication
-        description  all known techniques for receiving data from a potential C2 server
-        scope        function
-        matches      0x10003A13
-                     0x10003797
-    """
     result = {}
+    base_addr = doc.meta.analysis.base_address.value
+
     for rule in rutils.capability_rules(doc):
         count = len(rule.matches)
         if count == 1:
@@ -118,17 +109,17 @@ def render_rules(doc: rd.ResultDocument):
         else:
             capability = rule.meta.name + " (" + str(count) + " matches)"
 
-        result[capability] = []
+        result[capability] = {}
 
         rows = []
 
         ns = rule.meta.namespace
         if ns:
-            rows.extend(["namespace", [ns]])
+            result[capability]["namespace"] = ns
 
         desc = rule.meta.description
         if desc:
-            rows.extend(["description", [desc]])
+            result[capability]["description"] = desc
 
         if doc.meta.flavor == rd.Flavor.STATIC:
             scope = rule.meta.scopes.static
@@ -137,7 +128,7 @@ def render_rules(doc: rd.ResultDocument):
         else:
             raise ValueError("invalid meta analysis")
         if scope:
-            rows.extend(["scope", [scope.value]])
+            result[capability]['scope'] = scope.value
 
 
         if capa.rules.Scope.FILE not in rule.meta.scopes:
@@ -170,14 +161,27 @@ def render_rules(doc: rd.ResultDocument):
             else:
                 capa.helpers.assert_never(doc.meta.flavor)
 
-            rows.extend(["matches", lines])
+        result[capability]['matches'] = lines
 
-        result[capability].append(rows)
+    result = convert_addrs(result, base_addr)
+    
     return result
+
+def convert_addrs(results, base_addr):
+    for capability in results:
+        print(results[capability])
+        new_addrs = []
+        new_addr = None
+        matches = results[capability]['matches']
+        for m in matches:
+            new_addr = int(m, 16) - base_addr
+            new_addrs.extend([new_addr])
+        results[capability]['matches'] = new_addrs
+    return results
 
 
 # ==== render dictionary helpers
-def capa_details(rules_path: Path, file_path: Path, output_format="dictionary"):
+def capa_details(rules_path: Path, file_path: Path):
     # load rules from disk
     rules = capa.rules.get_rules([rules_path])
 
@@ -194,23 +198,8 @@ def capa_details(rules_path: Path, file_path: Path, output_format="dictionary"):
     meta.analysis.library_functions = counts["library_functions"]
     meta.analysis.layout = capa.loader.compute_layout(rules, extractor, capabilities)
 
-    capa_output: Any = False
-
-    if output_format == "dictionary":
-        # ...as python dictionary, simplified as textable but in dictionary
-        doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
-        # doc = capa.render.vverbose.render(meta, rules, capabilities)
-        capa_output = render_rules(doc)
-    elif output_format == "json":
-        # render results
-        # ...as json
-        capa_output = json.loads(capa.render.json.render(meta, rules, capabilities))
-
-
-    elif output_format == "texttable":
-        # ...as human readable text table
-        capa_output = capa.render.vverbose.render(meta, rules, capabilities)
-
+    doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
+    capa_output = render_rules(doc)
     return capa_output
 
 
