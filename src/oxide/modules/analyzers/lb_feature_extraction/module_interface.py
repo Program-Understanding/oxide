@@ -33,7 +33,12 @@ import angr
 from typing import Dict, Any, List
 from core.libraries.angr_utils import init_angr_project
 
-from function_lib import sensitive_functions, system_input_checks, pthread_funcs, functions_ignore
+from function_lib import (
+    sensitive_functions,
+    system_input_checks,
+    pthread_funcs,
+    functions_ignore,
+)
 
 import os, psutil
 
@@ -46,19 +51,24 @@ opts_doc = {}
 
 
 def documentation() -> Dict[str, Any]:
-    """ Documentation for this module
-        private - Whether module shows up in help
-        set - Whether this module accepts collections
-        atomic - TBD
+    """Documentation for this module
+    private - Whether module shows up in help
+    set - Whether this module accepts collections
+    atomic - TBD
     """
-    return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
-            "atomic": True}
+    return {
+        "description": DESC,
+        "opts_doc": opts_doc,
+        "private": False,
+        "set": False,
+        "atomic": True,
+    }
 
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
-    """ Entry point for analyzers, these do not store in database
-        these are meant to be very quickly computed things passed along
-        into other modules
+    """Entry point for analyzers, these do not store in database
+    these are meant to be very quickly computed things passed along
+    into other modules
     """
     logger.debug("process()")
 
@@ -68,118 +78,127 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     for oid in oid_list:
         triggerResults = {}
-        try:
-            # Collect information and objects used for backwards slicing
-            f_name, header = _configure_bs(oid)
-            if f_name == False or header == False:
-                continue
-            p = init_angr_project(f_name, header)
-            base_addr = header.image_base
+        # Collect information and objects used for backwards slicing
+        f_name, header = _configure_bs(oid)
+        if f_name == False or header == False:
+            continue
+        p = init_angr_project(f_name, header)
+        base_addr = header.image_base
 
-            # Pull disasm and basic_block module results
-            disasm = api.retrieve("emu_angr_disasm", oid)
-            bbs = api.retrieve("basic_blocks", oid, opts)[oid]
-            
+        # Pull disasm and basic_block module results
+        disasm = api.retrieve("ghidra_disasm", oid)
+        bbs = api.retrieve("basic_blocks", oid, opts)[oid]
+        capa_results = api.retrieve("capa_results", oid)[oid]
 
-            if disasm != None:
-                functions = disasm["functions"]
+        if disasm != None:
+            functions = disasm["functions"]
+        else:
+            continue
+
+        triggers = _findTriggerStmts(bbs)
+
+        # Iterate through each function found in executable.
+        for function in functions:
+            functionName = functions[function]["name"]
+            if (
+                functionName.startswith("_")
+                or functionName.startswith("__")
+                or functionName in functions_ignore
+            ):
+                pass
             else:
-                continue
+                # Pull information relevant to current function.
+                functionTriggers = {}
 
-            triggers = _findTriggerStmts(bbs)
+                functionBlocks = functions[function]["blocks"]
+                commonBlocks = _getCommonBlocks(bbs, functionBlocks)
+                function_calls = _call_mapping(
+                    function, functions[function], functions, bbs
+                )
 
-            
+                # Iterate through blocks in function
+                for block in functionBlocks:
+                    cb = None
+                    suspicous_triggers = []
+                    if block in triggers:
+                        branches = _computeBranch(block, bbs, functionBlocks)
 
-            # Iterate through each function found in executable.
-            for function in functions:
-                functionName = functions[function]['name']
-                if functionName.startswith("_") or functionName.startswith("__") or functionName in functions_ignore:
-                    pass
-                else:
-                    # Pull information relevant to current function.
-                    functionTriggers = {}
-                    
-                    functionBlocks = functions[function]['blocks']
-                    commonBlocks = _getCommonBlocks(bbs, functionBlocks)
-                    function_calls = _call_mapping(function, functions[function], functions, bbs)
+                        if len(branches) == 3:
+                            functionTriggers[block] = {}
+                            branchA = {}
+                            branchB = {}
 
-                    # Iterate through blocks in function
-                    for block in functionBlocks:
-                        cb = None
-                        suspicous_triggers = []
-                        if block in triggers:       
-                            branches = _computeBranch(block, bbs, functionBlocks)
+                            branchA_blocks, branchB_blocks, cb = _compareBranches(
+                                branches, commonBlocks
+                            )
 
-                            if len(branches) == 3:
-                                functionTriggers[block] = {}
-                                branchA = {}
-                                branchB = {}
+                            # Branch A
+                            branchA["Blocks"] = branchA_blocks
 
-                                branchA_blocks, branchB_blocks, cb = _compareBranches(branches, commonBlocks)
+                            # Branch B
+                            branchB["Blocks"] = branchB_blocks
 
+                            # Feature Extraction A
+                            S_A = numSensFunctCalls(branchA, bbs)
+                            P_A = dataFlow(branchA, bbs)
+                            M1_A = numExclFunctCalls(branchA, bbs, functionBlocks)
+                            S1_A = numExclSensFunctCalls(branchA, bbs, functionBlocks)
 
-                                # Branch A
-                                branchA["Blocks"] = branchA_blocks
+                            # Feature Extraction B
+                            S_B = numSensFunctCalls(branchB, bbs)
+                            P_B = dataFlow(branchB, bbs)
+                            M1_B = numExclFunctCalls(branchB, bbs, functionBlocks)
+                            S1_B = numExclSensFunctCalls(branchB, bbs, functionBlocks)
 
-                                # Branch B
-                                branchB["Blocks"] = branchB_blocks
+                            # Behavior Difference
+                            branchDifference = behaviorDifference(branchA, branchB, bbs)
 
-                                # Feature Extraction A
-                                S_A = numSensFunctCalls(branchA, bbs)
-                                P_A = dataFlow(branchA, bbs)
-                                M1_A = numExclFunctCalls(branchA, bbs, functionBlocks)
-                                S1_A = numExclSensFunctCalls(branchA, bbs, functionBlocks)
+                            functionTriggers[block]["S"] = S_A + S_B
+                            functionTriggers[block]["P"] = P_A + P_B
+                            functionTriggers[block]["M1"] = M1_A + M1_B
+                            functionTriggers[block]["S1"] = S1_A + S1_B
+                            functionTriggers[block]["J"] = branchDifference
+                            functionTriggers[block]["CAPA_A"] = TBD_A
+                            functionTriggers[block]["CAPA_B"] = TBD_B
 
-                                # Feature Extraction B
-                                S_B = numSensFunctCalls(branchB, bbs)
-                                P_B = dataFlow(branchB, bbs)
-                                M1_B = numExclFunctCalls(branchB, bbs, functionBlocks)
-                                S1_B = numExclSensFunctCalls(branchB, bbs, functionBlocks)
+                            # Determine source of variables used in trigger stmt
+                            # if function_calls != {}:
+                            #     bs_chosen_statements = backward_slicing(p, block, base_addr)
+                            #     for bs_block in bs_chosen_statements:
+                            #         if bs_block in function_calls:
+                            #             if function_calls[bs_block][1] in system_input_checks:
+                            #                 suspicous_triggers += [function_calls[bs_block][1]]
+                            if len(suspicous_triggers) != 0:
+                                functionTriggers[block]["C"] = 1
+                            else:
+                                functionTriggers[block]["C"] = 0
 
-                                # Behavior Difference
-                                branchDifference = behaviorDifference(branchA, branchB, bbs)
-
-                                functionTriggers[block]["S"] = S_A + S_B
-                                functionTriggers[block]["P"] = P_A + P_B
-                                functionTriggers[block]["M1"] = M1_A + M1_B
-                                functionTriggers[block]["S1"] = S1_A + S1_B
-                                functionTriggers[block]["J"] = branchDifference
-
-                                # Determine source of variables used in trigger stmt
-                                # if function_calls != {}:
-                                #     bs_chosen_statements = backward_slicing(p, block, base_addr)
-                                #     for bs_block in bs_chosen_statements:
-                                #         if bs_block in function_calls:
-                                #             if function_calls[bs_block][1] in system_input_checks:
-                                #                 suspicous_triggers += [function_calls[bs_block][1]]
-                                if len(suspicous_triggers) != 0:
-                                    functionTriggers[block]["C"] = 1
-                                else:
-                                    functionTriggers[block]["C"] = 0
-
-                    if len(functionTriggers) != 0:
-                        triggerResults[functionName] = functionTriggers
-        except:
-            print("Error with " +  oid)
+                if len(functionTriggers) != 0:
+                    triggerResults[functionName] = functionTriggers
         results[oid] = triggerResults
-    return ghidra_disasm
+    return results
+
 
 ##########################
 ### Feature Extraction ###
 ##########################
-    
+
 
 def backward_slicing(p, block, base_addr):
-    cfg = p.analyses.CFGEmulated(keep_state=True,
-                                state_add_options=angr.sim_options.refs,
-                                context_sensitivity_level=2)
+    cfg = p.analyses.CFGEmulated(
+        keep_state=True,
+        state_add_options=angr.sim_options.refs,
+        context_sensitivity_level=2,
+    )
 
-    location = int(hex(base_addr + block), base = 16)
+    location = int(hex(base_addr + block), base=16)
 
     target_node = cfg.get_any_node(location)
 
     # bs = p.analyses.BackwardSlice(cfg, cdg=cdg, ddg=ddg, targets=[ (target_node, 0) ], control_flow_slice=True)
-    bs = p.analyses.BackwardSlice(cfg, targets=[ (target_node, 0) ], control_flow_slice=True)
+    bs = p.analyses.BackwardSlice(
+        cfg, targets=[(target_node, 0)], control_flow_slice=True
+    )
 
     return bs.chosen_statements
 
@@ -190,9 +209,11 @@ def numSensFunctCalls(branch, bbs):
     sensitiveCalls = _getSensitiveFunctionCalls(calls, bbs)
     return len(sensitiveCalls)
 
+
 # Feature P - Are parameters of condition used in guarded code?
 def dataFlow(branch, bbs):
     return 0
+
 
 # Feature M1 - Number of functions exclusively called in guarded code.
 def numExclFunctCalls(branch, bbs, functionBlocks):
@@ -200,12 +221,14 @@ def numExclFunctCalls(branch, bbs, functionBlocks):
     excelusiveCalls = _getExclusiveFunctionCalls(calls, bbs, functionBlocks)
     return len(excelusiveCalls)
 
+
 # Feature S1 - Number of sensitive function exclusively called only in guarded code
 def numExclSensFunctCalls(branch, bbs, functionBlocks):
     calls = _getFunctionCalls(branch, bbs)
     sensitiveCalls = _getSensitiveFunctionCalls(calls, bbs)
     excelusiveCalls = _getExclusiveFunctionCalls(sensitiveCalls, bbs, functionBlocks)
     return len(excelusiveCalls)
+
 
 # Feature J - Behavior differences between two branches
 def behaviorDifference(branchA, branchB, bbs):
@@ -222,24 +245,27 @@ def behaviorDifference(branchA, branchB, bbs):
 
     return branchDifference
 
+
 ###############################################
 ### Functions Supporting Feature Extraction ###
 ###############################################
+
 
 def _jaccard_distance(A, B):
     # Find symmetric difference of two sets
     nominator = list(set(A).symmetric_difference(set(B)))
 
-    #Find union of two sets
+    # Find union of two sets
     denominator = list(set(A) | set(B))
     if len(denominator) == 0:
         distance = 0
     else:
-        distance = len(nominator)/len(denominator)
+        distance = len(nominator) / len(denominator)
 
     return distance
 
-def _getFunctionCalls(branch, bbs): 
+
+def _getFunctionCalls(branch, bbs):
     calls = []
     for block in branch:
         if isinstance(block, str):
@@ -250,12 +276,14 @@ def _getFunctionCalls(branch, bbs):
                 calls.extend([block])
     return calls
 
+
 def _getSensitiveFunctionCalls(functionCalls, bbs):
     sensFunctionCalls = []
     for call in functionCalls:
         if call in sensitive_functions:
             sensFunctionCalls[call] = functionCalls[call]
     return sensFunctionCalls
+
 
 def _getExclusiveFunctionCalls(functionCalls, bbs, functionBlocks):
     calls = []
@@ -269,11 +297,13 @@ def _getExclusiveFunctionCalls(functionCalls, bbs, functionBlocks):
                     calls.extend([call])
     return calls
 
-#This will find all calls_to. It will then add that to a dictionary and iterate back through the calls_to and assign them correctly to the correct calls_to
+
+# This will find all calls_to. It will then add that to a dictionary and iterate back through the calls_to and assign them correctly to the correct calls_to
 def _call_mapping(function_addr, function_data, functions, basic_blocks):
 
     call_mapping = {}
     function_addresses = functions.keys()
+<<<<<<< HEAD
     
     #Generating calls_to
     for block_addr in function_data['blocks']:
@@ -284,16 +314,30 @@ def _call_mapping(function_addr, function_data, functions, basic_blocks):
                         if offset in function_addresses:
                             called_file_offset = offset
                             call_mapping[instruction_offset] = functions[called_file_offset]['name']
+=======
+
+    # Generating calls_to
+    for block_addr in function_data["blocks"]:
+        for instruction_offset, instruction in basic_blocks[block_addr]["members"]:
+            if instruction[:4] == "call":
+                for offset in basic_blocks[block_addr]["dests"]:
+                    if offset in function_addresses:
+                        called_file_offset = offset
+                        call_mapping[instruction_offset] = functions[
+                            called_file_offset
+                        ]["name"]
+>>>>>>> f185dda (pushing code to try and figure out memory issues)
 
     return call_mapping
+
 
 def _findTriggerStmts(bbs):
     triggers = {}
     for b in bbs:
-        dests = bbs[b]['dests']
+        dests = bbs[b]["dests"]
         trigger = {}
         if len(dests) > 1:
-            if _isCall(bbs[b]['last_insn'][1]):
+            if _isCall(bbs[b]["last_insn"][1]):
                 pass
             else:
                 trigger = bbs[b]
@@ -311,11 +355,21 @@ def _computeBranch(block, bbs, functionBlocks):
             pass
         else:
             if len(bbs[branch]["dests"]) > 0:
-                triggerBranches.extend([[branch, _computeSubBranches(branch, bbs, functionBlocks, dominators)]])
+                triggerBranches.extend(
+                    [
+                        [
+                            branch,
+                            _computeSubBranches(
+                                branch, bbs, functionBlocks, dominators
+                            ),
+                        ]
+                    ]
+                )
             elif bbs[branch]["dests"] == []:
                 triggerBranches.extend([branch])
 
     return triggerBranches
+
 
 def _computeSubBranches(block, bbs, functionBlocks, dominators):
     triggerBranches = []
@@ -328,10 +382,16 @@ def _computeSubBranches(block, bbs, functionBlocks, dominators):
         else:
             dominators.extend([branch])
             if len(bbs[branch]["dests"]) > 0:
-                triggerBranches.extend([branch, _computeSubBranches(branch, bbs, functionBlocks, dominators)])
+                triggerBranches.extend(
+                    [
+                        branch,
+                        _computeSubBranches(branch, bbs, functionBlocks, dominators),
+                    ]
+                )
             elif bbs[branch]["dests"] == []:
                 triggerBranches.extend([branch])
     return triggerBranches
+
 
 def _compareBranches(triggerBranches, commonBlocks):
     branchMaps = []
@@ -359,16 +419,18 @@ def _compareBranches(triggerBranches, commonBlocks):
             break
     return pathA, pathB
 
+
 def _getBranchMap(branchMap, blocks, level):
     if isinstance(blocks, list):
         for b in blocks:
             if isinstance(b, list):
-                branchMap = _getBranchMap(branchMap, b, level+1)
+                branchMap = _getBranchMap(branchMap, b, level + 1)
             else:
                 branchMap[b] = level + 1
     else:
         branchMap[blocks] = level
     return branchMap
+
 
 def getCommonBlocks(bbs, functionBlocks):
     # Get common blocks
@@ -377,6 +439,7 @@ def getCommonBlocks(bbs, functionBlocks):
         if len(bbs[fb]["dests_prev"]) > 1:
             commonBlocks[fb] = None
     return commonBlocks
+
 
 def _getPath(depth, branch):
     path = []
@@ -389,18 +452,20 @@ def _getPath(depth, branch):
         index += 1
     return path
 
+
 def _configure_bs(oid):
     src = api.source(oid)
     data = api.get_field(src, oid, "data", {})
     src_type = api.get_field("src_type", oid, "type")
     header = api.get_field("object_header", oid, oid)
     if not header:
-        logger.info('No header found for %s in %s', oid, NAME)
+        logger.info("No header found for %s in %s", oid, NAME)
         return False, False
     header.type = src_type
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data)
     return f_name, header
+
 
 def _getCommonBlocks(bbs, functionBlocks):
     # Get common blocks
@@ -410,15 +475,38 @@ def _getCommonBlocks(bbs, functionBlocks):
             commonBlocks.extend([fb])
     return commonBlocks
 
+<<<<<<< HEAD
+=======
+
+# This will  find all calls_to. It will then add that to a dictionary and iterate back through the calls_to and assign them correctly to the correct calls_to
+def _call_mapping(function_addr, function_data, functions, basic_blocks):
+
+    call_mapping = {}
+    function_addresses = functions.keys()
+
+    # Generating calls_to
+    for block_addr in function_data["blocks"]:
+        if block_addr in basic_blocks:
+            for instruction_offset, instruction in basic_blocks[block_addr]["members"]:
+                if instruction[:4] == "call":
+                    for offset in basic_blocks[block_addr]["dests"]:
+                        if offset in function_addresses:
+                            called_file_offset = offset
+                            # call_mapping[instruction_offset] = [offset, functions[called_file_offset]['name']]
+                            call_mapping[instruction_offset] = [
+                                called_file_offset,
+                                functions[called_file_offset]["name"],
+                            ]
+    return call_mapping
+
+>>>>>>> f185dda (pushing code to try and figure out memory issues)
 
 def _isCall(instruction):
-    if instruction.startswith('call'):
+    if instruction.startswith("call"):
         return True
     else:
         return False
-    
 
-        
 
 # Functions in the C library that check system or user inputs
 system_input_checks = [
