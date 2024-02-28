@@ -50,7 +50,7 @@ import capa.render.vverbose
 import capa.features.freeze.features as frzf
 import capa.loader
 from pathlib import *
-from capa.features.common import OS_AUTO, OS_LINUX, FORMAT_AUTO, FORMAT_ELF
+from capa.features.common import OS_AUTO, OS_LINUX, FORMAT_AUTO, FORMAT_ELF, FORMAT_SC64
 import capa.features.freeze as frz
 
 logging.basicConfig(level=logging.WARNING)
@@ -83,6 +83,29 @@ def process(oid: str, opts: dict) -> Dict[str, dict]:
     into other modules
     """
     logger.debug("process()")
+    paths = api.get_field("file_meta", oid, "original_paths")
+    file_path = Path(next(iter(paths)))
+    rules_path = "/home/nathan/.local/share/oxide/datasets/capa-rules"
+    result = {}
+
+    result[oid] = {"filepath": file_path, "capa_capabilities": {}}
+    try:
+        capa_dict = run_capa(file_path, rules_path)
+    except:
+        capa_dict = {}
+        print("error running capa")
+
+    for capa_entry in capa_dict:
+        result[oid]["capa_capabilities"][capa_entry] = []
+        for match in capa_dict[capa_entry]["matches"]:
+            result[oid]["capa_capabilities"][capa_entry].append(match)
+
+    if result is None: return False
+
+    api.store(NAME, oid, result, opts)
+
+    return True
+
     paths = api.get_field("file_meta", oid, "original_paths")
     file_path = Path(next(iter(paths)))
     rules_path = "/home/nathan/.local/share/oxide/datasets/capa-rules"
@@ -159,6 +182,9 @@ def render_rules(doc: rd.ResultDocument):
                     # because we're only in verbose mode, we won't show the full call details (name, args, retval)
                     # we'll only show the details of the thread in which the calls are found.
                     # so select the thread locations and render those.
+                    # because we're only in verbose mode, we won't show the full call details (name, args, retval)
+                    # we'll only show the details of the thread in which the calls are found.
+                    # so select the thread locations and render those.
                     thread_locations = set()
                     for loc in locations:
                         cloc = loc.to_capa()
@@ -200,32 +226,62 @@ def capa_details(rules_path: Path, file_path: Path):
     # load rules from disk
     rules = capa.rules.get_rules([rules_path])
 
-    # extract features and find capabilities
-    extractor = capa.loader.get_extractor(
-        file_path,
-        FORMAT_AUTO,
-        OS_AUTO,
-        capa.main.BACKEND_VIV,
-        [],
-        False,
-        disable_progress=True,
-    )
-    capabilities, counts = capa.main.find_capabilities(
-        rules, extractor, disable_progress=True
-    )
+    try:
+        # extract features and find capabilities
+        extractor = capa.loader.get_extractor(
+            file_path,
+            FORMAT_AUTO,
+            OS_AUTO,
+            capa.main.BACKEND_VIV,
+            [],
+            False,
+            disable_progress=True,
+        )
+        capabilities, counts = capa.main.find_capabilities(
+            rules, extractor, disable_progress=True
+        )
 
-    # collect metadata (used only to make rendering more complete)
-    meta = capa.loader.collect_metadata(
-        [], file_path, FORMAT_AUTO, OS_AUTO, [rules_path], extractor, counts
-    )
+        # collect metadata (used only to make rendering more complete)
+        meta = capa.loader.collect_metadata(
+            [], file_path, FORMAT_AUTO, OS_AUTO, [rules_path], extractor, counts
+        )
 
-    meta.analysis.feature_counts = counts["feature_counts"]
-    meta.analysis.library_functions = counts["library_functions"]
-    meta.analysis.layout = capa.loader.compute_layout(rules, extractor, capabilities)
+        meta.analysis.feature_counts = counts["feature_counts"]
+        meta.analysis.library_functions = counts["library_functions"]
+        meta.analysis.layout = capa.loader.compute_layout(rules, extractor, capabilities)
 
-    doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
-    capa_output = render_rules(doc)
+        doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
+        capa_output = render_rules(doc)
+    except:
+        # extract features and find capabilities
+        extractor = capa.loader.get_extractor(
+            file_path,
+            FORMAT_SC64,
+            OS_AUTO,
+            capa.main.BACKEND_VIV,
+            [],
+            False,
+            disable_progress=True,
+        )
+        capabilities, counts = capa.main.find_capabilities(
+            rules, extractor, disable_progress=True
+        )
+
+        # collect metadata (used only to make rendering more complete)
+        meta = capa.loader.collect_metadata(
+            [], file_path, FORMAT_SC64, OS_AUTO, [rules_path], extractor, counts
+        )
+
+        meta.analysis.feature_counts = counts["feature_counts"]
+        meta.analysis.library_functions = counts["library_functions"]
+        meta.analysis.layout = capa.loader.compute_layout(rules, extractor, capabilities)
+
+        doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
+        capa_output = render_rules(doc)
+
+        
     return capa_output
+
 
 
 def run_capa(file, rules):
