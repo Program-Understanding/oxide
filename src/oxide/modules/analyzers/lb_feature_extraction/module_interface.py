@@ -303,18 +303,6 @@ def _call_mapping(function_addr, function_data, functions, basic_blocks):
 
     call_mapping = {}
     function_addresses = functions.keys()
-<<<<<<< HEAD
-    
-    #Generating calls_to
-    for block_addr in function_data['blocks']:
-        if block_addr in basic_blocks:
-            for instruction_offset, instruction in basic_blocks[block_addr]['members']:
-                if instruction[:4] == 'call':
-                    for offset in basic_blocks[block_addr]['dests']:
-                        if offset in function_addresses:
-                            called_file_offset = offset
-                            call_mapping[instruction_offset] = functions[called_file_offset]['name']
-=======
 
     # Generating calls_to
     for block_addr in function_data["blocks"]:
@@ -326,7 +314,6 @@ def _call_mapping(function_addr, function_data, functions, basic_blocks):
                         call_mapping[instruction_offset] = functions[
                             called_file_offset
                         ]["name"]
->>>>>>> f185dda (pushing code to try and figure out memory issues)
 
     return call_mapping
 
@@ -475,8 +462,6 @@ def _getCommonBlocks(bbs, functionBlocks):
             commonBlocks.extend([fb])
     return commonBlocks
 
-<<<<<<< HEAD
-=======
 
 # This will  find all calls_to. It will then add that to a dictionary and iterate back through the calls_to and assign them correctly to the correct calls_to
 def _call_mapping(function_addr, function_data, functions, basic_blocks):
@@ -499,7 +484,6 @@ def _call_mapping(function_addr, function_data, functions, basic_blocks):
                             ]
     return call_mapping
 
->>>>>>> f185dda (pushing code to try and figure out memory issues)
 
 def _isCall(instruction):
     if instruction.startswith("call"):

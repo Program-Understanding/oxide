@@ -1,5 +1,5 @@
 DESC = " This module will take a call_graph along with capa_descriptions to generate better function descriptions for certain subgraphs"
-NAME = "subgraph_descriptions"
+NAME = "acid"
 
 # imports
 import logging
@@ -46,7 +46,10 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     oid_list = api.expand_oids(oid_list)
     results = {}
+    count = 0
     for oid in oid_list:
+        print("File: ", count)
+        count += 1
         call_graph = api.retrieve("call_graph", oid)
         capa_descriptions = api.retrieve("capa_results", oid)[oid]
 

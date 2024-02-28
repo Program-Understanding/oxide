@@ -50,10 +50,8 @@ import capa.render.vverbose
 import capa.features.freeze.features as frzf
 import capa.loader
 from pathlib import *
-from capa.features.common import OS_AUTO, OS_LINUX, FORMAT_AUTO, FORMAT_ELF, FORMAT_SC64
+from capa.features.common import OS_AUTO, OS_LINUX, FORMAT_AUTO, FORMAT_ELF
 import capa.features.freeze as frz
-
-from capa import exceptions
 
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger().setLevel(logging.WARNING)
@@ -79,48 +77,35 @@ def documentation() -> Dict[str, Any]:
     }
 
 
-def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
+def process(oid: str, opts: dict) -> Dict[str, dict]:
     """Entry point for analyzers, these do not store in database
     these are meant to be very quickly computed things passed along
     into other modules
     """
     logger.debug("process()")
-
-    oid_list = api.expand_oids(oid_list)
-
+    paths = api.get_field("file_meta", oid, "original_paths")
+    file_path = Path(next(iter(paths)))
+    rules_path = "/home/nathan/.local/share/oxide/datasets/capa-rules"
     result = {}
-    for oid in oid_list:
-        paths = api.get_field("file_meta", oid, "original_paths")
-        file_path = Path(next(iter(paths)))
-        rules_path = "/home/nathan/.local/share/oxide/datasets/capa-rules"
-<<<<<<< HEAD
-        try:
-            capa_dict = run_capa(file_path, rules_path)
-        except:
-            result[oid] = "Error with Capa"
-            continue
-        result[oid] = {"filepath": file_path,
-                       "capa_capabilities": {}}
-        for capa_entry in capa_dict:
-            result[oid]["capa_capabilities"][capa_entry] = []
-            for match in capa_dict[capa_entry]['matches']:
-                result[oid]["capa_capabilities"][capa_entry].append(match)
-    return result
-=======
-        result[oid] = {"filepath": file_path, "capa_capabilities": {}}
-        print(file_path)
-        try:
-            capa_dict = run_capa(file_path, rules_path)
-        except:
-            print("error running capa")
-            continue
-        for capa_entry in capa_dict:
-            result[oid]["capa_capabilities"][capa_entry] = []
-            for match in capa_dict[capa_entry]["matches"]:
-                result[oid]["capa_capabilities"][capa_entry].append(match)
-    return result
 
->>>>>>> f185dda (pushing code to try and figure out memory issues)
+    result[oid] = {"filepath": file_path, "capa_capabilities": {}}
+    try:
+        capa_dict = run_capa(file_path, rules_path)
+    except:
+        capa_dict = {}
+        print("error running capa")
+
+    for capa_entry in capa_dict:
+        result[oid]["capa_capabilities"][capa_entry] = []
+        for match in capa_dict[capa_entry]["matches"]:
+            result[oid]["capa_capabilities"][capa_entry].append(match)
+
+    if result is None: return False
+
+    api.store(NAME, oid, result, opts)
+
+    return True
+
 
 def render_rules(doc: rd.ResultDocument):
     result = {}
@@ -130,11 +115,6 @@ def render_rules(doc: rd.ResultDocument):
         capability = rule.meta.name
 
         result[capability] = {}
-<<<<<<< HEAD
-
-        rows = []
-=======
->>>>>>> f185dda (pushing code to try and figure out memory issues)
 
         ns = rule.meta.namespace
         if ns:
@@ -151,12 +131,7 @@ def render_rules(doc: rd.ResultDocument):
         else:
             raise ValueError("invalid meta analysis")
         if scope:
-<<<<<<< HEAD
-            result[capability]['scope'] = scope.value
-
-=======
             result[capability]["scope"] = scope.value
->>>>>>> f185dda (pushing code to try and figure out memory issues)
 
         lines = []
         if capa.rules.Scope.FILE not in rule.meta.scopes:
@@ -181,7 +156,9 @@ def render_rules(doc: rd.ResultDocument):
                         for loc in locations
                     ]
                 elif rule.meta.scopes.dynamic == capa.rules.Scope.CALL:
-
+                    # because we're only in verbose mode, we won't show the full call details (name, args, retval)
+                    # we'll only show the details of the thread in which the calls are found.
+                    # so select the thread locations and render those.
                     thread_locations = set()
                     for loc in locations:
                         cloc = loc.to_capa()
@@ -199,30 +176,11 @@ def render_rules(doc: rd.ResultDocument):
             else:
                 capa.helpers.assert_never(doc.meta.flavor)
 
-<<<<<<< HEAD
-        result[capability]['matches'] = lines
-
-    result = convert_addrs(result, base_addr)
-    
-=======
         result[capability]["matches"] = lines
 
     result = convert_addrs(result, base_addr)
 
->>>>>>> f185dda (pushing code to try and figure out memory issues)
     return result
-
-def convert_addrs(results, base_addr):
-    for capability in results:
-        print(results[capability])
-        new_addrs = []
-        new_addr = None
-        matches = results[capability]['matches']
-        for m in matches:
-            new_addr = int(m, 16) - base_addr
-            new_addrs.extend([new_addr])
-        results[capability]['matches'] = new_addrs
-    return results
 
 
 def convert_addrs(results, base_addr):
@@ -241,99 +199,34 @@ def convert_addrs(results, base_addr):
 def capa_details(rules_path: Path, file_path: Path):
     # load rules from disk
     rules = capa.rules.get_rules([rules_path])
-    
-    try:
-        # extract features and find capabilities
-        extractor = capa.loader.get_extractor(
-            file_path,
-            FORMAT_AUTO,
-            OS_AUTO,
-            capa.main.BACKEND_VIV,
-            [],
-            False,
-            disable_progress=True,
-        )
-        capabilities, counts = capa.main.find_capabilities(
-            rules, extractor, disable_progress=True
-        )
 
-        # collect metadata (used only to make rendering more complete)
-        meta = capa.loader.collect_metadata(
-            [], file_path, FORMAT_AUTO, OS_AUTO, [rules_path], extractor, counts
-        )
+    # extract features and find capabilities
+    extractor = capa.loader.get_extractor(
+        file_path,
+        FORMAT_AUTO,
+        OS_AUTO,
+        capa.main.BACKEND_VIV,
+        [],
+        False,
+        disable_progress=True,
+    )
+    capabilities, counts = capa.main.find_capabilities(
+        rules, extractor, disable_progress=True
+    )
 
-        meta.analysis.feature_counts = counts["feature_counts"]
-        meta.analysis.library_functions = counts["library_functions"]
-        meta.analysis.layout = capa.loader.compute_layout(rules, extractor, capabilities)
+    # collect metadata (used only to make rendering more complete)
+    meta = capa.loader.collect_metadata(
+        [], file_path, FORMAT_AUTO, OS_AUTO, [rules_path], extractor, counts
+    )
 
-<<<<<<< HEAD
     meta.analysis.feature_counts = counts["feature_counts"]
     meta.analysis.library_functions = counts["library_functions"]
     meta.analysis.layout = capa.loader.compute_layout(rules, extractor, capabilities)
 
     doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
     capa_output = render_rules(doc)
-=======
-        doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
-        capa_output = render_rules(doc)
-
-    # Handle Shellcode File
-    except exceptions.UnsupportedFormatError:
-        # extract features and find capabilities
-        extractor = capa.loader.get_extractor(
-            file_path,
-            FORMAT_SC64,
-            OS_AUTO,
-            capa.main.BACKEND_VIV,
-            [],
-            False,
-            disable_progress=True,
-        )
-        capabilities, counts = capa.main.find_capabilities(
-            rules, extractor, disable_progress=True
-        )
-
-        # collect metadata (used only to make rendering more complete)
-        meta = capa.loader.collect_metadata(
-            [], file_path, FORMAT_SC64, OS_AUTO, [rules_path], extractor, counts
-        )
-
-        meta.analysis.feature_counts = counts["feature_counts"]
-        meta.analysis.library_functions = counts["library_functions"]
-        meta.analysis.layout = capa.loader.compute_layout(rules, extractor, capabilities)
-
-        doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
-        capa_output = render_rules(doc)
-
-    # Handle Shellcode File
-    except exceptions.UnsupportedOSError:
-        # extract features and find capabilities
-        extractor = capa.loader.get_extractor(
-            file_path,
-            FORMAT_SC64,
-            OS_AUTO,
-            capa.main.BACKEND_VIV,
-            [],
-            False,
-            disable_progress=True,
-        )
-        capabilities, counts = capa.main.find_capabilities(
-            rules, extractor, disable_progress=True
-        )
-
-        # collect metadata (used only to make rendering more complete)
-        meta = capa.loader.collect_metadata(
-            [], file_path, FORMAT_SC64, OS_AUTO, [rules_path], extractor, counts
-        )
-
-        meta.analysis.feature_counts = counts["feature_counts"]
-        meta.analysis.library_functions = counts["library_functions"]
-        meta.analysis.layout = capa.loader.compute_layout(rules, extractor, capabilities)
-
-        doc = rd.ResultDocument.from_capa(meta, rules, capabilities)
-        capa_output = render_rules(doc)
->>>>>>> f185dda (pushing code to try and figure out memory issues)
     return capa_output
+
 
 def run_capa(file, rules):
     results = capa_details(Path(rules), Path(file))
