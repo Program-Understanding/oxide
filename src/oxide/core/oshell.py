@@ -1446,7 +1446,7 @@ class OxideShell(Cmd):
 
 
     ### PRINT ##################################################################
-    def print_item(self, item, opts: Optional[dict], header=None, bullet=""):
+    def print_item(self, item, opts: Optional[dict]=None, header=None, bullet=""):
         """ Given an item recursively iterate over it and print it's leaf nodes
 
         Options:
