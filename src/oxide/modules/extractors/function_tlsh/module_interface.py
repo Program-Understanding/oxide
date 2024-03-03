@@ -71,7 +71,7 @@ def process(oid, opts):
             fun_info["tlsh hash"] = None
 
         fun_info["len"] = fun_len
-        if opts['human_readable']:
+        if opts['output_fun_name']:
             fun_dict[funs[f]['name']] = fun_info
         elif opts['output_vaddr']:
             fun_dict[funs[f]['vaddr']] = fun_info
