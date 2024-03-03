@@ -3,7 +3,7 @@ NAME = "function_tlsh"
 USG = " This module takes a collection of binary files and extracts from \
 ghidra_disasm the functions, then calculates their TLSH hash. It returns \
 a dictionary with the function name as a key and the TLSH hash as its \
-key-value pair"
+key-value pair."
 
 import logging
 from oxide.core import api
@@ -11,13 +11,16 @@ import tlsh
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"ghidra_disasm":
-            {"type": bool, "mangle": False, "default": True}}
+opts_doc = {"ghidra_disasm": {"type": bool, "mangle": False, "default": True}, "output_fun_name": {"type": bool, "mangle": False, "default": False}, "output_vaddr": {"type": bool, "mangle": False, "default": False}}
+
 
 def documentation():
     return {"description": DESC, "opts_doc": opts_doc,"set": False, "atomic": True, "usage": USG}
 
 def process(oid, opts):
+    if opts["output_fun_name"] and opts["output_vaddr"]:
+        logger.info("Select to print either vaddress or function name, but not both")
+        return False
     fun_dict = {}
     names = api.get_field("file_meta", oid, "names")
     logger.debug(f"process({names})")
@@ -68,7 +71,12 @@ def process(oid, opts):
             fun_info["tlsh hash"] = None
 
         fun_info["len"] = fun_len
-        fun_dict[funs[f]['name']] = fun_info
+        if opts['human_readable']:
+            fun_dict[funs[f]['name']] = fun_info
+        elif opts['output_vaddr']:
+            fun_dict[funs[f]['vaddr']] = fun_info
+        else:
+            fun_dict[f] = fun_info
 
     logger.debug("Storing")
     api.store(NAME, oid,fun_dict,opts)
