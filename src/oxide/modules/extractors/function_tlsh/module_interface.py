@@ -1,9 +1,10 @@
-DESC = " Evaluate functions TLSH hash from a disassembly (uses ghidra_disasm)"
+DESC = " Evaluate functions TLSH hash from a disassembly (uses ghidra_disasm or angr_disasm)"
 NAME = "function_tlsh"
 USG = " This module takes a collection of binary files and extracts from \
 ghidra_disasm the functions, then calculates their TLSH hash. It returns \
 a dictionary with the function name as a key and the TLSH hash as its \
-key-value pair."
+key-value pair.\
+set ghidra_disasm to False for emu_angr_disasm."
 
 import logging
 from oxide.core import api
@@ -11,7 +12,7 @@ import tlsh
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"ghidra_disasm": {"type": bool, "mangle": False, "default": True}, "output_fun_name": {"type": bool, "mangle": False, "default": False}, "output_vaddr": {"type": bool, "mangle": False, "default": False}}
+opts_doc = {"disasm": {"type": str, "mangle": False, "default": "ghidra_disasm", "description": "which disassembler module to use"}, "output_fun_name": {"type": bool, "mangle": False, "default": False, "description": "whether to output function names or their offsets"}, "output_vaddr": {"type": bool, "mangle": False, "default": False,"description":"whether to output function vaddr or function offset"}, "by_opcode": {"type": bool, "mangle": False, "default":False,"description":"generate TLSH hash by opcode/mnemonic instead of entire instruction"}}
 
 
 def documentation():
@@ -23,13 +24,14 @@ def process(oid, opts):
         return False
     fun_dict = {}
     names = api.get_field("file_meta", oid, "names")
-    logger.debug(f"process({names})")
 
     #Get functions, bbs, disasm
-    funs = api.get_field("ghidra_disasm", oid, "functions")
+    if opts["disasm"] != "ghidra_disasm":
+        logger.info(f"Running {opts['disasm']} on {oid}...")
+    funs = api.get_field(opts["disasm"], oid, "functions")
     if not funs:
         return False
-    bbs = api.get_field("ghidra_disasm", oid, "original_blocks")
+    bbs = api.get_field(opts["disasm"], oid, "original_blocks")
     insns = api.get_field("disassembly", oid, oid)
     if insns and "instructions" in insns:
         insns = insns["instructions"]
@@ -55,8 +57,8 @@ def process(oid, opts):
                     logger.error("Basic Block member not found: %s", insn_offset)
                     continue
                 fun_len += insns[insn_offset]['size']
-                opcode = insn_text.split(' ')
-                if opcode:
+                opcode = insn_text.split()
+                if opts["by_opcode"] and opcode:
                     opcode = opcode[0]
                     # try to add destination register to opcode for more context and to avoid TNULL
                     if len(insn_text) > 3 and len(insn_text.split(' ')) > 2 and len(insn_text.split(' ')[2]) > 3:
@@ -64,6 +66,9 @@ def process(oid, opts):
                         if len(target_dest[0]) == 3 and target_dest[0][-2] == 'a' and target_dest[0][-1] == 'x': #target is *ax
                             opcode += target_dest[0]
                     fun_string += opcode
+                else:
+                    for sub_str in opcode:
+                        fun_string += sub_str
 
         if fun_instr_count > 5 and tlsh.hash(fun_string.encode()) != "TNULL":  # Eliminate functions that are just jumping to external
             fun_info["tlsh hash"] = tlsh.hash(fun_string.encode())
