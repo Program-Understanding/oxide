@@ -8,7 +8,7 @@ import os
 def filter_function_hashes(args, opts):
     """
        Use to analyze function hashes of a collection, showing scores of functions between OIDs
-       Syntax: filter_function_hashes [ --min=<minimum score> | --max=<maximum_score> | --hr | --human_readable ]
+       Syntax: filter_function_hashes [ --max=<maximum_score> | --hr | --human_readable ]
        (Input should pipe in from function_tlsh module output)
     """
     human_readable = False
@@ -44,18 +44,18 @@ def filter_function_hashes(args, opts):
                 for function in functions:
                     if "tlsh hash" not in args_dict[oid][function] or args_dict[oid][function]["tlsh hash"] is None:
                         continue
-                    best_score = -1
+                    best_score = 10000
                     best_function = ""
                     for other_function in other_functions:
                         if "tlsh hash" not in args_dict[other_oid][other_function] or args_dict[other_oid][other_function]["tlsh hash"] is None:
                             continue
-                        score = tlsh.diff(args_dict[oid][function]["tlsh hash"],args_dict[other_oid][other_function]["tlsh hash"])
+                        score = tlsh.diffxlen(args_dict[oid][function]["tlsh hash"],args_dict[other_oid][other_function]["tlsh hash"])
                         if (maximum and score > maximum) or (minimum and score < minimum):
                             continue
-                        if score > best_score:
+                        if score < best_score:
                             best_score = score
                             best_function=other_function
-                    if best_score > -1:
+                    if best_score < 10000:
                         score_store(best_score,similarities,human_readable,function,best_function,oid,other_oid,oid_h,other_oid_h)
     else:
         return False
@@ -72,7 +72,7 @@ def score_store(score,similarities,human_readable,function,other_function,oid,ot
 def show_tlsh_matching_functions(args,opts):
     """
        Use to analyze function hashes of a collection, showing the closest matching functions between OIDs
-       Syntax: show_tlsh_matching_functions [ --funs=<amount of functions to show per OID> | --min=<minimum hash score> | --hr | --human_readable]
+       Syntax: show_tlsh_matching_functions [ --funs=<amount of functions to show per OID> | --max=<maximum hash score> | --hr | --human_readable]
        (Input should pipe in from function_tlsh module output)
     """
     human_readable = False
@@ -81,9 +81,9 @@ def show_tlsh_matching_functions(args,opts):
     fun_num = 1
     if "funs" in opts:
         fun_num = opts["funs"]
-    minimum = 0
-    if "min" in opts:
-        minimum = opts["min"]
+    maximum = 10000
+    if "max" in opts:
+        maximum = opts["max"]
     args_dict = dict(args[0])
     possible_oids = args_dict.keys()
     valid, invalid = api.valid_oids(possible_oids)
@@ -109,20 +109,20 @@ def show_tlsh_matching_functions(args,opts):
                     if "tlsh hash" not in args_dict[oid][function] or args_dict[oid][function]["tlsh hash"] is None:
                         continue
                     if fun_num == 1:
-                        best_score = 0
+                        best_score = 10000
                         best_function = ""
                     for other_function in other_functions:
                         if "tlsh hash" not in args_dict[other_oid][other_function] or args_dict[other_oid][other_function]["tlsh hash"] is None:
                             continue
-                        score = tlsh.diff(args_dict[oid][function]["tlsh hash"],args_dict[other_oid][other_function]["tlsh hash"])
-                        if score > minimum:
+                        score = tlsh.diffxlen(args_dict[oid][function]["tlsh hash"],args_dict[other_oid][other_function]["tlsh hash"])
+                        if score < maximum:
                             if fun_num !=1:
                                 insert_score(score,similarities,human_readable,function,other_function,oid,other_oid,oid_h,other_oid_h,fun_num)
                             else:
-                                if score > best_score:
+                                if score < best_score:
                                     best_score = score
                                     best_function = other_function
-                    if fun_num == 1 and best_score > 0:
+                    if fun_num == 1 and best_score < 10000:
                         insert_score(score,similarities,human_readable,function,best_function,oid,other_oid,oid_h,other_oid_h,fun_num)
     else:
         return False
