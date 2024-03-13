@@ -1,5 +1,5 @@
 DESC = " This module will take a call_graph along with capa_descriptions to generate better function descriptions for certain subgraphs"
-NAME = "acid"
+NAME = "new_acid"
 
 # imports
 import logging
@@ -48,144 +48,83 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     results = {}
     count = 0
     for oid in oid_list:
-        print("File: ", count)
         count += 1
-        call_graph = api.retrieve("call_graph", oid)
+        call_mapping = api.retrieve("call_mapping", oid)
         capa_descriptions = api.retrieve("capa_results", oid)[oid]
 
-        if call_graph != {} and capa_descriptions != {}:
-            for oid, graph in call_graph.items():
-                new_descriptions, count_of_subgraph_appearances = subgraph_descriptions(graph, capa_descriptions)
-                result = {
-                    "All Descriptions": new_descriptions,
-                    "Count of Subgraph Appearances": count_of_subgraph_appearances,
-                }
-            results[oid] = result
-
+        if call_mapping != {} and capa_descriptions != {}:
+            call_mapping = assign_descriptions(call_mapping, capa_descriptions)
+            results[oid] = call_mapping
     return results
 
 
-def subgraph_descriptions(call_graph, capa_descriptions):
-    call_graph = assignDescriptionsToNodes(call_graph, capa_descriptions)
-
-    subgraphs = getSubgraphs(call_graph)
-
-    new_descriptions, all_descriptions_combinations = finding_relationships(subgraphs)
-
-    new_descriptions = addOldDescriptions(call_graph, new_descriptions)
-
-    count_of_subgraph_appearances = calculateTimesASubgraphAppears(all_descriptions_combinations)
-
-    return new_descriptions, count_of_subgraph_appearances
+def assign_descriptions(call_mapping, capa_descriptions):
+    results = {}
+    call_mapping = assignDescriptionsToNodes(call_mapping, capa_descriptions)
+    call_mapping = retrieve_func_call_desc(call_mapping)
+    results['Subgraphs'], results['All Descriptions'] = descriptions(call_mapping)
+    return results
 
 
-def calculateTimesASubgraphAppears(all_descriptions_combinations):
-    count_of_subgraph_appearances = {}
-    for combination in all_descriptions_combinations:
-        elementA = combination["grouping"][0]
-        elementB = combination["grouping"][1]
-        location = combination['location']
-        if (elementA != "No description available" and elementB != "No description available"):
-            description_combo = elementA + " and " + elementB
-
-            if description_combo not in count_of_subgraph_appearances:
-                count_of_subgraph_appearances[description_combo] = {}
-                count_of_subgraph_appearances[description_combo]["count"] = 1
-                count_of_subgraph_appearances[description_combo]["locations"] = [location]
-
-            else:
-                count_of_subgraph_appearances[description_combo]["count"] += 1
-                count_of_subgraph_appearances[description_combo]["locations"].append(location)
-
-    return count_of_subgraph_appearances
-
-
-def addOldDescriptions(call_graph, new_descriptions):
-    for node in call_graph.nodes:
-        if (node not in new_descriptions and call_graph.nodes[node]["description"] != "No description available"):
-            new_descriptions[node] = call_graph.nodes[node]["description"]
-
-    return new_descriptions
-
-
-def assignDescriptionsToNodes(call_graph, capa_descriptions):
+def assignDescriptionsToNodes(call_mapping, capa_descriptions):
     for capa_description in capa_descriptions["capa_capabilities"]:
-        for node in call_graph.nodes:
+        for node in call_mapping:
             if node in capa_descriptions["capa_capabilities"][capa_description]:
-                if "description" not in call_graph.nodes[node]:
-                    call_graph.nodes[node]["description"] = [capa_description]
+                if "description" not in call_mapping[node]:
+                    call_mapping[node]["description"] = [capa_description]
 
                 else:
-                    call_graph.nodes[node]["description"].append(capa_description)
+                    call_mapping[node]["description"].append(capa_description)
 
-    for node in call_graph.nodes:
-        if "description" not in call_graph.nodes[node]:
-            call_graph.nodes[node]["description"] = "No description available"
+    for node in call_mapping:
+        if "description" not in call_mapping[node]:
+            call_mapping[node]["description"] = []
 
-    return call_graph
+    return call_mapping
 
 
-def getSubgraphs(call_graph):
-    adjacent_nodes = {}
-    for node in call_graph.nodes:
-        adjacent_node = call_graph[node]
+def retrieve_func_call_desc(call_mapping):
+    for node in call_mapping:
+        for call_to in call_mapping[node]['calls_to']:
+            call_mapping[node]['calls_to'][call_to] = call_mapping[call_to]['description']
+    return call_mapping
 
-        if len(adjacent_node) > 0:
-            adjacent_nodes[node] = []
-
-            for data in call_graph.nodes.data():
-                for item in adjacent_node:
-                    if data[0] == item:
-                        adjacent_nodes[node].append([data[0], data[1]["description"]])
-
+def descriptions(call_mapping):
+    results = {}
     subgraphs = {}
-    for node in adjacent_nodes:
-        subgraphs[node] = []
-        for adjacent_node in list(adjacent_nodes[node]):
-            for second_adjacent_node in list(adjacent_nodes[node]):
-                if adjacent_node != second_adjacent_node:
-                    if isinstance(adjacent_node[1], list) and isinstance(second_adjacent_node[1], list):
-                        for description in adjacent_node[1]:
-                            for second_description in second_adjacent_node[1]:
-                                subgraphs[node].append(
-                                    [
-                                        [adjacent_node[0], description],
-                                        [second_adjacent_node[0], second_description],
-                                    ]
-                                )
-
+    for parent_node in call_mapping:
+        if call_mapping[parent_node]['calls_to'] == {}:
+            pass
+        else:
+            for addr in call_mapping[parent_node]['calls_to']:
+                for capability in call_mapping[parent_node]['calls_to'][addr]:
+                    if parent_node in subgraphs:
+                        subgraphs[parent_node].append(capability)
                     else:
-                        subgraphs[node].append([adjacent_node, second_adjacent_node])
+                        subgraphs[parent_node] = [capability]
+                    if parent_node in results:
+                        results[addr].append(capability)
+                    else:
+                        results[addr] = [capability]
 
-            adjacent_nodes[node].remove(adjacent_node)
-
-    return subgraphs
-
-
-def finding_relationships(subgraphs):
-    new_descriptions = {}
-    combination_of_subgraph_descriptions = []
-    for subgraph in subgraphs:
-        for grouping in subgraphs[subgraph]:
-            for rule_grouping in rule_groupings:
-                subgraph_combo = {"grouping": [], "location": None}
-                if (grouping[0][1] in rule_groupings[rule_grouping]and grouping[1][1] in rule_groupings[rule_grouping]and grouping[0][1] != grouping[1][1]):
-                    generated_from = {
-                        "Description Generated From Offsets": [
-                            grouping[0][0],
-                            grouping[1][0],
-                        ]
-                    }
-
-                    if subgraph not in new_descriptions:
-                        new_descriptions[subgraph] = [{rule_grouping: generated_from}]
-
-                    elif rule_grouping not in new_descriptions[subgraph]:
-                        new_descriptions[subgraph].append({rule_grouping: generated_from})
-
-            if (grouping[0][1] != "No description available" and grouping[1][1] != "No description available"):
-                subgraph_combo["grouping"] = [grouping[0][1], grouping[1][1]]
-                subgraph_combo["location"] = subgraph
-                combination_of_subgraph_descriptions.append(subgraph_combo)
-
-    return new_descriptions, combination_of_subgraph_descriptions
+    for sg in subgraphs:
+        for rule in rule_groupings:
+            if subgraphs[sg] != []:
+                # Find which strings from the list exist as values in the dictionary
+                existing_strings = [value for value in rule_groupings[rule] if value in subgraphs[sg]]
+                if len(existing_strings) >= 2:
+                    description = {}
+                    rule_desc = {}
+                    matches = {}
+                    for capabilities in call_mapping[sg]['calls_to']:
+                        for c in call_mapping[sg]['calls_to'][capabilities]:
+                            if c in existing_strings:
+                                matches[capabilities] = call_mapping[sg]['calls_to'][capabilities]
+                    description["Description Generated From Offsets"] = matches
+                    rule_desc[rule] = description
+                    if sg in results:
+                        results[sg].append(rule_desc)
+                    else:
+                        results[sg] = [rule_desc]
+    
+    return subgraphs, results
