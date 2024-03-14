@@ -1,5 +1,5 @@
 DESC = " This module will take a call_graph along with capa_descriptions to generate better function descriptions for certain subgraphs"
-NAME = "new_acid"
+NAME = "acid"
 
 # imports
 import logging
@@ -62,7 +62,7 @@ def assign_descriptions(call_mapping, capa_descriptions):
     results = {}
     call_mapping = assignDescriptionsToNodes(call_mapping, capa_descriptions)
     call_mapping = retrieve_func_call_desc(call_mapping)
-    results['Subgraphs'], results['All Descriptions'] = descriptions(call_mapping)
+    results['Subgraphs'], results['All Descriptions'] = get_descriptions(call_mapping)
     return results
 
 
@@ -89,42 +89,47 @@ def retrieve_func_call_desc(call_mapping):
             call_mapping[node]['calls_to'][call_to] = call_mapping[call_to]['description']
     return call_mapping
 
-def descriptions(call_mapping):
-    results = {}
+def get_descriptions(call_mapping):
+    descriptions = {}
     subgraphs = {}
     for parent_node in call_mapping:
-        if call_mapping[parent_node]['calls_to'] == {}:
-            pass
-        else:
-            for addr in call_mapping[parent_node]['calls_to']:
-                for capability in call_mapping[parent_node]['calls_to'][addr]:
-                    if parent_node in subgraphs:
-                        subgraphs[parent_node].append(capability)
-                    else:
-                        subgraphs[parent_node] = [capability]
-                    if parent_node in results:
-                        results[addr].append(capability)
-                    else:
-                        results[addr] = [capability]
+
+        # Adds capa results to descriptions 
+        if call_mapping[parent_node]['description'] != []:
+            if parent_node in descriptions:
+                descriptions[parent_node].append(call_mapping[parent_node]['description'])
+            else:
+                descriptions[parent_node] = call_mapping[parent_node]['description']
+
+        # Adds capbility ffom child nodes to subgraphs
+        for addr in call_mapping[parent_node]['calls_to']:
+            for capability in call_mapping[parent_node]['calls_to'][addr]:
+                if parent_node in subgraphs:
+                    subgraphs[parent_node].append(capability)
+                else:
+                    subgraphs[parent_node] = [capability]
 
     for sg in subgraphs:
-        for rule in rule_groupings:
-            if subgraphs[sg] != []:
-                # Find which strings from the list exist as values in the dictionary
+        if subgraphs[sg] != []:
+            for rule in rule_groupings:
+
+                # Finds which subgraph capabilities match a capability from rule
                 existing_strings = [value for value in rule_groupings[rule] if value in subgraphs[sg]]
+
+                # Checks if we have at least 2 matches
                 if len(existing_strings) >= 2:
-                    description = {}
-                    rule_desc = {}
+                    subgraph_information = {}
+                    subgraph_description = {}
                     matches = {}
                     for capabilities in call_mapping[sg]['calls_to']:
                         for c in call_mapping[sg]['calls_to'][capabilities]:
                             if c in existing_strings:
                                 matches[capabilities] = call_mapping[sg]['calls_to'][capabilities]
-                    description["Description Generated From Offsets"] = matches
-                    rule_desc[rule] = description
-                    if sg in results:
-                        results[sg].append(rule_desc)
+                    subgraph_information["Description Generated From Offsets"] = matches
+                    subgraph_description[rule] = subgraph_information
+                    if sg in descriptions:
+                        descriptions[sg].append(subgraph_description)
                     else:
-                        results[sg] = [rule_desc]
+                        descriptions[sg] = [subgraph_description]
     
-    return subgraphs, results
+    return subgraphs, descriptions
