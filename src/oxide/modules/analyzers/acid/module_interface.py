@@ -59,10 +59,9 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
 
 def assign_descriptions(call_mapping, capa_descriptions):
-    results = {}
     call_mapping = assignDescriptionsToNodes(call_mapping, capa_descriptions)
     call_mapping = retrieve_func_call_desc(call_mapping)
-    results['Subgraphs'], results['All Descriptions'] = get_descriptions(call_mapping)
+    results = get_descriptions(call_mapping)
     return results
 
 
@@ -90,6 +89,7 @@ def retrieve_func_call_desc(call_mapping):
     return call_mapping
 
 def get_descriptions(call_mapping):
+    results = {}
     descriptions = {}
     subgraphs = {}
     for parent_node in call_mapping:
@@ -131,5 +131,6 @@ def get_descriptions(call_mapping):
                         descriptions[sg].append(subgraph_description)
                     else:
                         descriptions[sg] = [subgraph_description]
-    
-    return subgraphs, descriptions
+    results['Subgraphs'] = subgraphs
+    results['All Descriptions'] = descriptions
+    return results
