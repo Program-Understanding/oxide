@@ -58,29 +58,37 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     return results
 
 
-def assign_descriptions(call_mapping, capa_descriptions):
-    call_mapping = assignDescriptionsToNodes(call_mapping, capa_descriptions)
+def assign_descriptions(call_mapping, capa_results):
+    descriptions = assignDescriptionsToNodes(capa_results)
+    call_mapping = map_descriptions_on_callmap(call_mapping, capa_results)
     call_mapping = retrieve_func_call_desc(call_mapping)
-    results = get_descriptions(call_mapping)
+    results = get_descriptions(call_mapping, descriptions)
     return results
 
 
-def assignDescriptionsToNodes(call_mapping, capa_descriptions):
-    for capa_description in capa_descriptions["capa_capabilities"]:
+def assignDescriptionsToNodes(capa_results):
+    descriptions = {}
+    for d in capa_results["capa_capabilities"]:
+        for addr in capa_results["capa_capabilities"][d]:
+            if addr in descriptions:
+                descriptions[addr].append(d)
+            else:
+                descriptions[addr] = [d]
+    return descriptions
+
+def map_descriptions_on_callmap(call_mapping, capa_results):
+    for d in capa_results["capa_capabilities"]:
         for node in call_mapping:
-            if node in capa_descriptions["capa_capabilities"][capa_description]:
+            if node in capa_results["capa_capabilities"][d]:
                 if "description" not in call_mapping[node]:
-                    call_mapping[node]["description"] = [capa_description]
+                    call_mapping[node]["description"] = [d]
 
                 else:
-                    call_mapping[node]["description"].append(capa_description)
-
+                    call_mapping[node]["description"].append(d)
     for node in call_mapping:
         if "description" not in call_mapping[node]:
             call_mapping[node]["description"] = []
-
     return call_mapping
-
 
 def retrieve_func_call_desc(call_mapping):
     for node in call_mapping:
@@ -88,9 +96,8 @@ def retrieve_func_call_desc(call_mapping):
             call_mapping[node]['calls_to'][call_to] = call_mapping[call_to]['description']
     return call_mapping
 
-def get_descriptions(call_mapping):
+def get_descriptions(call_mapping, descriptions):
     results = {}
-    descriptions = {}
     subgraphs = {}
     for parent_node in call_mapping:
 
@@ -101,13 +108,14 @@ def get_descriptions(call_mapping):
             else:
                 descriptions[parent_node] = call_mapping[parent_node]['description']
 
+        called_function_capabilities = []
+
         # Adds capbility ffom child nodes to subgraphs
         for addr in call_mapping[parent_node]['calls_to']:
             for capability in call_mapping[parent_node]['calls_to'][addr]:
-                if parent_node in subgraphs:
-                    subgraphs[parent_node].append(capability)
-                else:
-                    subgraphs[parent_node] = [capability]
+                called_function_capabilities.append(capability)
+        if len(called_function_capabilities) >= 2:
+            subgraphs[parent_node] = called_function_capabilities  
 
     for sg in subgraphs:
         if subgraphs[sg] != []:
