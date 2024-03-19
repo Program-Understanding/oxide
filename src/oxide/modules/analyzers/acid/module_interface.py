@@ -103,10 +103,11 @@ def get_descriptions(call_mapping, descriptions):
 
         # Adds capa results to descriptions 
         if call_mapping[parent_node]['description'] != []:
-            if parent_node in descriptions:
-                descriptions[parent_node].append(call_mapping[parent_node]['description'])
-            else:
-                descriptions[parent_node] = call_mapping[parent_node]['description']
+            for d in call_mapping[parent_node]['description']:
+                if parent_node in descriptions:
+                    descriptions[parent_node].append(d)
+                else:
+                    descriptions[parent_node] = d
 
         called_function_capabilities = []
 
@@ -123,7 +124,6 @@ def get_descriptions(call_mapping, descriptions):
 
                 # Finds which subgraph capabilities match a capability from rule
                 existing_strings = [value for value in rule_groupings[rule] if value in subgraphs[sg]]
-
                 # Checks if we have at least 2 matches
                 if len(existing_strings) >= 2:
                     subgraph_information = {}
