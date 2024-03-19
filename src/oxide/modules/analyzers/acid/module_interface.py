@@ -100,15 +100,6 @@ def get_descriptions(call_mapping, descriptions):
     results = {}
     subgraphs = {}
     for parent_node in call_mapping:
-
-        # Adds capa results to descriptions 
-        if call_mapping[parent_node]['description'] != []:
-            for d in call_mapping[parent_node]['description']:
-                if parent_node in descriptions:
-                    descriptions[parent_node].append(d)
-                else:
-                    descriptions[parent_node] = d
-
         called_function_capabilities = []
 
         # Adds capbility ffom child nodes to subgraphs
