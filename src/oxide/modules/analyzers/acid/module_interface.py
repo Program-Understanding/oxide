@@ -138,7 +138,12 @@ def get_descriptions(call_mapping, descriptions):
                     else:
                         descriptions[sg] = [subgraph_description]
     results['Subgraphs'] = subgraphs
-    results['All Descriptions'] = descriptions
+    filtered_descriptions = {}
+
+    for entry in descriptions:
+        if descriptions[entry] != []:
+            filtered_descriptions[entry] = descriptions[entry]
+    results['All Descriptions'] = filtered_descriptions
     return results
 
 
