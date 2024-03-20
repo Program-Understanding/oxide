@@ -144,7 +144,7 @@ def disassemble_wcap(file_size, data, header, tool_insns) -> Optional[dict]:
         header
         tool_insns
     """
-    if header.machine == "ARM":
+    if header.machine in ("ARM","ARM_64"):
         logger.debug("ARM not well supported by this module")
         if header.insn_mode == 32:
             machine = capstone.CS_ARCH_ARM
