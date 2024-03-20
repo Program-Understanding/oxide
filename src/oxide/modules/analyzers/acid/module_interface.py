@@ -50,6 +50,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     for oid in oid_list:
         count += 1
         call_mapping = api.retrieve("call_mapping", oid)
+        if call_mapping is None:
+            continue
         capa_descriptions = api.retrieve("capa_results", oid)[oid]        
         ghidra_disasm = api.retrieve("ghidra_disasm", oid)
 
