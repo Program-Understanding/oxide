@@ -144,12 +144,8 @@ def get_descriptions(call_mapping, descriptions):
 
 
 def _get_function(ghidra_disasm, addr):
-    print("addr: ", addr)
     functions = ghidra_disasm['functions']
     for function in functions:
-        print(function)
-        if function == 5440:
-            print(functions[function]['blocks'])
         if addr in functions[function]['blocks']:
             return function
     return False
