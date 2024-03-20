@@ -182,9 +182,6 @@ def render_rules(doc: rd.ResultDocument):
                     # because we're only in verbose mode, we won't show the full call details (name, args, retval)
                     # we'll only show the details of the thread in which the calls are found.
                     # so select the thread locations and render those.
-                    # because we're only in verbose mode, we won't show the full call details (name, args, retval)
-                    # we'll only show the details of the thread in which the calls are found.
-                    # so select the thread locations and render those.
                     thread_locations = set()
                     for loc in locations:
                         cloc = loc.to_capa()

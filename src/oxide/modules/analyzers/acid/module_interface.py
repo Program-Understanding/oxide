@@ -50,44 +50,46 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     for oid in oid_list:
         count += 1
         call_mapping = api.retrieve("call_mapping", oid)
-        capa_descriptions = api.retrieve("capa_results", oid)[oid]
+        capa_descriptions = api.retrieve("capa_results", oid)[oid]        
+        ghidra_disasm = api.retrieve("ghidra_disasm", oid)
 
         if call_mapping != {} and capa_descriptions != {}:
-            call_mapping = assign_descriptions(call_mapping, capa_descriptions)
+            call_mapping = assign_descriptions(call_mapping, capa_descriptions, ghidra_disasm)
             results[oid] = call_mapping
     return results
 
 
-def assign_descriptions(call_mapping, capa_results):
-    descriptions = assignDescriptionsToNodes(capa_results)
-    call_mapping = map_descriptions_on_callmap(call_mapping, capa_results)
+def assign_descriptions(call_mapping, capa_results, ghidra_disasm):
+    descriptions = setup_descriptions(call_mapping)
+    descriptions = assignDescriptionsToNodes(capa_results, ghidra_disasm, descriptions)
+    call_mapping = map_descriptions_on_callmap(call_mapping, descriptions)
     call_mapping = retrieve_func_call_desc(call_mapping)
     results = get_descriptions(call_mapping, descriptions)
     return results
 
-
-def assignDescriptionsToNodes(capa_results):
+def setup_descriptions(call_mapping):
     descriptions = {}
+    for node in call_mapping:
+        descriptions[node] = []
+    return descriptions
+
+def assignDescriptionsToNodes(capa_results, ghidra_disasm, descriptions):
     for d in capa_results["capa_capabilities"]:
         for addr in capa_results["capa_capabilities"][d]:
             if addr in descriptions:
                 descriptions[addr].append(d)
             else:
-                descriptions[addr] = [d]
+                func_addr = _get_function(ghidra_disasm, addr)
+                if func_addr:
+                    descriptions[func_addr].append(d)
+                else:
+                    descriptions[addr] = [d]
     return descriptions
 
-def map_descriptions_on_callmap(call_mapping, capa_results):
-    for d in capa_results["capa_capabilities"]:
-        for node in call_mapping:
-            if node in capa_results["capa_capabilities"][d]:
-                if "description" not in call_mapping[node]:
-                    call_mapping[node]["description"] = [d]
-
-                else:
-                    call_mapping[node]["description"].append(d)
+def map_descriptions_on_callmap(call_mapping, descriptions):
     for node in call_mapping:
-        if "description" not in call_mapping[node]:
-            call_mapping[node]["description"] = []
+        if node in descriptions:
+            call_mapping[node]['description'] = descriptions[node]
     return call_mapping
 
 def retrieve_func_call_desc(call_mapping):
@@ -123,7 +125,10 @@ def get_descriptions(call_mapping, descriptions):
                     for capabilities in call_mapping[sg]['calls_to']:
                         for c in call_mapping[sg]['calls_to'][capabilities]:
                             if c in existing_strings:
-                                matches[capabilities] = call_mapping[sg]['calls_to'][capabilities]
+                                if capabilities in matches:
+                                    matches[capabilities].append(c)
+                                else:
+                                    matches[capabilities] = [c]
                     subgraph_information["Description Generated From Offsets"] = matches
                     subgraph_description[rule] = subgraph_information
                     if sg in descriptions:
@@ -133,3 +138,16 @@ def get_descriptions(call_mapping, descriptions):
     results['Subgraphs'] = subgraphs
     results['All Descriptions'] = descriptions
     return results
+
+
+
+def _get_function(ghidra_disasm, addr):
+    print("addr: ", addr)
+    functions = ghidra_disasm['functions']
+    for function in functions:
+        print(function)
+        if function == 5440:
+            print(functions[function]['blocks'])
+        if addr in functions[function]['blocks']:
+            return function
+    return False
