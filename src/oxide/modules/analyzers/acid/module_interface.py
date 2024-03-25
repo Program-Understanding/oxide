@@ -85,7 +85,8 @@ def assignDescriptionsToNodes(capa_results, ghidra_disasm, descriptions):
                 if func_addr:
                     descriptions[func_addr].append(d)
                 else:
-                    descriptions[addr] = [d]
+                    print("addr miss")
+                    descriptions[addr] = ["addr miss: " + d]
     return descriptions
 
 def map_descriptions_on_callmap(call_mapping, descriptions):
