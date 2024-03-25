@@ -114,16 +114,16 @@ def get_descriptions(call_mapping, descriptions, ghidra_disasm):
                 called_function_capabilities.append(capability)
         if len(called_function_capabilities) >= 2:
             subgraphs[parent_node] = {}
-            subgraphs[parent_node]['all_descriptions'] = called_function_capabilities  
+            subgraphs[parent_node]['capa_descriptions'] = called_function_capabilities  
             subgraphs[parent_node]['function_name'] = functions[parent_node]['name']
-            subgraphs[parent_node]['acid_matches'] = []
+            subgraphs[parent_node]['acid_descriptions'] = []
 
     for sg in subgraphs:
         if subgraphs[sg] != []:
             for rule in rule_groupings:
 
                 # Finds which subgraph capabilities match a capability from rule
-                existing_strings = [value for value in rule_groupings[rule] if value in subgraphs[sg]['all_descriptions']]
+                existing_strings = [value for value in rule_groupings[rule] if value in subgraphs[sg]['capa_descriptions']]
                 # Checks if we have at least 2 matches
                 if len(existing_strings) >= 2:
                     subgraph_information = {}
@@ -138,15 +138,9 @@ def get_descriptions(call_mapping, descriptions, ghidra_disasm):
                                     matches[capabilities] = [c]
                     subgraph_information["Description Generated From Offsets"] = matches
                     subgraph_description[rule] = subgraph_information
-                    subgraphs[sg]['acid_matches'].append(subgraph_description)
+                    subgraphs[sg]['acid_descriptions'].append(subgraph_description)
 
-    results['Subgraphs'] = subgraphs
-    filtered_descriptions = {}
-
-    for entry in descriptions:
-        if descriptions[entry] != []:
-            filtered_descriptions[entry] = descriptions[entry]
-    results['All_Descriptions'] = filtered_descriptions
+    results = subgraphs
     return results
 
 
