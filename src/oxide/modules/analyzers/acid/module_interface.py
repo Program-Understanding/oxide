@@ -66,7 +66,7 @@ def assign_descriptions(call_mapping, capa_results, ghidra_disasm):
     descriptions = assignDescriptionsToNodes(capa_results, ghidra_disasm, descriptions)
     call_mapping = map_descriptions_on_callmap(call_mapping, descriptions)
     call_mapping = retrieve_func_call_desc(call_mapping)
-    results = get_descriptions(call_mapping, descriptions)
+    results = get_descriptions(call_mapping, descriptions, ghidra_disasm)
     return results
 
 def setup_descriptions(call_mapping):
@@ -84,7 +84,7 @@ def assignDescriptionsToNodes(capa_results, ghidra_disasm, descriptions):
                 func_addr = _get_function(ghidra_disasm, addr)
                 if func_addr:
                     descriptions[func_addr].append(d)
-                else:
+                else:   
                     print("addr miss")
                     descriptions[addr] = ["addr miss: " + d]
     return descriptions
@@ -101,9 +101,10 @@ def retrieve_func_call_desc(call_mapping):
             call_mapping[node]['calls_to'][call_to] = call_mapping[call_to]['description']
     return call_mapping
 
-def get_descriptions(call_mapping, descriptions):
+def get_descriptions(call_mapping, descriptions, ghidra_disasm):
     results = {}
     subgraphs = {}
+    functions = ghidra_disasm['functions']
     for parent_node in call_mapping:
         called_function_capabilities = []
 
@@ -112,14 +113,17 @@ def get_descriptions(call_mapping, descriptions):
             for capability in call_mapping[parent_node]['calls_to'][addr]:
                 called_function_capabilities.append(capability)
         if len(called_function_capabilities) >= 2:
-            subgraphs[parent_node] = called_function_capabilities  
+            subgraphs[parent_node] = {}
+            subgraphs[parent_node]['all_descriptions'] = called_function_capabilities  
+            subgraphs[parent_node]['function_name'] = functions[parent_node]['name']
+            subgraphs[parent_node]['acid_matches'] = []
 
     for sg in subgraphs:
         if subgraphs[sg] != []:
             for rule in rule_groupings:
 
                 # Finds which subgraph capabilities match a capability from rule
-                existing_strings = [value for value in rule_groupings[rule] if value in subgraphs[sg]]
+                existing_strings = [value for value in rule_groupings[rule] if value in subgraphs[sg]['all_descriptions']]
                 # Checks if we have at least 2 matches
                 if len(existing_strings) >= 2:
                     subgraph_information = {}
@@ -134,17 +138,15 @@ def get_descriptions(call_mapping, descriptions):
                                     matches[capabilities] = [c]
                     subgraph_information["Description Generated From Offsets"] = matches
                     subgraph_description[rule] = subgraph_information
-                    if sg in descriptions:
-                        descriptions[sg].append(subgraph_description)
-                    else:
-                        descriptions[sg] = [subgraph_description]
+                    subgraphs[sg]['acid_matches'].append(subgraph_description)
+
     results['Subgraphs'] = subgraphs
     filtered_descriptions = {}
 
     for entry in descriptions:
         if descriptions[entry] != []:
             filtered_descriptions[entry] = descriptions[entry]
-    results['All Descriptions'] = filtered_descriptions
+    results['All_Descriptions'] = filtered_descriptions
     return results
 
 
