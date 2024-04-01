@@ -136,11 +136,17 @@ def get_descriptions(call_mapping, descriptions, ghidra_disasm):
                                     matches[capabilities].append(c)
                                 else:
                                     matches[capabilities] = [c]
-                    subgraph_information["Description Generated From Offsets"] = matches
-                    subgraph_description[rule] = subgraph_information
+                    subgraph_description[rule] = matches
                     subgraphs[sg]['acid_descriptions'].append(subgraph_description)
 
-    results = subgraphs
+    filtered_descriptions = {}
+    for addr in descriptions:
+        if descriptions[addr] != []:
+            filtered_descriptions[addr] = descriptions[addr]
+
+
+    results['subgraphs'] = subgraphs
+    results['functions'] = filtered_descriptions
     return results
 
 

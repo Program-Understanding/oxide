@@ -40,9 +40,11 @@ from function_lib import (
     functions_ignore,
 )
 
-import os, psutil
+import networkx as nx
 
 from oxide.core import api
+
+from findBranches import computeBranch, compareBranches
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -79,7 +81,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     for oid in oid_list:
         triggerResults = {}
         # Collect information and objects used for backwards slicing
-        f_name, header = _configure_bs(oid)
+        f_name, header = configure_bs(oid)
         if f_name == False or header == False:
             continue
         p = init_angr_project(f_name, header)
@@ -88,14 +90,15 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         # Pull disasm and basic_block module results
         disasm = api.retrieve("ghidra_disasm", oid)
         bbs = api.retrieve("basic_blocks", oid, opts)[oid]
-        capa_results = api.retrieve("capa_results", oid)[oid]
+        acid = api.retrieve("acid", oid)[oid]
+        call_graph = api.retrieve("call_graph", oid)[oid]
 
         if disasm != None:
             functions = disasm["functions"]
         else:
             continue
 
-        triggers = _findTriggerStmts(bbs)
+        triggers = getTriggers(bbs)
 
         # Iterate through each function found in executable.
         for function in functions:
@@ -111,67 +114,58 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                 functionTriggers = {}
 
                 functionBlocks = functions[function]["blocks"]
-                commonBlocks = _getCommonBlocks(bbs, functionBlocks)
-                function_calls = _call_mapping(
-                    function, functions[function], functions, bbs
-                )
+                commonBlocks = getCommonBlocks(bbs, functionBlocks)
 
                 # Iterate through blocks in function
                 for block in functionBlocks:
-                    cb = None
                     suspicous_triggers = []
                     if block in triggers:
-                        branches = _computeBranch(block, bbs, functionBlocks)
+                        branches = computeBranch(block, bbs, functionBlocks)
 
                         if len(branches) == 3:
                             functionTriggers[block] = {}
                             branchA = {}
                             branchB = {}
 
-                            branchA_blocks, branchB_blocks, cb = _compareBranches(
-                                branches, commonBlocks
-                            )
+                            branchA, branchB = compareBranches(branches, commonBlocks)
 
-                            # Branch A
-                            branchA["Blocks"] = branchA_blocks
-
-                            # Branch B
-                            branchB["Blocks"] = branchB_blocks
+                            # Returns a dictionary of function calls as well as capa results for each function
+                            A_function_calls = getFunctionCalls(branchA, bbs, acid, functionBlocks, call_graph)
+                            B_function_calls = getFunctionCalls(branchB, bbs, acid, functionBlocks, call_graph)
 
                             # Feature Extraction A
-                            S_A = numSensFunctCalls(branchA, bbs)
-                            P_A = dataFlow(branchA, bbs)
-                            M1_A = numExclFunctCalls(branchA, bbs, functionBlocks)
-                            S1_A = numExclSensFunctCalls(branchA, bbs, functionBlocks)
+                            S_A = len(SensOperations(A_function_calls))
+                            FC_A = len(totalFunctionCalls(A_function_calls))
+                            M1_A = len(exclFunctCalls(A_function_calls, bbs))
+                            S1_A = len(ExclSensFunctCalls(A_function_calls, bbs, acid))
 
                             # Feature Extraction B
-                            S_B = numSensFunctCalls(branchB, bbs)
-                            P_B = dataFlow(branchB, bbs)
-                            M1_B = numExclFunctCalls(branchB, bbs, functionBlocks)
-                            S1_B = numExclSensFunctCalls(branchB, bbs, functionBlocks)
+                            S_B = len(SensOperations(B_function_calls))
+                            FC_B = len(totalFunctionCalls(B_function_calls))
+                            M1_B = len(exclFunctCalls(B_function_calls, bbs))
+                            S1_B = len(ExclSensFunctCalls(B_function_calls, bbs, acid))
 
                             # Behavior Difference
-                            branchDifference = behaviorDifference(branchA, branchB, bbs)
+                            branchDifference = behaviorDifference(A_function_calls, B_function_calls)
 
-                            functionTriggers[block]["S"] = S_A + S_B
-                            functionTriggers[block]["P"] = P_A + P_B
-                            functionTriggers[block]["M1"] = M1_A + M1_B
-                            functionTriggers[block]["S1"] = S1_A + S1_B
-                            functionTriggers[block]["J"] = branchDifference
-                            functionTriggers[block]["CAPA_A"] = TBD_A
-                            functionTriggers[block]["CAPA_B"] = TBD_B
+                            functionTriggers[block]["Sensitive Operations"] = S_A + S_B
+                            functionTriggers[block]["Function Calls"] =  FC_A + FC_B
+                            functionTriggers[block]["Exclusive Function Calls"] = M1_A + M1_B
+                            functionTriggers[block]["Sensitive Opartions inside Exclusive Function Calls"] = S1_A + S1_B
+                            functionTriggers[block]["Jaccard Distance"] = branchDifference
 
                             # Determine source of variables used in trigger stmt
-                            # if function_calls != {}:
-                            #     bs_chosen_statements = backward_slicing(p, block, base_addr)
-                            #     for bs_block in bs_chosen_statements:
-                            #         if bs_block in function_calls:
-                            #             if function_calls[bs_block][1] in system_input_checks:
-                            #                 suspicous_triggers += [function_calls[bs_block][1]]
-                            if len(suspicous_triggers) != 0:
-                                functionTriggers[block]["C"] = 1
-                            else:
-                                functionTriggers[block]["C"] = 0
+                            # bs_chosen_statements = backward_slicing(p, block, base_addr)
+                            # for bs_block in bs_chosen_statements:
+                            #     if bs_block in disasm['functions']:
+                            #         bs_name = disasm['functions'][bs_block]['name']
+                            #         if bs_name in system_input_checks:
+                            #             print(bs_name)
+                            #             suspicous_triggers.append(bs_block)
+                            # if len(suspicous_triggers) == 0:
+                            #     functionTriggers[block]["Backward Slicing"] = 0
+                            # else:
+                            #     functionTriggers[block]["Backward Slicing"] = 1
 
                 if len(functionTriggers) != 0:
                     triggerResults[functionName] = functionTriggers
@@ -185,63 +179,50 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
 
 def backward_slicing(p, block, base_addr):
-    cfg = p.analyses.CFGEmulated(
-        keep_state=True,
-        state_add_options=angr.sim_options.refs,
-        context_sensitivity_level=2,
-    )
-
+    cfg = p.analyses.CFGEmulated(keep_state=True,state_add_options=angr.sim_options.refs, context_sensitivity_level=2)
+    
+    cdg = p.analyses.CDG(cfg)
+    ddg = p.analyses.DDG(cfg)
     location = int(hex(base_addr + block), base=16)
-
     target_node = cfg.get_any_node(location)
-
-    # bs = p.analyses.BackwardSlice(cfg, cdg=cdg, ddg=ddg, targets=[ (target_node, 0) ], control_flow_slice=True)
-    bs = p.analyses.BackwardSlice(
-        cfg, targets=[(target_node, 0)], control_flow_slice=True
-    )
-
+    bs = p.analyses.BackwardSlice(cfg, cdg=cdg, ddg=ddg, targets=[ (target_node, 0) ], control_flow_slice=True)
     return bs.chosen_statements
 
+def SensOperations(function_calls):
+    sensitive_operations = []
+    for call in function_calls:
+        sensitive_operations.extend(function_calls[call]["sensitive_operations"])
+    return sensitive_operations
 
-# Feature S - Number of sensitive functions called in guarded code.
-def numSensFunctCalls(branch, bbs):
-    calls = _getFunctionCalls(branch, bbs)
-    sensitiveCalls = _getSensitiveFunctionCalls(calls, bbs)
-    return len(sensitiveCalls)
+def totalFunctionCalls(function_calls):
+    all_function_calls = []
+    for call in function_calls:
+        all_function_calls.extend(function_calls[call]['reachable_nodes'])
+    return all_function_calls
 
+def exclFunctCalls(function_calls, bbs):
+    all_function_calls = []
+    for call in function_calls:
+        for node in function_calls[call]['reachable_nodes']:
+            if len(bbs[node]["dests_prev"]) == 1:
+                all_function_calls.append(node)
+    return all_function_calls
 
-# Feature P - Are parameters of condition used in guarded code?
-def dataFlow(branch, bbs):
-    return 0
+def ExclSensFunctCalls(function_calls, bbs, acid):
+    sensitveOperations = []
+    for call in function_calls:
+        for node in function_calls[call]['reachable_nodes']:
+            if len(bbs[node]["dests_prev"]) == 1:
+                if node in acid['functions']:
+                    sensitveOperations.extend(acid['functions'][node])
+    return sensitveOperations
 
-
-# Feature M1 - Number of functions exclusively called in guarded code.
-def numExclFunctCalls(branch, bbs, functionBlocks):
-    calls = _getFunctionCalls(branch, bbs)
-    excelusiveCalls = _getExclusiveFunctionCalls(calls, bbs, functionBlocks)
-    return len(excelusiveCalls)
-
-
-# Feature S1 - Number of sensitive function exclusively called only in guarded code
-def numExclSensFunctCalls(branch, bbs, functionBlocks):
-    calls = _getFunctionCalls(branch, bbs)
-    sensitiveCalls = _getSensitiveFunctionCalls(calls, bbs)
-    excelusiveCalls = _getExclusiveFunctionCalls(sensitiveCalls, bbs, functionBlocks)
-    return len(excelusiveCalls)
-
-
-# Feature J - Behavior differences between two branches
-def behaviorDifference(branchA, branchB, bbs):
-    # Branch A
-    callsA = _getFunctionCalls(branchA, bbs)
-    sensitiveCallsA = _getSensitiveFunctionCalls(callsA, bbs)
-
-    # Branch A
-    callsB = _getFunctionCalls(branchB, bbs)
-    sensitiveCallsB = _getSensitiveFunctionCalls(callsB, bbs)
+def behaviorDifference(A_function_calls, B_function_calls):
+    A_sens_opperations = SensOperations(A_function_calls)
+    B_sens_opperations = SensOperations(B_function_calls)
 
     # Calculate jaccard distance for two branches
-    branchDifference = _jaccard_distance(sensitiveCallsA, sensitiveCallsB)
+    branchDifference = jaccard_distance(A_sens_opperations, B_sens_opperations)
 
     return branchDifference
 
@@ -251,7 +232,7 @@ def behaviorDifference(branchA, branchB, bbs):
 ###############################################
 
 
-def _jaccard_distance(A, B):
+def jaccard_distance(A, B):
     # Find symmetric difference of two sets
     nominator = list(set(A).symmetric_difference(set(B)))
 
@@ -265,182 +246,41 @@ def _jaccard_distance(A, B):
     return distance
 
 
-def _getFunctionCalls(branch, bbs):
-    calls = []
+def getFunctionCalls(branch, bbs, acid, function_blocks, call_graph):
+    calls = {}
     for block in branch:
         if isinstance(block, str):
             pass
         else:
             last_insn = bbs[block]["last_insn"]
-            if "call" in last_insn[1]:
-                calls.extend([block])
+            if isCall(last_insn[1]):
+                dests = bbs[block]['dests']
+                for d in dests:
+                    if d in function_blocks:
+                        pass
+                    else:
+                        calls[d] = {}
+                        reachable_nodes = nx.single_source_shortest_path_length(call_graph, d).keys()
+                        calls[d]['reachable_nodes'] = reachable_nodes
+                        calls[d]["sensitive_operations"] = []
+                        for node in reachable_nodes:
+                            if node in acid['functions']:
+                                calls[d]["sensitive_operations"].extend(acid['functions'][node])
     return calls
 
 
-def _getSensitiveFunctionCalls(functionCalls, bbs):
-    sensFunctionCalls = []
-    for call in functionCalls:
-        if call in sensitive_functions:
-            sensFunctionCalls[call] = functionCalls[call]
-    return sensFunctionCalls
-
-
-def _getExclusiveFunctionCalls(functionCalls, bbs, functionBlocks):
-    calls = []
-    for call in functionCalls:
-        dests = bbs[call]["dests"]
-        for dest in dests:
-            if dest not in functionBlocks:
-                pass
-            else:
-                if len(bbs[dest]["dests_prev"]) == 1:
-                    calls.extend([call])
-    return calls
-
-
-# This will find all calls_to. It will then add that to a dictionary and iterate back through the calls_to and assign them correctly to the correct calls_to
-def _call_mapping(function_addr, function_data, functions, basic_blocks):
-
-    call_mapping = {}
-    function_addresses = functions.keys()
-
-    # Generating calls_to
-    for block_addr in function_data["blocks"]:
-        for instruction_offset, instruction in basic_blocks[block_addr]["members"]:
-            if instruction[:4] == "call":
-                for offset in basic_blocks[block_addr]["dests"]:
-                    if offset in function_addresses:
-                        called_file_offset = offset
-                        call_mapping[instruction_offset] = functions[
-                            called_file_offset
-                        ]["name"]
-
-    return call_mapping
-
-
-def _findTriggerStmts(bbs):
+def getTriggers(bbs):
     triggers = {}
     for b in bbs:
         dests = bbs[b]["dests"]
-        trigger = {}
         if len(dests) > 1:
-            if _isCall(bbs[b]["last_insn"][1]):
+            if isCall(bbs[b]["last_insn"][1]):
                 pass
             else:
-                trigger = bbs[b]
-
-                triggers[b] = trigger
+                triggers[b] = bbs[b]
     return triggers
 
-
-def _computeBranch(block, bbs, functionBlocks):
-    triggerBranches = [block]
-    dests = bbs[block]["dests"]
-    for branch in dests:
-        dominators = []
-        if branch not in functionBlocks or branch not in bbs:
-            pass
-        else:
-            if len(bbs[branch]["dests"]) > 0:
-                triggerBranches.extend(
-                    [
-                        [
-                            branch,
-                            _computeSubBranches(
-                                branch, bbs, functionBlocks, dominators
-                            ),
-                        ]
-                    ]
-                )
-            elif bbs[branch]["dests"] == []:
-                triggerBranches.extend([branch])
-
-    return triggerBranches
-
-
-def _computeSubBranches(block, bbs, functionBlocks, dominators):
-    triggerBranches = []
-    dests = bbs[block]["dests"]
-    for branch in dests:
-        if branch not in functionBlocks or branch not in bbs:
-            pass
-        elif branch in dominators:
-            triggerBranches.extend(["LOOP -> " + str(branch)])
-        else:
-            dominators.extend([branch])
-            if len(bbs[branch]["dests"]) > 0:
-                triggerBranches.extend(
-                    [
-                        branch,
-                        _computeSubBranches(branch, bbs, functionBlocks, dominators),
-                    ]
-                )
-            elif bbs[branch]["dests"] == []:
-                triggerBranches.extend([branch])
-    return triggerBranches
-
-
-def _compareBranches(triggerBranches, commonBlocks):
-    branchMaps = []
-    pathA = []
-    pathB = []
-    index = 1
-    cb = None
-    while True:
-        branchMap = {}
-        level = 0
-        branchMap = _getBranchMap(branchMap, triggerBranches[index], level)
-        branchMaps.extend([branchMap])
-        if index == 2:
-            break
-        else:
-            index += 1
-    branchA = branchMaps[0]
-    branchB = branchMaps[1]
-    for cb in commonBlocks:
-        if cb in branchA and cb in branchB:
-            depthA = branchA[cb]
-            depthB = branchB[cb]
-            pathA = _getPath(depthA, branchA)
-            pathB = _getPath(depthB, branchB)
-            break
-    return pathA, pathB
-
-
-def _getBranchMap(branchMap, blocks, level):
-    if isinstance(blocks, list):
-        for b in blocks:
-            if isinstance(b, list):
-                branchMap = _getBranchMap(branchMap, b, level + 1)
-            else:
-                branchMap[b] = level + 1
-    else:
-        branchMap[blocks] = level
-    return branchMap
-
-
-def getCommonBlocks(bbs, functionBlocks):
-    # Get common blocks
-    commonBlocks = {}
-    for fb in functionBlocks:
-        if len(bbs[fb]["dests_prev"]) > 1:
-            commonBlocks[fb] = None
-    return commonBlocks
-
-
-def _getPath(depth, branch):
-    path = []
-    index = 0
-    while index <= depth:
-        for block in branch:
-            if branch[block] < depth:
-                if branch[block] == index:
-                    path.extend([block])
-        index += 1
-    return path
-
-
-def _configure_bs(oid):
+def configure_bs(oid):
     src = api.source(oid)
     data = api.get_field(src, oid, "data", {})
     src_type = api.get_field("src_type", oid, "type")
@@ -454,7 +294,7 @@ def _configure_bs(oid):
     return f_name, header
 
 
-def _getCommonBlocks(bbs, functionBlocks):
+def getCommonBlocks(bbs, functionBlocks):
     # Get common blocks
     commonBlocks = []
     for fb in functionBlocks:
@@ -463,364 +303,8 @@ def _getCommonBlocks(bbs, functionBlocks):
     return commonBlocks
 
 
-# This will  find all calls_to. It will then add that to a dictionary and iterate back through the calls_to and assign them correctly to the correct calls_to
-def _call_mapping(function_addr, function_data, functions, basic_blocks):
-
-    call_mapping = {}
-    function_addresses = functions.keys()
-
-    # Generating calls_to
-    for block_addr in function_data["blocks"]:
-        if block_addr in basic_blocks:
-            for instruction_offset, instruction in basic_blocks[block_addr]["members"]:
-                if instruction[:4] == "call":
-                    for offset in basic_blocks[block_addr]["dests"]:
-                        if offset in function_addresses:
-                            called_file_offset = offset
-                            # call_mapping[instruction_offset] = [offset, functions[called_file_offset]['name']]
-                            call_mapping[instruction_offset] = [
-                                called_file_offset,
-                                functions[called_file_offset]["name"],
-                            ]
-    return call_mapping
-
-
-def _isCall(instruction):
+def isCall(instruction):
     if instruction.startswith("call"):
         return True
     else:
         return False
-
-
-# Functions in the C library that check system or user inputs
-system_input_checks = [
-    "assert",
-    "atexit",
-    "catgets6",
-    "catopen6",
-    "clock",
-    "fdopen5",
-    "fgetc1",
-    "fgets1",
-    "fgetwc6",
-    "fgetws6",
-    "fileno5",
-    "fopen",
-    "fread",
-    "freopen",
-    "fscanf",
-    "ftell1",
-    "fwide6",
-    "fwscanf6",
-    "getc1",
-    "getchar1",
-    "getenv",
-    "gets",
-    "getwc6",
-    "getwchar6",
-    "mbsinit4",
-    "nl_langinfo4",
-    "putenv",
-    "rand",
-    "rand_r",
-    "regcomp",
-    "scanf",
-    "setlocale",
-    "sscanf",
-    "swscanf",
-    "time",
-    "time64",
-    "vfscanf",
-    "vfwscanf",
-    "vscanf",
-    "vsscanf",
-    "vswscanf",
-    "vwscanf",
-    "wscanf6",
-]
-
-# Functions found to be vulnerable or perform sensitive operations
-sensitive_functions = {
-    "abort",
-    "assert",
-    "atexit",
-    "atof",
-    "atoi",
-    "atol",
-    "calloc",
-    "catclose6",
-    "catgets6",
-    "catopen6",
-    "clearerr",
-    "exit",
-    "fclose",
-    "fdopen5",
-    "fflush1",
-    "fgetc1",
-    "fgetpos1",
-    "fgets1",
-    "fileno5",
-    "fopen",
-    "fprintf",
-    "fputc1",
-    "fputs1",
-    "fputwc6",
-    "fputws6",
-    "fread",
-    "free",
-    "freopen",
-    "fscanf",
-    "fseek1",
-    "fsetpos1",
-    "ftell1",
-    "fwide6",
-    "fwprintf6",
-    "fwrite",
-    "fwscanf6",
-    "getc1",
-    "getchar1",
-    "getenv",
-    "gets",
-    "getwc6",
-    "getwchar6",
-    "iswprint4",
-    "longjmp",
-    "malloc",
-    "nl_langinfo4",
-    "perror",
-    "printf",
-    "putc1",
-    "putchar1",
-    "putenv",
-    "puts",
-    "putwc6",
-    "putwchar6",
-    "raise",
-    "realloc",
-    "regcomp",
-    "regfree",
-    "remove",
-    "rename",
-    "rewind1",
-    "scanf",
-    "setbuf",
-    "setjmp",
-    "setlocale",
-    "setvbuf",
-    "signal",
-    "sprintf",
-    "srand",
-    "sscanf",
-    "strcat",
-    "strcpy",
-    "strerror",
-    "swprintf",
-    "swscanf",
-    "system",
-    "tmpfile",
-    "tmpnam",
-    "ungetc1",
-    "ungetwc6",
-    "va_copy",
-    "va_end",
-    "va_start",
-    "vfprintf",
-    "vfscanf",
-    "vfwprintf6",
-    "vfwscanf",
-    "vprintf",
-    "vscanf",
-    "vsprintf",
-    "vsnprintf",
-    "vsscanf",
-    "vswprintf",
-    "vswscanf",
-    "vwprintf6",
-    "vwscanf",
-    "wcscat",
-    "wcscpy",
-    "wprintf6",
-    "wscanf6",
-}
-
-# Functions that should be ingnored as they are generated by the compiler
-functions_ignore = {
-    "__libc_start_main",
-    "__do_global_dtors_aux",
-    "__cxa_finalize",
-    "_init",
-    "frame_dummy",
-    "__libc_csu_init",
-    "register_tm_clones",
-    "deregister_tm_clones",
-    "_start",
-    "__stack_chk_fail",
-    "puts",
-    "__libc_csu_init",
-}
-# Functions in the C library that check system or user inputs
-system_input_checks = [
-    "assert",
-    "atexit",
-    "catgets6",
-    "catopen6",
-    "clock",
-    "fdopen5",
-    "fgetc1",
-    "fgets1",
-    "fgetwc6",
-    "fgetws6",
-    "fileno5",
-    "fopen",
-    "fread",
-    "freopen",
-    "fscanf",
-    "ftell1",
-    "fwide6",
-    "fwscanf6",
-    "getc1",
-    "getchar1",
-    "getenv",
-    "gets",
-    "getwc6",
-    "getwchar6",
-    "mbsinit4",
-    "nl_langinfo4",
-    "putenv",
-    "rand",
-    "rand_r",
-    "regcomp",
-    "scanf",
-    "setlocale",
-    "sscanf",
-    "swscanf",
-    "time",
-    "time64",
-    "vfscanf",
-    "vfwscanf",
-    "vscanf",
-    "vsscanf",
-    "vswscanf",
-    "vwscanf",
-    "wscanf6",
-]
-
-# Functions found to be vulnerable or perform sensitive operations
-sensitive_functions = {
-    "abort",
-    "assert",
-    "atexit",
-    "atof",
-    "atoi",
-    "atol",
-    "calloc",
-    "catclose6",
-    "catgets6",
-    "catopen6",
-    "clearerr",
-    "exit",
-    "fclose",
-    "fdopen5",
-    "fflush1",
-    "fgetc1",
-    "fgetpos1",
-    "fgets1",
-    "fileno5",
-    "fopen",
-    "fprintf",
-    "fputc1",
-    "fputs1",
-    "fputwc6",
-    "fputws6",
-    "fread",
-    "free",
-    "freopen",
-    "fscanf",
-    "fseek1",
-    "fsetpos1",
-    "ftell1",
-    "fwide6",
-    "fwprintf6",
-    "fwrite",
-    "fwscanf6",
-    "getc1",
-    "getchar1",
-    "getenv",
-    "gets",
-    "getwc6",
-    "getwchar6",
-    "iswprint4",
-    "longjmp",
-    "malloc",
-    "nl_langinfo4",
-    "perror",
-    "printf",
-    "putc1",
-    "putchar1",
-    "putenv",
-    "puts",
-    "putwc6",
-    "putwchar6",
-    "raise",
-    "realloc",
-    "regcomp",
-    "regfree",
-    "remove",
-    "rename",
-    "rewind1",
-    "scanf",
-    "setbuf",
-    "setjmp",
-    "setlocale",
-    "setvbuf",
-    "signal",
-    "sprintf",
-    "srand",
-    "sscanf",
-    "strcat",
-    "strcpy",
-    "strerror",
-    "swprintf",
-    "swscanf",
-    "system",
-    "tmpfile",
-    "tmpnam",
-    "ungetc1",
-    "ungetwc6",
-    "va_copy",
-    "va_end",
-    "va_start",
-    "vfprintf",
-    "vfscanf",
-    "vfwprintf6",
-    "vfwscanf",
-    "vprintf",
-    "vscanf",
-    "vsprintf",
-    "vsnprintf",
-    "vsscanf",
-    "vswprintf",
-    "vswscanf",
-    "vwprintf6",
-    "vwscanf",
-    "wcscat",
-    "wcscpy",
-    "wprintf6",
-    "wscanf6",
-}
-
-# Functions that should be ingnored as they are generated by the compiler
-functions_ignore = {
-    "__libc_start_main",
-    "__do_global_dtors_aux",
-    "__cxa_finalize",
-    "_init",
-    "frame_dummy",
-    "__libc_csu_init",
-    "register_tm_clones",
-    "deregister_tm_clones",
-    "_start",
-    "__stack_chk_fail",
-    "puts",
-    "__libc_csu_init",
-}

@@ -85,12 +85,12 @@ def process(oid: str, opts: dict) -> Dict[str, dict]:
     logger.debug("process()")
     paths = api.get_field("file_meta", oid, "original_paths")
     file_path = Path(next(iter(paths)))
-    rules_path = "/home/nathan/.local/share/oxide/datasets/capa-rules"
+    RULES_PATH = "/home/nathan/.local/share/oxide/datasets/capa-rules"
     result = {}
 
     result[oid] = {"filepath": file_path, "capa_capabilities": {}}
     try:
-        capa_dict = run_capa(file_path, rules_path)
+        capa_dict = run_capa(file_path, RULES_PATH)
     except:
         capa_dict = {}
         print("error running capa")
@@ -106,28 +106,6 @@ def process(oid: str, opts: dict) -> Dict[str, dict]:
 
     return True
 
-    paths = api.get_field("file_meta", oid, "original_paths")
-    file_path = Path(next(iter(paths)))
-    rules_path = "/home/nathan/.local/share/oxide/datasets/capa-rules"
-    result = {}
-
-    result[oid] = {"filepath": file_path, "capa_capabilities": {}}
-    try:
-        capa_dict = run_capa(file_path, rules_path)
-    except:
-        capa_dict = {}
-        print("error running capa")
-
-    for capa_entry in capa_dict:
-        result[oid]["capa_capabilities"][capa_entry] = []
-        for match in capa_dict[capa_entry]["matches"]:
-            result[oid]["capa_capabilities"][capa_entry].append(match)
-
-    if result is None: return False
-
-    api.store(NAME, oid, result, opts)
-
-    return True
 
 
 def render_rules(doc: rd.ResultDocument):
