@@ -59,7 +59,7 @@ logging.getLogger().setLevel(logging.WARNING)
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {}
+opts_doc = {"rules_path": {"type": str, "mangle": True, "default": "/home/nathan/.local/share/oxide/datasets/capa-rules"}}
 
 
 def documentation() -> Dict[str, Any]:
@@ -85,12 +85,12 @@ def process(oid: str, opts: dict) -> Dict[str, dict]:
     logger.debug("process()")
     paths = api.get_field("file_meta", oid, "original_paths")
     file_path = Path(next(iter(paths)))
-    RULES_PATH = "/home/nathan/.local/share/oxide/datasets/capa-rules"
+    rules_path = opts['rules_path']
     result = {}
 
     result[oid] = {"filepath": file_path, "capa_capabilities": {}}
     try:
-        capa_dict = run_capa(file_path, RULES_PATH)
+        capa_dict = run_capa(file_path, rules_path)
     except:
         capa_dict = {}
         print("error running capa")
