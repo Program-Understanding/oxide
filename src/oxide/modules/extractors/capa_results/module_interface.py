@@ -59,7 +59,7 @@ logging.getLogger().setLevel(logging.WARNING)
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"rules_path": {"type": str, "mangle": True, "default": "/home/nathan/.local/share/oxide/datasets/capa-rules"}}
+opts_doc = {"rules_path": {"type": str, "mangle": True, "default": "datasets/capa-rules/"}}
 
 
 def documentation() -> Dict[str, Any]:
