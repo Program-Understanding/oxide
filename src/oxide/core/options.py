@@ -32,6 +32,8 @@ datastore_filesystem) need the functions here.
 
 import logging
 
+import os
+
 from oxide.core import api, otypes
 
 from typing import List, Any, Dict, Tuple
@@ -49,6 +51,12 @@ logger = logging.getLogger(NAME)
 """
 
 SUFFIX_DELIM = '='
+
+# When building filename suffix from opts, replace instances of the 
+# path separator / and \ with this hopefully-unique-enough string.
+# When parsing opts from the suffix, replace instances of this string
+# with os.sep. 
+PATH_SEP_STRING = '!PS!'
 
 
 def normalize_mangled_options(mod_name: str, opts: Dict[str, Any]) -> List[Tuple[str, Any]]:
@@ -104,6 +112,10 @@ def build_suffix(mod_name: str, opts: Dict[str, Any]) -> str:
         # doc = api.documentation(mod_name) # DELETEME:: unused
         slist = [str((opts[field])) for field in mfields]
         suffix = SUFFIX_DELIM.join(slist)
+        # Ensure the suffix doesn't have pathname separators in it 
+        suffix = suffix.replace('/', PATH_SEP_STRING)
+        suffix = suffix.replace('\\', PATH_SEP_STRING)
+
     return suffix
 
 
@@ -115,6 +127,8 @@ def parse_suffix(mod_name: str, suffix: str) -> Dict[str, Any]:
     # doc = api.documentation(mod_name) DELETEME::unused
     # all_opts = doc["opts_doc"] DELETEME::unused
 
+    # Put path separators back into suffix string
+    suffix = suffix.replace(PATH_SEP_STRING, os.sep)
     # returns field names, sorted (same order as their vals appear in suffix)
     mangles = mangle_fields(mod_name)
     vals = [otypes.cast_string(s) for s in suffix.split(SUFFIX_DELIM)]
