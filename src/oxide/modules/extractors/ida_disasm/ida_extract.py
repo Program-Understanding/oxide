@@ -33,6 +33,7 @@ import os
 import json
 import time
 import logging
+import traceback
 
 canonical_mapping = {}
 
@@ -119,9 +120,11 @@ def _add_function_to_save(line: str, header_interface, output_map: dict) -> None
 
 def _populate_output_map(header_interface, output_map):
     try:
+        logging.debug("Opening IDA script output file")
         ida_tmp_file = open(IDA_TMP_FILE, "r")
     except OSError:
-        logging.error("Ida script output file not found, returning...")
+        logging.error("Failure with IDA script output file")
+        logging.error(traceback.format_exc())
         return
 
     out_lines = (ida_tmp_file.read()).split("\n")

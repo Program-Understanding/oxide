@@ -26,6 +26,7 @@ localstore/*
 .DS_Store
 .blot
 .replay.sh
+*.tmp
 
 # override these in the sample_dataset directory
 *.exe

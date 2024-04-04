@@ -53,8 +53,11 @@ def get_target_from_addr(addr, h):
 def main():
     print("Starting")
 
+
     ea = get_screen_ea()
-    # Necessary to allow auto-analysis to complete
+
+    # Disable macros
+    ida_ida.inf_set_af2(ida_ida.inf_get_af2() & ~AF2_MACRO)
     auto_wait()
 
     if len(ARGV) < 2:
