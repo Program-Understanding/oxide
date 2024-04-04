@@ -56,12 +56,12 @@ def _scribe_version(output_map):
 
 def _run_ddisasm(file_test, scratch_dir) -> Optional[str]:
     basename = os.path.basename(file_test)
-    os.makedirs("scratch/ddisasm/", exist_ok=True)
-    os.makedirs(f"scratch/ddisasm/{basename}/", exist_ok=True)
+    os.makedirs(f"{scratch_dir}/ddisasm/", exist_ok=True)
+    os.makedirs(f"{scratch_dir}/ddisasm/{basename}/", exist_ok=True)
 
     # Mount temp file used in test to binary, store results in scratch dir under binary
-    exe = f"docker run --rm -v {file_test}:/binary -v {scratch_dir}:/scratch grammatech/ddisasm ddisasm"
-    cmd = f"{exe} --json scratch/ddisasm/{basename}/cfg.json /binary --debug-dir scratch/ddisasm/{basename} > {os.devnull}"
+    exe = f"docker run --rm -v {file_test}:/binary -v {scratch_dir}/:/scratch grammatech/ddisasm ddisasm"
+    cmd = f"{exe} --json /scratch/ddisasm/{basename}/cfg.json /binary --debug-dir /scratch/ddisasm/{basename} > {os.devnull}"
 
     # FIXME:: put back to debug
     logger.info(cmd)
