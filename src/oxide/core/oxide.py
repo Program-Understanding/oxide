@@ -572,6 +572,12 @@ def initialize_all_modules() -> None:
         if config.dev_mode_enable:
             mod_list.extend(os.listdir(dev_dir))
         for mod_name in mod_list:
+            try:
+                if config.extractor_modules_enabled[mod_name] == "0":
+                    logger.debug("Module %s is disabled, skipping...", mod_name)
+                    continue
+            except KeyError:
+                pass
             this_mod_dir = os.path.join(mod_dir, mod_name)
             if not os.path.isdir(this_mod_dir):
                 this_mod_dir = os.path.join(dev_dir, mod_name)

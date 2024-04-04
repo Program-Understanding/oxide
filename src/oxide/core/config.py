@@ -98,6 +98,48 @@ plugins = {"default": "True"}
 history = {"file": ".history.txt",
            "max": "200"}
 
+extractor_modules_enabled = {
+    "angr_function_id": "1",
+    "binja_disasm": "1",
+    "capa_results": "1",
+    "cyclo_complexity": "1",
+    "elf": "1",
+    "exhaust_disasm": "0",
+    "file_meta": "1",
+    "function_calls": "1",
+    "function_hashes": "1",
+    "ghidra_data": "1",
+    "ghidra_disasm": "1",
+    "ida_disasm": "1",
+    "mnemonics_operands": "1",
+    "opcode_collocations": "1",
+    "pe": "1",
+    "problstc_disasm": "0",
+    "radare_disasm": "1",
+    "src_type": "1",
+    "template_extractor": "1",
+    "truth_store": "1",
+    "bap_disasm": "1",
+    "call_mapping": "1",
+    "collections_meta": "1",
+    "ddisasm_disasm": "1",
+    "emu_angr_disasm": "1",
+    "file_img": "1",
+    "fst_angr_disasm": "1",
+    "function_extract": "1",
+    "function_tlsh": "1",
+    "ghidra_decmap": "1",
+    "ghidra_export": "1",
+    "macho": "1",
+    "objdump": "1",
+    "opcodes": "1",
+    "pharos_disasm": "1",
+    "problstc_ref": "0",
+    "radare_linear": "1",
+    "string_reference": "1",
+    "tlshash": "1"
+}
+
 ALL_DEFAULTS = {"dir"            : DIR_DEFAULTS,
                 "interface"      : interface_defaults,
                 "datastore"      : datastore_defaults,
@@ -112,7 +154,8 @@ ALL_DEFAULTS = {"dir"            : DIR_DEFAULTS,
                 "history"        : history,
                 "ghidra_project" : ghidra_project,
                 "pharos"         : pharos,
-                "probdisasm"     : probdisasm
+                "probdisasm"     : probdisasm,
+                "extractor_mod"  : extractor_modules_enabled
                 }
 
 rcp = configparser.ConfigParser()
