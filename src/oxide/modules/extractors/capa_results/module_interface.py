@@ -88,7 +88,7 @@ def process(oid: str, opts: dict) -> Dict[str, dict]:
     rules_path = opts['rules_path']
     result = {}
 
-    result[oid] = {"filepath": file_path, "capa_capabilities": {}}
+    result[oid] = {"filepath": f"'{file_path}'", "capa_capabilities": {}}
     try:
         capa_dict = run_capa(file_path, rules_path)
     except:
