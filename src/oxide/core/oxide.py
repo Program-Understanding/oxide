@@ -573,7 +573,7 @@ def initialize_all_modules() -> None:
             mod_list.extend(os.listdir(dev_dir))
         for mod_name in mod_list:
             try:
-                if config.extractor_modules_enabled[mod_name] == "0":
+                if config.mod_toggle[mod_name] == "0":
                     logger.debug("Module %s is disabled, skipping...", mod_name)
                     continue
             except KeyError:
