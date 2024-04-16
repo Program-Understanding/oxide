@@ -41,6 +41,7 @@ from typing import Dict, Optional
 
 NAME = "config"
 logger = logging.getLogger(NAME)
+logging.basicConfig(level=logging.INFO) # set this to DEBUG for debugging since config is used before logging is setup
 
 AUTHOR = "ProgramUnderstandingLab"
 APPLICATION = "oxide"
@@ -397,6 +398,28 @@ def read_config(fd) -> None:
     global CONFIG_FILE_PATH
     try:
         rcp.read_file(fd, CONFIG_FILE_PATH)
+    except IOError as e:
+        logger.error("ConfigParse exception:%s", e)
+
+def read_config(fd):
+    """ Reads the configuration in the file referenced by fd.
+        the global config_file string variable is only used in error handling
+    globals:
+        RCP: ConfigParser
+    """
+    global rcp
+    global CONFIG_FILE_PATH
+    try:
+        rcp.read_file(fd, CONFIG_FILE_PATH)
+        # Ensure all keys are included even if not predefined in ALL_DEFAULTS
+        for section in rcp.sections():
+            if section not in ALL_DEFAULTS:
+                logger.error("Section %s not in ALL_DEFAULTS", section)
+                # ALL_DEFAULTS[section] = {} # we should probably not add new sections, but leaving this just in case
+            for key in rcp.options(section):
+                if key not in ALL_DEFAULTS[section]:
+                    logger.info("Detected new key %s in section %s", key, section)
+                    ALL_DEFAULTS[section][key] = rcp.get(section, key)
     except IOError as e:
         logger.error("ConfigParse exception:%s", e)
 
