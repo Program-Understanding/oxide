@@ -8,6 +8,7 @@ import logging
 import time
 import glob
 import shutil
+import traceback
 
 from typing import Optional
 
@@ -103,6 +104,9 @@ def _extract_insn_facts(block_fact_file: str, header_interface, exaustive_facts)
             block_info = [int(item, 16) for item in block_info]  # convert to list of ints
 
             i = _get_offset(block_info[0], header_interface)
+            if i is None:
+                logger.error("Could not find offset for block_info[0]: %s", block_info[0])
+                continue
             while i < _get_offset(block_info[3], header_interface):
                 insn = exaustive_facts[i]
                 file_offset = i
@@ -154,6 +158,10 @@ def _extract_block_facts(cfg_info_path, header_interface):
 
 def _populate_block_map(header_interface, block_map, insn_map, exhaustive_facts):
     for bb in block_map:
+        if bb is None:
+            logger.error(traceback.format_exc())
+            continue
+
         members = []
 
         insn = bb
