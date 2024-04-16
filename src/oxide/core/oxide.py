@@ -88,7 +88,7 @@ def documentation(mod_name: str) -> Optional[dict]:
     """ Return the documentaton of a module
     """
     if mod_name not in initialized_modules:
-        logger.error("Documentation::Module %s not found.", mod_name)
+        logger.warning("Documentation::Module %s not found.", mod_name)
         return None
     # Catch syntax errors
     try:
