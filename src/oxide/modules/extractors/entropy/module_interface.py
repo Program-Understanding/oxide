@@ -36,8 +36,6 @@ from typing import Dict, Any, List
 from oxide.core import api
 from oxide.core.libraries import histogram
 
-import detect_packer
-
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
