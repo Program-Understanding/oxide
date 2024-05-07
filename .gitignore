@@ -1,6 +1,8 @@
 # these files are ignored by git
 
 src/oxide.egg-info/
+env/
+.venv/
 
 # residual oxide directories and files
 !datastore/sample_datasets
