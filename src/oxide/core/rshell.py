@@ -50,6 +50,7 @@ class OxideProxy:
             else:
                 setattr(self, m, client.decode(getattr(ros.proxy, m)))
         self.scratch_dir = loc_oxide.api.scratch_dir
+        self.config = loc_oxide.config
         self.import_file = ros.import_file
 
 
