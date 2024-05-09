@@ -80,6 +80,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         file_results['Signature'] = api.get_field("binwalk_utils", oid, "signature")
         file_results['Size'] = size
         file_results['Padding'] = padding
+        file_results['Linux'] = api.retrieve("linux_detection_firmline", oid)
         # Architecture Detection
         file_results['Architecture'] = None
         file_results['Base Address'] = None
