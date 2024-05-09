@@ -74,13 +74,12 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         # Disasmemblers
         ghidra_disasm = api.retrieve('ghidra_disasm', oid)
         angr_disasm = api.retrieve('emu_angr_disasm', oid)
-
-
+        
         # Preliminary Analysis
-        file_results['Entropy'] = None
+        file_results['Entropy'] = api.get_field("binwalk_utils", oid, "entropy")
+        file_results['Signature'] = api.get_field("binwalk_utils", oid, "signature")
         file_results['Size'] = size
         file_results['Padding'] = padding
-
         # Architecture Detection
         file_results['Architecture'] = None
         file_results['Base Address'] = None
