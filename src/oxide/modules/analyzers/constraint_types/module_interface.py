@@ -39,13 +39,47 @@ def results(oid_list: list, opts: dict):
         data = api.get_field(api.source(oid), oid, "data", {}) #get file data
         f_name = api.get_field("file_meta", oid, "names").pop()
         f_name = api.tmp_file(f_name, data) #make temp file for anger project
-        angr_proj = init_angr_project(f_name, header) #angr project
 
-        state = angr_proj.factory.entry_state(args=[f_name])
+        #angr_proj = init_angr_project(f_name, header) #angr project seemingly not working right
+        #logger stuff from init_angr_project() that seems useful
+        cle_logger = logging.getLogger("cle")
+        cle_logger.setLevel(50)
+        angr_logger = logging.getLogger("angr")
+        angr_logger.setLevel(50)
+        claripy_logger = logging.getLogger("claripy")
+        claripy_logger.setLevel(50)
+        pyvex_logger = logging.getLogger("pyvex.lifting.libvex")
+        pyvex_logger.setLevel(50)
+        pyvex_logger = logging.getLogger("pyvex.lifting.util")
+        pyvex_logger.setLevel(50)
+        identifier_logger = logging.getLogger("angr.analyses.identifier.identify")
+        identifier_logger.setLevel(50)
+        proj = angr.Project(f_name)
+        logger.debug(f"{oid} entry addr: "+hex(proj.entry))
+        state = proj.factory.entry_state()
         state.options |= {angr.sim_options.CONSTRAINT_TRACKING_IN_SOLVER}
         state.options -= {angr.sim_options.COMPOSITE_SOLVER}
         # todo keep track of what the constraints are at the end
         # then categorize them and send them back to the user
         # maybe in a dictionary like {category : number}
 
+        simgr = proj.factory.simulation_manager(state)
+        simgr.explore()
+
+        for s in range(len(simgr.deadended)):
+            state = simgr.deadended[s]
+            results[oid]['deadend ' + str(s)] = {}
+            cons = []
+            for c in state.solver.constraints:
+                cons.append(claripy.backends.z3.convert(c))
+            solver = z3.Solver()
+            for c in cons:
+                solver.add(c)
+            if solver.check() == z3.sat:
+                m = solver.model()
+                if len(m)>0:
+                    results[oid]['deadend ' + str(s)]["sexpr"] = m.sexpr()
+                    results[oid]['deadend ' + str(s)]["model"] = m
+                    continue
+            results[oid]['deadend ' + str(s)] = "None"
     return results
