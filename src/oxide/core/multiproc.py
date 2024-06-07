@@ -244,7 +244,7 @@ def multi_mapreduce(map_func, reduce_func, oid_list, opts, jobid):
 
 def _map_reduce_wrapper(job: Tuple[Callable, str, dict, Progress, Any]) -> None:
     """ Called through multi_mapreduce """
-    (func, i, opts, p, results_q) = job
+    (func, i, opts, p) = job
     try:
         config.multiproc_on = False
         result = func(i, opts)
