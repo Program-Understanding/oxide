@@ -36,6 +36,10 @@ def mapper(oid, opts,jobid=False):
     Results are separated by deadended state, then z3 and claripy, then
     each scopes further respective to the backend.
     """
+    #this function could be better. currently turns classes into strings
+    #which is then roughly scanned for an ast type. but could be more
+    #fine grain
+    
     output_dict = {}
     data = api.get_field(api.source(oid), oid, "data", {}) #get file data
     f_name = api.get_field("file_meta", oid, "names").pop()
@@ -60,56 +64,52 @@ def mapper(oid, opts,jobid=False):
     state = proj.factory.entry_state()
     state.options |= {angr.sim_options.CONSTRAINT_TRACKING_IN_SOLVER}
     state.options -= {angr.sim_options.COMPOSITE_SOLVER}
-    # todo keep track of what the constraints are at the end
-    # then categorize them and send them back to the user
-    # maybe in a dictionary like {category : number}
 
     simgr = proj.factory.simulation_manager(state)
-    simgr.explore()
-
+    try:
+        simgr.explore()
+    except Exception as e:
+        logger.warn(f"error with {f_name}:{oid}")
     for s in range(len(simgr.deadended)): #s is state number
         state = simgr.deadended[s]
         output_dict["deadend " + str(s)] = {}
         cons = []
         cl_cons = []
-        for c in state.solver.constraints:
-            cl_cons.append(c)
-            cons.append(claripy.backends.z3.convert(c))
+        try:
+            for c in state.solver.constraints:
+                cl_cons.append(c)
+                cons.append(claripy.backends.z3.convert(c))
+        except Exception as e:
+            logger.warn(f"error with converting states for {f_name}:{oid}")
         con_trees = set() #getting unique entries
         cl_leafs = set() #because there are a lot of duplicates
         for co in cl_cons:
             if not co.concrete:
                 #don't worry about concrete vars
-                con_trees.add(str(co)) #adding string to set (commenting for my sanity)
+                con_trees.add(str(co))
                 for co_l in co.recursive_leaf_asts:
-                    cl_leafs.add(str(co_l)) #adding string to set
+                    cl_leafs.add(str(co_l))
         cl_d = {}
-        cl_d["trees"] = con_trees if len(con_trees) > 0 else "None" #setting value of cl_d to con_trees (dict)
-        cl_d["leafs"] = cl_leafs if len(cl_leafs) > 0 else "None" #^^
-        output_dict["deadend " + str(s)]["claripy"] = cl_d #setting a dict to a dict
-        solver = z3.Solver()
-        for c in cons:
-            solver.add(c)
-        if solver.check() == z3.sat:
-            m =solver.model()
-            if len(m)>0:
-                z3d = {}
-                z3d["sexpr"] = m.sexpr()
-                z3d["model"] = list(m)
-                output_dict["deadend " + str(s)]["z3"] = z3d
-                continue
-            output_dict["deadend " + str(s)]["z3"] = "None"
-            
-    #debugging by copying code from below
-    res = output_dict 
-    for deadend in res: #iterate through each deadend state
-        for backend in res[deadend]: #iterate z3 and claripy
-            if res[deadend][backend] == 'None':
-                continue #z3 might be none if there's nothing to show
-            for subtype in res[deadend][backend]:
-                print(type(res[deadend][backend][subtype]))
-                
-    #if the python types fit, you must acquit
+        cl_d["trees"] = con_trees if len(con_trees) > 0 else "None"
+        cl_d["leafs"] = cl_leafs if len(cl_leafs) > 0 else "None"
+        output_dict["deadend " + str(s)]["claripy"] = cl_d
+        try:
+            solver = z3.Solver()
+            for c in cons:
+                solver.add(c)
+            if solver.check() == z3.sat:
+                m =solver.model()
+                if len(m)>0:
+                    z3d = {}
+                    z3d["sexpr"] = m.sexpr() 
+                    z3d["model"] = str(list(m)) #convert from ctype pointer
+                    output_dict["deadend " + str(s)]["z3"] = z3d
+                    continue
+                output_dict["deadend " + str(s)]["z3"] = "None"
+        except Exception:
+            logger.warn(f"error with z3 solver for {f_name}:{oid}")
+
+    #if the python types fit, you must not 'a quit
     api.store(NAME,oid,output_dict,opts)
     return oid
 
