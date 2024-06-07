@@ -30,7 +30,7 @@ strikes=0
 def k_step_func(simmgr):
     global states
     global strikes
-    if len(simmgr.active) > sqrt(states):
+    if sqrt(len(simmgr.active)) > states:
         strikes += 1
     else:
         strikes = 0
@@ -90,8 +90,12 @@ def mapper(oid, opts,jobid=False):
         simgr.explore(step_func=k_step_func)
     except StateExplosion as e:
         logger.warn(f"angr state explosion {f_name}:{oid}")
+        api.store(NAME,oid,"Error",opts)
+        return oid
     except Exception as e:
         logger.warn(f"angr error with {f_name}:{oid}")
+        api.store(NAME,oid,"Error",opts)
+        return oid
     states = 0
     strikes = 0
     if len(simgr.deadended) == 0:
@@ -108,6 +112,8 @@ def mapper(oid, opts,jobid=False):
                 cons.append(claripy.backends.z3.convert(c))
         except Exception as e:
             logger.warn(f"error with converting states for {f_name}:{oid}")
+            api.store(NAME,oid,"Error",opts)
+            return oid
         con_trees = set() #getting unique entries
         cl_leafs = set() #because there are a lot of duplicates
         for co in cl_cons:
