@@ -34,7 +34,7 @@ def k_step_func(simmgr):
         strikes += 1
     else:
         strikes = 0
-    if strikes > 10:
+    if strikes > 3:
         raise StateExplosion
     states = len(simmgr.active)
     return simmgr
