@@ -69,7 +69,7 @@ def mapper(oid, opts,jobid=False):
 
     for s in range(len(simgr.deadended)): #s is state number
         state = simgr.deadended[s]
-        output_dict['deadend ' + str(s)] = {}
+        output_dict["deadend " + str(s)] = {}
         cons = []
         cl_cons = []
         for c in state.solver.constraints:
@@ -80,25 +80,36 @@ def mapper(oid, opts,jobid=False):
         for co in cl_cons:
             if not co.concrete:
                 #don't worry about concrete vars
-                con_trees.add(c)
+                con_trees.add(str(co)) #adding string to set (commenting for my sanity)
                 for co_l in co.recursive_leaf_asts:
-                    cl_leafs.add(c)
+                    cl_leafs.add(str(co_l)) #adding string to set
         cl_d = {}
-        cl_d["trees"] = con_trees if len(con_trees) > 0 else "None"
-        cl_d["leafs"] = cl_leafs if len(cl_leafs) > 0 else "None"
-        output_dict['deadend ' + str(s)]["claripy"] = cl_d
+        cl_d["trees"] = con_trees if len(con_trees) > 0 else "None" #setting value of cl_d to con_trees (dict)
+        cl_d["leafs"] = cl_leafs if len(cl_leafs) > 0 else "None" #^^
+        output_dict["deadend " + str(s)]["claripy"] = cl_d #setting a dict to a dict
         solver = z3.Solver()
         for c in cons:
             solver.add(c)
         if solver.check() == z3.sat:
-            m = solver.model()
+            m =solver.model()
             if len(m)>0:
                 z3d = {}
                 z3d["sexpr"] = m.sexpr()
-                z3d["model"] = m
-                output_dict['deadend ' + str(s)]["z3"] = z3d
+                z3d["model"] = list(m)
+                output_dict["deadend " + str(s)]["z3"] = z3d
                 continue
-            output_dict['deadend ' + str(s)]["z3"] = "None"
+            output_dict["deadend " + str(s)]["z3"] = "None"
+            
+    #debugging by copying code from below
+    res = output_dict 
+    for deadend in res: #iterate through each deadend state
+        for backend in res[deadend]: #iterate z3 and claripy
+            if res[deadend][backend] == 'None':
+                continue #z3 might be none if there's nothing to show
+            for subtype in res[deadend][backend]:
+                print(type(res[deadend][backend][subtype]))
+                
+    #if the python types fit, you must acquit
     api.store(NAME,oid,output_dict,opts)
     return oid
 
