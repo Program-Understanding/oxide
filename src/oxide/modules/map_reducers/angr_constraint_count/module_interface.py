@@ -2,11 +2,15 @@ AUTHOR="KEVAN"
 DESC="Use this module to dump constraint information used by angr's backend Claripy and z3"
 NAME="angr_constraint_count"
 
+class StateExplosion(Exception):
+    pass
+
 from core import api
 import logging
 import angr
 import claripy
 import z3
+from math import sqrt
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -20,6 +24,20 @@ def documentation():
             "set": False,
             "atomic":True
             }
+
+states=0
+strikes=0
+def k_step_func(simmgr):
+    global states
+    global strikes
+    if len(simmgr.active) > sqrt(states):
+        strikes += 1
+    else:
+        strikes = 0
+    if strikes > 10:
+        raise StateExplosion
+    states = len(simmgr.active)
+    return simmgr
 
 def mapper(oid, opts,jobid=False):
     """Entry point for analyzers, these do not store in database
@@ -36,6 +54,8 @@ def mapper(oid, opts,jobid=False):
     Results are separated by deadended state, then z3 and claripy, then
     each scopes further respective to the backend.
     """
+    global states
+    global strikes
     #this function could be better. currently turns classes into strings
     #which is then roughly scanned for an ast type. but could be more
     #fine grain
@@ -67,9 +87,16 @@ def mapper(oid, opts,jobid=False):
 
     simgr = proj.factory.simulation_manager(state)
     try:
-        simgr.explore()
+        simgr.explore(step_func=k_step_func)
+    except StateExplosion as e:
+        logger.warn(f"angr state explosion {f_name}:{oid}")
     except Exception as e:
-        logger.warn(f"error with {f_name}:{oid}")
+        logger.warn(f"angr error with {f_name}:{oid}")
+    states = 0
+    strikes = 0
+    if len(simgr.deadended) == 0:
+        api.store(NAME,oid,"No deadends",opts)
+        return oid
     for s in range(len(simgr.deadended)): #s is state number
         state = simgr.deadended[s]
         output_dict["deadend " + str(s)] = {}
@@ -108,6 +135,7 @@ def mapper(oid, opts,jobid=False):
                 output_dict["deadend " + str(s)]["z3"] = "None"
         except Exception:
             logger.warn(f"error with z3 solver for {f_name}:{oid}")
+            output_dict["deadend " + str(s)]["z3"] = "None"
 
     #if the python types fit, you must not 'a quit
     api.store(NAME,oid,output_dict,opts)
@@ -118,6 +146,8 @@ def reducer(intermediate_out, opts, jobid):
     for oid in intermediate_out:
         if oid:
             res = api.retrieve(NAME,oid,opts)
+            if type(res) is str:
+                break
             for deadend in res: #iterate through each deadend state
                 for backend in res[deadend]: #iterate z3 and claripy
                     if res[deadend][backend] == 'None':
