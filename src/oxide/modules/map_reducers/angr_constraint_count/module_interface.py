@@ -84,7 +84,7 @@ def mapper(oid, opts,jobid=False):
     state = proj.factory.entry_state()
     state.options |= {angr.sim_options.CONSTRAINT_TRACKING_IN_SOLVER}
     state.options -= {angr.sim_options.COMPOSITE_SOLVER}
-
+    logger.warn(f"Working on {f_name} with oid {oid}")
     simgr = proj.factory.simulation_manager(state)
     try:
         simgr.explore(step_func=k_step_func)
@@ -142,7 +142,7 @@ def mapper(oid, opts,jobid=False):
         except Exception:
             logger.warn(f"error with z3 solver for {f_name}:{oid}")
             output_dict["deadend " + str(s)]["z3"] = "None"
-
+    logger.warn(f"Finished with {f_name} with oid {oid}")
     #if the python types fit, you must not 'a quit
     api.store(NAME,oid,output_dict,opts)
     return oid
