@@ -4,8 +4,11 @@ NAME="angr_constraint_count"
 
 class StateExplosion(Exception):
     pass
+class Timeout(Exception):
+    pass
 
 from core import api
+import time
 import logging
 import angr
 import claripy
@@ -27,14 +30,26 @@ def documentation():
 
 states=0
 strikes=0
+start_time = None
+f_name = ""
+oid=""
 def k_step_func(simmgr):
     global states
     global strikes
+    global start_time
+
+    if start_time is None:
+        start_time = time.time()
+    if time.time() - start_time > 60: #testing 60 second timeout limit
+        start_time = None
+        simmgr.move(from_stash="active", to_stash="deadend")
+        raise Timeout
     if sqrt(len(simmgr.active)) > states:
         strikes += 1
     else:
         strikes = 0
     if strikes > 3:
+        simmgr.move(from_stash="active", to_stash="deadend")
         raise StateExplosion
     states = len(simmgr.active)
     return simmgr
@@ -56,6 +71,7 @@ def mapper(oid, opts,jobid=False):
     """
     global states
     global strikes
+    global start_time
     #this function could be better. currently turns classes into strings
     #which is then roughly scanned for an ast type. but could be more
     #fine grain
@@ -88,16 +104,17 @@ def mapper(oid, opts,jobid=False):
     simgr = proj.factory.simulation_manager(state)
     try:
         simgr.explore(step_func=k_step_func)
+    except Timeout as e:
+        logger.warn(f"angr timeout limit reached {f_name}:{oid}")
     except StateExplosion as e:
         logger.warn(f"angr state explosion {f_name}:{oid}")
-        api.store(NAME,oid,"Error",opts)
-        return oid
     except Exception as e:
-        logger.warn(f"angr error with {f_name}:{oid}")
+        logger.warn(f"angr error with {f_name}:{oid}\n{e}")
         api.store(NAME,oid,"Error",opts)
         return oid
     states = 0
     strikes = 0
+    start_time = None
     if len(simgr.deadended) == 0:
         api.store(NAME,oid,"No deadends",opts)
         return oid
