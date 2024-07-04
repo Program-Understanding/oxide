@@ -18,7 +18,7 @@ from math import sqrt
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {}
+opts_doc = {"timeout": {"type": int, "mangle": False, "default": 60}}
 
 def documentation():
     return {"description":DESC,
@@ -33,14 +33,16 @@ strikes=0
 start_time = None
 f_name = ""
 oid=""
+timeout=60
 def k_step_func(simmgr):
     global states
     global strikes
     global start_time
+    global timeout
 
     if start_time is None:
         start_time = time.time()
-    if time.time() - start_time > 60: #testing 60 second timeout limit
+    if time.time() - start_time > timeout: #testing 60 second timeout limit
         start_time = None
         simmgr.move(from_stash="active", to_stash="deadend")
         raise Timeout
@@ -72,6 +74,8 @@ def mapper(oid, opts,jobid=False):
     global states
     global strikes
     global start_time
+    global timeout
+    timeout = int(opts["timeout"])
     #this function could be better. currently turns classes into strings
     #which is then roughly scanned for an ast type. but could be more
     #fine grain
@@ -96,20 +100,20 @@ def mapper(oid, opts,jobid=False):
     identifier_logger = logging.getLogger("angr.analyses.identifier.identify")
     identifier_logger.setLevel(50)
     proj = angr.Project(f_name)
-    logger.debug(f"{oid} entry addr: "+hex(proj.entry))
+
     state = proj.factory.entry_state()
     state.options |= {angr.sim_options.CONSTRAINT_TRACKING_IN_SOLVER}
     state.options -= {angr.sim_options.COMPOSITE_SOLVER}
-    logger.warn(f"Working on {f_name} with oid {oid}")
+    logger.debug(f"Working on {f_name} with oid {oid}")
     simgr = proj.factory.simulation_manager(state)
     try:
         simgr.explore(step_func=k_step_func)
     except Timeout as e:
-        logger.warn(f"angr timeout limit reached {f_name}:{oid}")
+        logger.warn(f"{int(opts['timeout'])} second angr timeout limit reached {f_name}:{oid}")
     except StateExplosion as e:
         logger.warn(f"angr state explosion {f_name}:{oid}")
     except Exception as e:
-        logger.warn(f"angr error with {f_name}:{oid}\n{e}")
+        logger.warn(f"angr error with {f_name}:{oid}::{e}")
         api.store(NAME,oid,"Error",opts)
         return oid
     states = 0
@@ -128,7 +132,7 @@ def mapper(oid, opts,jobid=False):
                 cl_cons.append(c)
                 cons.append(claripy.backends.z3.convert(c))
         except Exception as e:
-            logger.warn(f"error with converting states for {f_name}:{oid}")
+            logger.debug(f"error with converting states for {f_name}:{oid}")
             api.store(NAME,oid,"Error",opts)
             return oid
         con_trees = set() #getting unique entries
@@ -145,8 +149,7 @@ def mapper(oid, opts,jobid=False):
         output_dict["deadend " + str(s)]["claripy"] = cl_d
         try:
             solver = z3.Solver()
-            for c in cons:
-                solver.add(c)
+            solver.add(z3.And(cons))
             if solver.check() == z3.sat:
                 m =solver.model()
                 if len(m)>0:
@@ -157,9 +160,9 @@ def mapper(oid, opts,jobid=False):
                     continue
                 output_dict["deadend " + str(s)]["z3"] = "None"
         except Exception:
-            logger.warn(f"error with z3 solver for {f_name}:{oid}")
+            logger.debug(f"error with z3 solver for {f_name}:{oid}")
             output_dict["deadend " + str(s)]["z3"] = "None"
-    logger.warn(f"Finished with {f_name} with oid {oid}")
+    logger.debug(f"Finished with {f_name} with oid {oid}")
     #if the python types fit, you must not 'a quit
     api.store(NAME,oid,output_dict,opts)
     return oid
