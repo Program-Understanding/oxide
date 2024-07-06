@@ -1,9 +1,7 @@
 import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from oxide.core import api 
 import logging 
-
 import xmltodict
 import pprint
 
@@ -17,14 +15,10 @@ logger.debug("init")
 
 def ghidra_archs(args, opts:dict) -> dict:
     print(sys.path)
-    if args != 1: 
-        print("Syntax: This plugin does not take any arguments")
-
+    if len(args) != 0: 
+        raise ShellSyntaxError("No arguments are needed")
     result = {}
-    path = config.dir_ghidra_path
-    # path = api.ghidra_project
-    # path = api.ghidra_path
-    
+    path = api.ghidra_path
 
     if not path:
         logger.warning('No ghidra path was set or configured to None')
