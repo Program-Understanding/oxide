@@ -32,12 +32,10 @@ def process(oid, opts):
     strings = [value for value in strings_retrieved.values()]
 
     for string in strings:
-        try:
+        if string in data:
             data.get(string)
             results_strings[string] = "True"
-        except:
-            continue
-            
+                 
     
     if not results_strings:
         logger.debug("No strings found")
