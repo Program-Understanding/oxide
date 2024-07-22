@@ -50,7 +50,8 @@ def process(oid, opts):
     processed_devices = set()
 
 
-    for string in strings:
+    for string_orig in strings:
+        string = string_orig.upper()
         if string in arch_to_cores_data:
             components_found_dict[string] = "instruction set architecture, explicitly found "
             processed_architectures.update(string)
