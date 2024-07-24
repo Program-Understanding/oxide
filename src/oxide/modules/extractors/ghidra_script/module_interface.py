@@ -2,8 +2,9 @@ import logging
 import os
 import multiprocessing
 from typing import Dict, Any
-from oxide.core import api
-
+from oxide.core import api, sys_utils
+import subprocess
+import json
 DESC = "This module can run any valid Ghidra script that is stored in the scripts directory (for now)"
 NAME = "ghidra_script"
 CATEGORY = "disassembler"
@@ -58,7 +59,9 @@ def process(oid: str, opts: dict) -> bool:
     project_path = api.scratch_dir
     scripts_path = api.scripts_dir
     extract_script = opts['script']
-
+    tmp_json = os.path.join(api.scratch_dir, "ghidra_tmp.json")
+    print("Extracting with script: ", extract_script)
+    print("Temporarily storing in file: ", tmp_json)
     # Check that the script exists
     if not os.path.exists(os.path.join(scripts_path, extract_script)):
         logger.error('The provided script path is incorrect, please make sure everything is spelt correctly and the path points to the folder that contains the script: \' %s \' ', extract_script)
@@ -90,7 +93,17 @@ def process(oid: str, opts: dict) -> bool:
 
     cmd = "{} {} {} ".format(ghidra_path, project_path, project_name) + \
           "-import {} -overwrite -scriptPath {} ".format(f_name, scripts_path)   + \
-          "-postScript {}".format(extract_script)
+          "-postScript {} {}".format(extract_script, tmp_json)
+    print(cmd)
+    with open(os.devnull, "w") as null:
+        try:
+            output = subprocess.check_output(cmd, universal_newlines=True, shell=True, stderr=null)
+        except subprocess.CalledProcessError as e:
+            logger.warning(e.output)
+    with open(tmp_json, "r") as f:
+        result = json.loads(f.read())
+        
+    sys_utils.delete_file(tmp_json) 
     if result is None: return False
     api.store(NAME, oid, result, opts)
     return True
