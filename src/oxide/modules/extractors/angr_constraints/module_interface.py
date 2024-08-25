@@ -139,7 +139,7 @@ def process(oid, opts):
                 m =solver.model()
                 if len(m)>0:
                     z3d = {}
-                    z3d["sexpr"] = solver.sexpr() 
+                    z3d["sexpr"] = m.sexpr() 
                     # z3d["model"] = str(list(m)) #convert from ctype pointer
                     output_dict["deadend " + str(s)]["z3"] = z3d
                     continue
