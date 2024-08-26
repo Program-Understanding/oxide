@@ -57,6 +57,72 @@ def k_step_func(simmgr):
     states = len(simmgr.active)
     return simmgr
 
+def count_classes(s, counts):
+    #s is the constraint from the output of claripy/z3
+    if type(s) is not str:
+        s = str(s)
+    #iterate finally through each result returned
+    if "Bool" in s:
+        if "Bool" not in counts:
+            counts["Bool"] = 0
+        counts["Bool"] += s.count("Bool")
+    if "BitVec" in s:
+        if "BitVec" not in counts:
+            counts["BitVec"] = 0
+        counts["BitVec"] += s.count("BitVec")
+    if "BVV" in s:
+        if "BVV" not in counts:
+            counts["BVV"] = 0
+        counts["BVV"] += s.count("BVV")
+    if "BV" in s:
+        if "BV" not in counts:
+            counts["BV"] = 0
+        counts["BV"] += s.count("BV")
+    if "String" in s:
+        if "String" not in counts:
+            counts["String"] = 0
+        counts["String"] += s.count("String")
+    if "Bits" in s:
+        if "Bits" not in counts:
+            counts["Bits"] = 0
+        counts["Bits"] += s.count("Bits")
+    if "BVS" in s:
+        if "BVS" not in counts:
+            counts["BVS"] = 0
+        counts["BVS"] += s.count("BVS")
+    if "Int" in s:
+        if "Int" not in counts:
+            counts["Int"] = 0
+        counts["Int"] += s.count("Int")
+    if "FP" in s:
+        if "FP" not in counts:
+            counts["FP"] = 0
+        counts["FP"] += s.count("FP")
+    if "Array" in s:
+        if "Array" not in counts:
+            counts["Array"] = 0
+        counts["Array"] += s.count("Array")
+    if "Datatype" in s:
+        if "Datatype" not in counts:
+            counts["Datatype"] = 0
+        counts["Datatype"] += s.count("Datatype")
+    if "FP" in s:
+        if "FP" not in counts:
+            counts["FP"] = 0
+        counts["FP"] += s.count("FP")
+    if "Real" in s:
+        if "Real" not in counts:
+            counts["Real"] = 0
+        counts["Real"] += s.count("Real")
+    if "Rexexp" in s:
+        if "Regexp" not in counts:
+            counts["Regexp"] = 0
+        counts["Regexp"] += s.count("Regexp")
+    if "Set" in s:
+        if "Set" not in counts:
+            counts["Set"] = 0
+        counts["Set"] += s.count("Set")
+
 def process(oid, opts):
     """
      This function will accept an oid and give back a dictionary
@@ -64,7 +130,9 @@ def process(oid, opts):
     angr constructed upon running its symbolic execution.
 
     The return is a count of each type of constraint that angr returned,
-    such as bitvectors, strings, etc. and the constraints themselves.
+    such as bitvectors, strings, etc. and the constraints themselves both
+    in claripy format and z3, where the z3 output is put into a Z3 solver
+    and the sexpr() is printed.
     """
     global states
     global strikes
@@ -138,10 +206,10 @@ def process(oid, opts):
             if solver.check() == z3.sat:
                 m =solver.model()
                 if len(m)>0:
-                    z3d = {}
-                    z3d["sexpr"] = m.sexpr() 
-                    # z3d["model"] = str(list(m)) #convert from ctype pointer
-                    output_dict["deadend " + str(s)]["z3"] = z3d
+                    #z3d = {}
+                    #z3d["sexpr"] = m.sexpr() 
+                    #z3d["model"] = str(list(m)) #convert from ctype pointer
+                    output_dict["deadend " + str(s)]["z3"] = m.sexpr() #used to be z3d
                     continue
                 output_dict["deadend " + str(s)]["z3"] = "None"
         except Exception:
@@ -150,73 +218,11 @@ def process(oid, opts):
     logger.debug(f"Finished with {f_name} with oid {oid}, beginning counting...")
     counts = {}
     for deadend in output_dict: #iterate through each deadend state
-        for backend in output_dict[deadend]: #iterate z3 and claripy
-            if output_dict[deadend][backend] == 'None':
+        if output_dict[deadend]["claripy"] == 'None':
                 continue #skip if a backend errors
-            for s in output_dict[deadend][backend]:
-                #s is the constraint from the output of claripy/z3
-                s = str(s)
-                #iterate finally through each result returned
-                if "Bool" in s:
-                    if "Bool" not in counts:
-                        counts["Bool"] = 0
-                    counts["Bool"] += s.count("Bool")
-                if "BitVec" in s:
-                    if "BitVec" not in counts:
-                        counts["BitVec"] = 0
-                    counts["BitVec"] += s.count("BitVec")
-                if "BVV" in s:
-                    if "BVV" not in counts:
-                        counts["BVV"] = 0
-                    counts["BVV"] += s.count("BVV")
-                if "BV" in s:
-                    if "BV" not in counts:
-                        counts["BV"] = 0
-                    counts["BV"] += s.count("BV")
-                if "String" in s:
-                    if "String" not in counts:
-                        counts["String"] = 0
-                    counts["String"] += s.count("String")
-                if "Bits" in s:
-                    if "Bits" not in counts:
-                        counts["Bits"] = 0
-                    counts["Bits"] += s.count("Bits")
-                if "BVS" in s:
-                    if "BVS" not in counts:
-                        counts["BVS"] = 0
-                    counts["BVS"] += s.count("BVS")
-                if "Int" in s:
-                    if "Int" not in counts:
-                        counts["Int"] = 0
-                    counts["Int"] += s.count("Int")
-                if "FP" in s:
-                    if "FP" not in counts:
-                        counts["FP"] = 0
-                    counts["FP"] += s.count("FP")
-                if "Array" in s:
-                    if "Array" not in counts:
-                        counts["Array"] = 0
-                    counts["Array"] += s.count("Array")
-                if "Datatype" in s:
-                    if "Datatype" not in counts:
-                        counts["Datatype"] = 0
-                    counts["Datatype"] += s.count("Datatype")
-                if "FP" in s:
-                    if "FP" not in counts:
-                        counts["FP"] = 0
-                    counts["FP"] += s.count("FP")
-                if "Real" in s:
-                    if "Real" not in counts:
-                        counts["Real"] = 0
-                    counts["Real"] += s.count("Real")
-                if "Rexexp" in s:
-                    if "Regexp" not in counts:
-                        counts["Regexp"] = 0
-                    counts["Regexp"] += s.count("Regexp")
-                if "Set" in s:
-                    if "Set" not in counts:
-                        counts["Set"] = 0
-                    counts["Set"] += s.count("Set")
+        for s in output_dict[deadend]["claripy"]:
+            count_classes(s,counts)
+        count_classes(output_dict[deadend]["z3"],counts)
     if counts == {}:
         counts = "No constraints"
         logger.debug(f"Could not generate counts for {f_name}:{oid}")
