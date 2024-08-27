@@ -1,9 +1,12 @@
 '''
 
-
 WARNING:
 MUST "pip install pyahocorasick" FOR THIS MODULE TO FUNCTION PROPERLY
 
+If testing for possible components, it is common for the terminal space fill up; all solutions may not be visible.
+
+Possible components: "run strings_components_finder --option=possible &YOUR_COLLECTION | show"
+Explicit components only: "run strings_components_finder &YOUR_COLLECTION | show"
 
 '''
 
@@ -23,7 +26,7 @@ from pathlib import Path
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {}
+opts_doc = {"option": {"type": str, "mangle": False, "default": "explicit"}}
 
 def documentation():
     return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
@@ -58,6 +61,7 @@ def search_components_in_strings(strings, components):
             results[component] = results.setdefault(component, 0) + 1
     return results
 
+
 #------------------------------------------------------------------------PROCESS------------------------------
 def process(oid, opts):
     all_components = load_file("all_components.json")
@@ -88,68 +92,75 @@ def process(oid, opts):
     
     processed_components = search_components_in_strings(strings, all_components)
 
-    
-#This loop checks if any of the file's strings are found in the components dataset.
-    for string, occurence in processed_components.items(): 
-        occurence = str(occurence)
-        if string in arch_to_cores_data:
-            explicitly_found_dict[string] = "instruction set architecture explicitly found " + occurence + " time/s"
-            processed_architectures.add(string)
-        elif string in cores_to_IC_data:
-            explicitly_found_dict[string] = "core explicitly found " + occurence + " time/s"
-            processed_cores.add(string)
-        elif string in IC_devices_data:
-            explicitly_found_dict[string] = "device explicitly found " + occurence + " time/s"
-            processed_devices.add(string)
+    if "option" in opts:
+        option = str(opts["option"])
 
-#These loops detect the possible components of the binary file. They do this by using the explicitly found components and retrieving components related to it from the dataset.
-    for IC_device in processed_devices:  
-        try: architecture = IC_to_arch_data[IC_device]
-        except: continue
-        if architecture not in explicitly_found_dict and architecture not in possibly_found_dict:
-            possibly_found_dict[architecture] = "instruction set architecture possible  ∵  " + IC_device + " device was found"
-        
-        try: core = IC_to_cores_data[IC_device]
-        except: continue
-        if core not in explicitly_found_dict and core not in possibly_found_dict: 
-            possibly_found_dict[core] = "core possible  ∵  " + IC_device + " device was found"
+    if option == "possible":
+    #This loop checks if any of the file's strings are found in the components dataset.
+        for string, occurence in processed_components.items(): 
+            occurence = str(occurence)
+            if string in arch_to_cores_data:
+                explicitly_found_dict[string] = "instruction set architecture explicitly found " + occurence + " time/s"
+                processed_architectures.add(string)
+            elif string in cores_to_IC_data:
+                explicitly_found_dict[string] = "core explicitly found " + occurence + " time/s"
+                processed_cores.add(string)
+            elif string in IC_devices_data:
+                explicitly_found_dict[string] = "device explicitly found " + occurence + " time/s"
+                processed_devices.add(string)
 
-    for core in processed_cores:
-        try: architecture = cores_to_arch_data[core]
-        except: continue
-        if architecture not in explicitly_found_dict and architecture not in possibly_found_dict:
-            possibly_found_dict[architecture] = "instruction set architecture possible  ∵  " + core + " core was found"
-        
-        try: IC_device_list = cores_to_IC_data[core]
-        except: continue
-        for IC_device in IC_device_list:
-            if IC_device not in explicitly_found_dict and IC_device not in possibly_found_dict:
-                possibly_found_dict[IC_device] = "device possible  ∵  " + core + " core was found"
+    #These loops detect the possible components of the binary file. They do this by using the explicitly found components and retrieving components related to it from the dataset.
+        for IC_device in processed_devices:  
+            try: architecture = IC_to_arch_data[IC_device]
+            except: continue
+            if architecture not in explicitly_found_dict and architecture not in possibly_found_dict:
+                possibly_found_dict[architecture] = "instruction set architecture possible  ∵  " + IC_device + " device was found"
 
-    for architecture in processed_architectures:
-        try: core_list = arch_to_cores_data[architecture]
-        except: continue
-        for core in core_list:
-            if core not in explicitly_found_dict and core not in possibly_found_dict:
-                possibly_found_dict[core] = "core possible  ∵  " + architecture + " instruction set architecture was found"
-        
-        try: IC_device_list = arch_to_IC_data[architecture]
-        except: continue
-        for IC_device in IC_device_list:
-            if IC_device not in explicitly_found_dict and IC_device not in possibly_found_dict:
-                possibly_found_dict[IC_device] = "device possible  ∵  " + architecture + " instruction set architecture was found"
-        
+            try: core = IC_to_cores_data[IC_device]
+            except: continue
+            if core not in explicitly_found_dict and core not in possibly_found_dict: 
+                possibly_found_dict[core] = "core possible  ∵  " + IC_device + " device was found"
 
+        for core in processed_cores:
+            try: architecture = cores_to_arch_data[core]
+            except: continue
+            if architecture not in explicitly_found_dict and architecture not in possibly_found_dict:
+                possibly_found_dict[architecture] = "instruction set architecture possible  ∵  " + core + " core was found"
 
-# QUESTION:
-# Should we write an analyzer module to correctly order and format output?
-# If we pipe this to show, it's very ugly to look at and difficult to quickly find the explicitly found components and pick them out from the possible components. 
-# Additionally, if large amounts of strings are found, when the possible components are piped to show it can fill up the terminal due to the sheer depth of our dataset. 
-# Another issue is when we use api.store, obviously the order of our dictionary is not maintained in output. I would like to have the output sorted for various reasons.
+            try: IC_device_list = cores_to_IC_data[core]
+            except: continue
+            for IC_device in IC_device_list:
+                if IC_device not in explicitly_found_dict and IC_device not in possibly_found_dict:
+                    possibly_found_dict[IC_device] = "device possible  ∵  " + core + " core was found"
 
-    components_found_dict = {**explicitly_found_dict, **possibly_found_dict} 
-    
+        for architecture in processed_architectures:
+            try: core_list = arch_to_cores_data[architecture]
+            except: continue
+            for core in core_list:
+                if core not in explicitly_found_dict and core not in possibly_found_dict:
+                    possibly_found_dict[core] = "core possible  ∵  " + architecture + " instruction set architecture was found"
 
+            try: IC_device_list = arch_to_IC_data[architecture]
+            except: continue
+            for IC_device in IC_device_list:
+                if IC_device not in explicitly_found_dict and IC_device not in possibly_found_dict:
+                    possibly_found_dict[IC_device] = "device possible  ∵  " + architecture + " instruction set architecture was found"
+        components_found_dict = {**possibly_found_dict}             
+    else:
+        for string, occurence in processed_components.items(): 
+            occurence = str(occurence)
+            if string in arch_to_cores_data:
+                explicitly_found_dict[string] = "instruction set architecture explicitly found " + occurence + " time/s"
+                processed_architectures.add(string)
+            elif string in cores_to_IC_data:
+                explicitly_found_dict[string] = "core explicitly found " + occurence + " time/s"
+                processed_cores.add(string)
+            elif string in IC_devices_data:
+                explicitly_found_dict[string] = "device explicitly found " + occurence + " time/s"
+                processed_devices.add(string)
+        components_found_dict = {**explicitly_found_dict} 
+
+ 
 
     if len(components_found_dict.keys()) == 0:
         logger.debug("No strings found")
