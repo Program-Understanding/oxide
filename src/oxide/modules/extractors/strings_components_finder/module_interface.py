@@ -5,7 +5,7 @@ MUST "pip install pyahocorasick" FOR THIS MODULE TO FUNCTION PROPERLY
 
 If testing for possible components, it is common for the terminal space fill up; all solutions may not be visible.
 
-Possible components: "run strings_components_finder --option=possible &YOUR_COLLECTION | show"
+Possible components: "run strings_components_finder --mode=possible &YOUR_COLLECTION | show"
 Explicit components only: "run strings_components_finder &YOUR_COLLECTION | show"
 
 '''
@@ -26,7 +26,9 @@ from pathlib import Path
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"option": {"type": str, "mangle": False, "default": "explicit"}}
+opts_doc = {"mode": {"type": str, "mangle": True, "default": "explicit"},
+            "component": {"type": str, "mangle": True, "default": "none" }
+            }
 
 def documentation():
     return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
@@ -92,22 +94,26 @@ def process(oid, opts):
     
     processed_components = search_components_in_strings(strings, all_components)
 
-    if "option" in opts:
-        option = str(opts["option"])
+    if "mode" in opts:
+        mode = str(opts["mode"])
+    
+    if "component" in opts:
+        component = str(opts["component"])
 
-    if option == "possible":
+    if mode == "possible":
     #This loop checks if any of the file's strings are found in the components dataset.
-        for string, occurence in processed_components.items(): 
-            occurence = str(occurence)
-            if string in arch_to_cores_data:
-                explicitly_found_dict[string] = "instruction set architecture explicitly found " + occurence + " time/s"
-                processed_architectures.add(string)
-            elif string in cores_to_IC_data:
-                explicitly_found_dict[string] = "core explicitly found " + occurence + " time/s"
-                processed_cores.add(string)
-            elif string in IC_devices_data:
-                explicitly_found_dict[string] = "device explicitly found " + occurence + " time/s"
-                processed_devices.add(string)
+        if component == "none":
+            for string, occurence in processed_components.items(): 
+                occurence = str(occurence)
+                if string in arch_to_cores_data:
+                    explicitly_found_dict[string] = "instruction set architecture explicitly found " + occurence + " time/s"
+                    processed_architectures.add(string)
+                elif string in cores_to_IC_data:
+                    explicitly_found_dict[string] = "core explicitly found " + occurence + " time/s"
+                    processed_cores.add(string)
+                elif string in IC_devices_data:
+                    explicitly_found_dict[string] = "device explicitly found " + occurence + " time/s"
+                    processed_devices.add(string)
 
     #These loops detect the possible components of the binary file. They do this by using the explicitly found components and retrieving components related to it from the dataset.
         for IC_device in processed_devices:  
@@ -145,20 +151,32 @@ def process(oid, opts):
             for IC_device in IC_device_list:
                 if IC_device not in explicitly_found_dict and IC_device not in possibly_found_dict:
                     possibly_found_dict[IC_device] = "device possible  ∵  " + architecture + " instruction set architecture was found"
-        components_found_dict = {**possibly_found_dict}             
-    else:
-        for string, occurence in processed_components.items(): 
-            occurence = str(occurence)
-            if string in arch_to_cores_data:
-                explicitly_found_dict[string] = "instruction set architecture explicitly found " + occurence + " time/s"
-                processed_architectures.add(string)
-            elif string in cores_to_IC_data:
-                explicitly_found_dict[string] = "core explicitly found " + occurence + " time/s"
-                processed_cores.add(string)
-            elif string in IC_devices_data:
-                explicitly_found_dict[string] = "device explicitly found " + occurence + " time/s"
-                processed_devices.add(string)
-        components_found_dict = {**explicitly_found_dict} 
+            components_found_dict = {**possibly_found_dict}             
+    elif mode == "explicit":
+        if component == "none":
+            for string, occurence in processed_components.items(): 
+                occurence = str(occurence)
+                if string in arch_to_cores_data:
+                    explicitly_found_dict[string] = "instruction set architecture explicitly found " + occurence + " time/s"
+                    processed_architectures.add(string)
+                elif string in cores_to_IC_data:
+                    explicitly_found_dict[string] = "core explicitly found " + occurence + " time/s"
+                    processed_cores.add(string)
+                elif string in IC_devices_data:
+                    explicitly_found_dict[string] = "device explicitly found " + occurence + " time/s"
+                    processed_devices.add(string)
+            components_found_dict = {**explicitly_found_dict}
+        else:
+            for string, occurence in processed_components.items(): 
+                occurence = str(occurence)
+                if (component == "architecture") and (string in arch_to_cores_data):
+                    explicitly_found_dict[string] = "instruction set architecture explicitly found " + occurence + " time/s"
+                elif (component == "core") and (string in cores_to_IC_data):
+                    explicitly_found_dict[string] = "core explicitly found " + occurence + " time/s"
+                elif (component == "device") and (string in IC_devices_data):
+                    explicitly_found_dict[string] = "device explicitly found " + occurence + " time/s"
+            components_found_dict = {**explicitly_found_dict}
+
 
  
 
