@@ -2,8 +2,6 @@ AUTHOR="KEVAN"
 DESC="Use this module to view information regarding constraints on an OID from angr. Returns count of constraint types and constraints generated"
 NAME="angr_constraints"
 
-class StateExplosion(Exception):
-    pass
 class Timeout(Exception):
     pass
 
@@ -14,11 +12,12 @@ import angr
 import claripy
 import z3
 from math import sqrt
+from multiprocessing import Process, Queue, ProcessError
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"timeout": {"type": int, "mangle": False, "default": 60}}
+opts_doc = {"timeout": {"type": int, "mangle": True, "default": 600}}
 
 def documentation():
     return {"description":DESC,
@@ -28,16 +27,12 @@ def documentation():
             "atomic":True
             }
 
-states=0
-strikes=0
 start_time = None
 f_name = ""
 oid=""
-timeout=60
+timeout=int()
 
 def k_step_func(simmgr):
-    global states
-    global strikes
     global start_time
     global timeout
 
@@ -47,14 +42,6 @@ def k_step_func(simmgr):
         start_time = None
         simmgr.move(from_stash="active", to_stash="deadend")
         raise Timeout
-    if sqrt(len(simmgr.active)) > states:
-        strikes += 1
-    else:
-        strikes = 0
-    if strikes > 3:
-        simmgr.move(from_stash="active", to_stash="deadend")
-        raise StateExplosion
-    states = len(simmgr.active)
     return simmgr
 
 def count_classes(s, counts):
@@ -123,62 +110,21 @@ def count_classes(s, counts):
             counts["Set"] = 0
         counts["Set"] += s.count("Set")
 
-def process(oid, opts):
-    """
-     This function will accept an oid and give back a dictionary
-    which contains information gotten from angr regarding the constraints
-    angr constructed upon running its symbolic execution.
-
-    The return is a count of each type of constraint that angr returned,
-    such as bitvectors, strings, etc. and the constraints themselves both
-    in claripy format and z3, where the z3 output is put into a Z3 solver
-    and the sexpr() is printed.
-    """
-    global states
-    global strikes
+def _process_angr_proj(f_name,parent_timeout,output_dict,queue):
     global start_time
     global timeout
-    if "timeout" in opts:
-        timeout = int(opts["timeout"])
-    #this function could be better. currently turns classes into strings
-    #which is then roughly scanned for an ast type. but could be more
-    #fine grain
-    
-    output_dict = {}
-    data = api.get_field(api.source(oid), oid, "data", {}) #get file data
-    f_name = api.get_field("file_meta", oid, "names").pop()
-    f_name = api.tmp_file(f_name, data) #make temp file for anger project
-    #angr_proj = init_angr_project(f_name, header) #angr project seemingly not working right
-    #logger stuff from init_angr_project() that seems useful
-    cle_logger = logging.getLogger("cle")
-    cle_logger.setLevel(50)
-    angr_logger = logging.getLogger("angr")
-    angr_logger.setLevel(50)
-    claripy_logger = logging.getLogger("claripy")
-    claripy_logger.setLevel(50)
-    pyvex_logger = logging.getLogger("pyvex.lifting.libvex")
-    pyvex_logger.setLevel(50)
-    pyvex_logger = logging.getLogger("pyvex.lifting.util")
-    pyvex_logger.setLevel(50)
-    identifier_logger = logging.getLogger("angr.analyses.identifier.identify")
-    identifier_logger.setLevel(50)
+    timeout = parent_timeout
+    start_time = None
     proj = angr.Project(f_name)
-
     state = proj.factory.entry_state()
-    logger.debug(f"Working on {f_name} with oid {oid}")
     simgr = proj.factory.simulation_manager(state)
     try:
         simgr.explore(step_func=k_step_func)
     except Timeout as e:
         logger.warning(f"{timeout} second angr timeout limit reached {f_name}:{oid}")
-    except StateExplosion as e:
-        logger.warning(f"angr state explosion {f_name}:{oid}")
     except Exception as e:
         logger.warning(f"angr error with {f_name}:{oid}::{e}")
         return False
-    states = 0
-    strikes = 0
-    start_time = None
     if len(simgr.deadended) == 0:
         logger.debug(f"No deadends for {f_name}:{oid}")
         return False
@@ -213,6 +159,56 @@ def process(oid, opts):
         except Exception:
             logger.debug(f"error with z3 solver for {f_name}:{oid}")
             output_dict["deadend " + str(s)]["z3"] = "None"
+    queue.put(output_dict)
+    return
+
+def process(oid, opts):
+    """
+     This function will accept an oid and give back a dictionary
+    which contains information gotten from angr regarding the constraints
+    angr constructed upon running its symbolic execution.
+
+    The return is a count of each type of constraint that angr returned,
+    such as bitvectors, strings, etc. and the constraints themselves both
+    in claripy format and z3, where the z3 output is put into a Z3 solver
+    and the sexpr() is printed.
+    """
+    #this function could be better. currently turns classes into strings
+    #which is then roughly scanned for an ast type. but could be more
+    #fine grain
+    global timeout
+    if "timeout" in opts:
+        timeout = int(opts["timeout"])
+
+    data = api.get_field(api.source(oid), oid, "data", {}) #get file data
+    f_name = api.get_field("file_meta", oid, "names").pop()
+    f_name = api.tmp_file(f_name, data) #make temp file for angr project
+    #angr_proj = init_angr_project(f_name, header) #angr project seemingly not working right
+    #logger stuff from init_angr_project() that seems useful
+    cle_logger = logging.getLogger("cle")
+    cle_logger.setLevel(50)
+    angr_logger = logging.getLogger("angr")
+    angr_logger.setLevel(50)
+    claripy_logger = logging.getLogger("claripy")
+    claripy_logger.setLevel(50)
+    pyvex_logger = logging.getLogger("pyvex.lifting.libvex")
+    pyvex_logger.setLevel(50)
+    pyvex_logger = logging.getLogger("pyvex.lifting.util")
+    pyvex_logger.setLevel(50)
+    identifier_logger = logging.getLogger("angr.analyses.identifier.identify")
+    identifier_logger.setLevel(50)
+    output_dict = {}
+    #start another process and see if it don't crash
+    try:
+        logger.debug(f"Working on {f_name} with oid {oid}")
+        q = Queue()
+        new_interpreter = Process(target=_process_angr_proj,args=(f_name,timeout,output_dict,q))
+        new_interpreter.start()
+        output_dict = q.get(timeout=timeout*2)
+    except Exception as e:
+        logger.error(f"Pool process error with {oid}::{e}")
+        return False
+
     logger.debug(f"Finished with {f_name} with oid {oid}, beginning counting...")
     counts = {}
     for deadend in output_dict: #iterate through each deadend state
