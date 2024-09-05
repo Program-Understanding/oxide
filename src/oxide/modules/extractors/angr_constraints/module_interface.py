@@ -165,18 +165,16 @@ def process(oid, opts):
     proj = angr.Project(f_name)
 
     state = proj.factory.entry_state()
-    state.options |= {angr.sim_options.CONSTRAINT_TRACKING_IN_SOLVER}
-    state.options -= {angr.sim_options.COMPOSITE_SOLVER}
     logger.debug(f"Working on {f_name} with oid {oid}")
     simgr = proj.factory.simulation_manager(state)
     try:
         simgr.explore(step_func=k_step_func)
     except Timeout as e:
-        logger.warn(f"{timeout} second angr timeout limit reached {f_name}:{oid}")
+        logger.warning(f"{timeout} second angr timeout limit reached {f_name}:{oid}")
     except StateExplosion as e:
-        logger.warn(f"angr state explosion {f_name}:{oid}")
+        logger.warning(f"angr state explosion {f_name}:{oid}")
     except Exception as e:
-        logger.warn(f"angr error with {f_name}:{oid}::{e}")
+        logger.warning(f"angr error with {f_name}:{oid}::{e}")
         return False
     states = 0
     strikes = 0
