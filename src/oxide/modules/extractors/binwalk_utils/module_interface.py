@@ -35,6 +35,7 @@ from typing import Dict, Any
 from oxide.core import api
 import binwalk as bwalk
 from pathlib import *
+from unblob import unblob
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
@@ -48,12 +49,13 @@ def documentation() -> Dict[str, Any]:
 def process(oid:str, opts:dict) -> bool:
     logger.debug("process()")
     results = {}
-    paths = api.get_field("file_meta", oid, "original_paths")
-    file_path = Path(next(iter(paths)))
-    print(str(file_path))
+    data = api.get_field(api.source(oid), oid, "data", {}) 
+    file_name = api.get_field("file_meta", oid, "names").pop()
+    f_name = api.tmp_file(file_name, data) 
+    # print(str(file_path))
 
     scan_results = {}
-    scan_results["signature"], scan_results["entropy"]= bwalk.scan(str(file_path),signature=True, entropy=True,  do_plot=False, quiet=True)
+    scan_results["signature"], scan_results["entropy"]= bwalk.scan(f_name,signature=True, entropy=True, do_plot=False, quiet=True)
     for module in scan_results["signature"].results:
         pass
     results["signature"] = {module.offset: module.description for module in scan_results["signature"].results}
