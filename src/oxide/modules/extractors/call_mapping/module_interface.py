@@ -6,7 +6,7 @@ import logging
 
 from typing import Dict, Any
 
-from core import api
+from oxide.core import api
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
