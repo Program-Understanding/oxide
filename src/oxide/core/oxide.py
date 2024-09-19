@@ -22,9 +22,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+
 import os
 import sys
-import imp
+import importlib.util
 import hashlib
 import logging
 
@@ -603,35 +604,22 @@ def initialize_all_modules() -> None:
     # ugly hack to make source module lookup faster, places collections and files first in the list
     modules_available['source'].sort()
 
-
 def initialize_module(mod_name: str, mod_dir: str) -> bool:
     global initialized_modules
-    global DEBUG
-    # Tweak our sys.modules to import modules from another branch directory
-    # TODO:: replace with importlib as imp will be deprecated in future release
-
-    # DELTEME:
-    if DEBUG:
-        if mod_name in ["emu_angr_disasm", "bap_disasm", "angr_function_id", "fst_angr_disasm"]:
-            return False
-        f, filename, description = imp.find_module(mod_name, [mod_dir])
-        mod = imp.load_module(mod_name, f, filename, description)
-
-        # Register the module in initialized_modules
-        f, filename, description = imp.find_module("module_interface", [filename])
-        submod = imp.load_module(mod_name, f, filename, description)
-        submod.api = api
-        initialized_modules[mod_name] = submod
-    else:
-        pass
 
     try:
-        f, filename, description = imp.find_module(mod_name, [mod_dir])
-        mod = imp.load_module(mod_name, f, filename, description)
+        module_path = os.path.join(mod_dir, mod_name)
+        init_path = os.path.join(module_path, "__init__.py")
+        
+        spec = importlib.util.spec_from_file_location(mod_name, init_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        
+        interface_path = os.path.join(module_path, "module_interface.py")
+        sub_spec = importlib.util.spec_from_file_location(mod_name, interface_path)
+        submod = importlib.util.module_from_spec(sub_spec)
+        sub_spec.loader.exec_module(submod)
 
-        # Register the module in initialized_modules
-        f, filename, description = imp.find_module("module_interface", [filename])
-        submod = imp.load_module(mod_name, f, filename, description)
         submod.api = api
         initialized_modules[mod_name] = submod
     except TypeError as err:
