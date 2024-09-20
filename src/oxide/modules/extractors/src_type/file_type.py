@@ -121,7 +121,7 @@ def isZIP(stream: bytes) -> bool:
 
 def isXZ(stream: bytes) -> bool:
     print(stream[:4])
-    return stream[:4] == b"\de\ca"
+    return stream[:4] == b"\xde\xca"
 
 def isCompress(stream: bytes) -> bool:
     return stream[:2] == b"\x1f\x9d"
