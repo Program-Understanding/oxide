@@ -109,6 +109,10 @@ pip3 install
 * graphviz
 * pydot
 * matplotlib
+* scipy
+* py-tlsh
+* pyahocorasick
+* opencv-python
 
 If you are using **MacOS**, you will need to install GNU objdump.
 With Brew, `brew install binutils` and symlink `gobjdump` to `/usr/local/bin/gobjdump`
