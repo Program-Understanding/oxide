@@ -268,5 +268,5 @@ def results(oid_list, opts):
 
             #get output from Nathan's acfg module
             results[oid][fun]["acfg"] = acfg_out[oid][function_start]
-        #api.store(NAME,oid,results,opts)
+        api.store(NAME,oid,results,opts)
     return results
