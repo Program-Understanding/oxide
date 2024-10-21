@@ -156,8 +156,6 @@ def results(oid_list, opts):
             #set the timeout option for our step function
             timeout = opts['timeout']
             #find out how long it'll take angr to symbolically execute this
-            #create temp file to work on
-            data = api.get_field(api.source(oid), oid, "data", {})
             #make an angr project and get the CFG
             proj = angr.Project(f_name,load_options={"auto_load_libs":False})
             #silence the logger
