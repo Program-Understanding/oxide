@@ -7,6 +7,8 @@ class Timeout(Exception):
 
 from core import api
 from constraints_helper import count_classes
+import time
+import logging
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -52,8 +54,6 @@ def process(oid, opts):
     #fine grain
     global timeout
     global start_time
-    import time
-    import logging
     import angr
     import claripy
     import z3
