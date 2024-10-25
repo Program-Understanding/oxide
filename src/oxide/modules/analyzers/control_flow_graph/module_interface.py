@@ -34,7 +34,9 @@ from oxide.core import api
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra_disasm"}}
+opts_doc = {"disassembler": {"type": str, "mangle": False, "default": "ghidra_disasm"},
+            "order_by_node": {"type": bool, "mangle": False, "default": False}
+            }
 
 
 def documentation() -> Dict[str, Any]:
@@ -46,25 +48,29 @@ def generate_cfg(oid: str, opts: dict):
         logger.error("Failed to extract disassembly")
         return None
     
-    instructions = api.get_field("ghidra_disasm", oid, "instructions")
     original_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
 
     cfg = {
         "nodes": [],
         "edges": []
     }
-
+    if opts["order_by_node"]:
+        cfg["nodes"] = {}
     node_ids = set()
 
     # Add nodes to cfg
     for block_addr, block_info in original_blocks.items():
-        block_node = {
-            "id": block_addr,
-            "instructions": block_info["members"]
-        }
-        cfg["nodes"].append(block_node)
+        if opts["order_by_node"]:
+            if not block_addr in cfg["nodes"]:
+                cfg["nodes"][block_addr] = block_info["members"]
+        else:
+            block_node = {
+                "id": block_addr,
+                "instructions": block_info["members"]
+            }
+            cfg["nodes"].append(block_node)
         node_ids.add(block_addr)
-
+            
     # Add edges to cfg
     for block_addr, block_info in original_blocks.items():
         for dest in block_info["dests"]:
@@ -75,12 +81,16 @@ def generate_cfg(oid: str, opts: dict):
             cfg["edges"].append(edge)
             if dest not in node_ids:
                 # Add placeholder node for missing destination
-                placeholder_node = {
-                    "id": dest,
-                    "instructions": [disasm_output.get(dest, "Ghidra issue")]
-                }
-                
-                cfg["nodes"].append(placeholder_node)
+                if opts["order_by_node"]:
+                    if not block_addr in cfg["nodes"]:
+                        cfg["nodes"][block_addr] = [disasm_output.get(dest, "Ghidra issue")]
+                else:
+                    placeholder_node = {
+                        "id": dest,
+                        "instructions": [disasm_output.get(dest, "Ghidra issue")]
+                    }
+
+                    cfg["nodes"].append(placeholder_node)
                 node_ids.add(dest)
 
     return cfg
@@ -97,5 +107,5 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         cfg = generate_cfg(oid, opts)
         if cfg is not None:
             results[oid] = cfg
-
+        
     return results
