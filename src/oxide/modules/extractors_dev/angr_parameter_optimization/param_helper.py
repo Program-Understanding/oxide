@@ -52,7 +52,6 @@ def set_simgr_techniques(explor, simgr):
     import angr
     supported_options = ["dfs","loops","unique"]
     simgr.use_technique(angr.exploration_techniques.DFS())
-    simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=2048))
     if explor:
         for opt in explor.split(","):
             match opt:
