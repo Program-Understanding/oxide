@@ -2,8 +2,9 @@ import sys
 import logging
 import time
 import json
+import psutil
 
-logger = logging.getLogger("test_parameterizing_angr")
+logger = logging.getLogger("angr_parameter_optimization")
 
 start_time = float()
 
@@ -81,8 +82,8 @@ def process(path,tactic,angr_solver):
         entry_state = proj.factory.entry_state(add_options=angr.options.simplification)
         simgr = proj.factory.simgr(entry_state)
         #make sure we don't use all the RAM and crash the interpreter
-        #leaving 2GB free of RAM
-        simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=2048))
+        #leaving 25% of the RAM free
+        simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=int(psutil.virtual_memory().total*0.25)))
         start_time = time.time()
         while simgr.active:
             simgr.step()
