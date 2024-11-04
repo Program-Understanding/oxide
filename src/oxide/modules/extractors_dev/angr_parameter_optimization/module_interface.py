@@ -39,18 +39,38 @@ def process(oid, opts):
     data = api.get_field(api.source(oid), oid, "data", {}) #get file data
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data) #make temp file for angr project
-    for run in range(num_runs):
-        tactic_cmd = f"python separate_extraction_script.py {f_name} {timeout} {tactic}"
-        angr_cmd = f"python separate_extraction_script.py {f_name} {timeout}"
-        with open(os.devnull, "w") as null:
-            tactic_output = subprocess.check_output(tactic_cmd, universal_newlines=True,stderr=null)
-            angr_output = subprocess.check_output(angr_cmd, universal_newlines=True,stderr=null)
-    try:
-        if "error" in output.lower():
-            return False
-        else:
-            output = json.loads(output)
-    except Exception as e:
-        logger.error(f"Error occured when handling output using tactics: {e}")
+    file_full_path = os.path.join(api.scratch_dir, f_name)
+    if not os.path.isfile(file_full_path):
+        logger.error(f"Scratch file not found: {file_full_path}")
         return False
+    
+    script_name = "angr_param_optimization.py"
+    script_full_path = os.path.join(api.scripts_dir, script_name)
+    if not os.path.isfile(script_full_path):
+        logger.error(f"Script not found: {script_full_path}")
+        return False
+    
+    tactic_cmd = f"python3 {script_full_path} {file_full_path} {timeout} {tactic}"
+    angr_cmd = f"python3 {script_full_path} {file_full_path} {timeout}"
+    
+    for run in range(num_runs):
+        with open(os.devnull, "w") as null:
+            try:
+                tactic_output = subprocess.check_output(tactic_cmd, universal_newlines=True, shell=True, stderr=null)
+                angr_output = subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null)
+            except subprocess.CalledProcessError as e:
+                logger.warning(e.output)
+
+        if "error" in tactic_output.lower() or "error" in angr_output.lower():
+            return False
+        
+        try:
+            tactics_output = json.loads(tactics_output)
+            angr_output = json.loads(angr_output)
+        except Exception as e:
+            logger.error(f"Error occurred  when loading json: {e}")
+            return False
+        
     return True
+
+
