@@ -68,10 +68,7 @@ def process(path,tactic,angr_solver):
     results = {}
     if angr_solver:
         import angr
-        # this will have to be run twice...
-        #set proper timeout
         my_tactic = tactic
-        timeout = 60
         #create the angr project for the oid
         proj = angr.Project(path,load_options={"auto_load_libs":False})
         angr_logger = logging.getLogger("angr")
@@ -85,8 +82,16 @@ def process(path,tactic,angr_solver):
         #leaving 25% of the RAM free
         simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=int(psutil.virtual_memory().total*0.25)))
         start_time = time.time()
-        while simgr.active:
-            simgr.step()
+        #loop over all stashes, trying to put them back into the active stash
+        #from memory saver if we can once we've stepped all active states
+        while time.time() - start_time < timeout:
+            while simgr.active:
+                simgr.step()
+                if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
+                    for state in simgr.stashes["lowmem"]:
+                        #trim the state history to lower its footprint
+                        state.history.trim()
+                    simgr.move(from_stash="lowmem", to_stash="active")
         ending_time = time.time()
         #initialize results output dictionary
         results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time}
@@ -109,10 +114,18 @@ def process(path,tactic,angr_solver):
         entry_state = proj.factory.entry_state(add_options=angr.options.simplification)
         simgr = proj.factory.simgr(entry_state)
         #very important: make sure angr doesn't use all RAM and crash the system
-        simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=2048))
+        simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=int(psutil.virtual_memory().total*0.25)))
         start_time = time.time()
-        while simgr.active:
-            simgr.step()
+        #loop over all stashes, trying to put them back into the active stash
+        #from memory saver if we can once we've stepped all active states
+        while time.time() - start_time < timeout:
+            while simgr.active:
+                simgr.step()
+                if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
+                    for state in simgr.stashes["lowmem"]:
+                        #trim the state history to lower its footprint
+                        state.history.trim()
+                    simgr.move(from_stash="lowmem", to_stash="active")
         ending_time = time.time()
         results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time}
     #output the json of the results
