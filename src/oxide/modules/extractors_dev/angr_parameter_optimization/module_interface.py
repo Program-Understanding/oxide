@@ -75,6 +75,8 @@ def process(oid, opts):
         results[tactic] = {'seconds': []}
     results['with no tactic'] = {'seconds':[]}
     angr_cmd = f"python3 {script_full_path} {file_full_path} {timeout}"
+    #log out how many runs, timeout
+    logger.debug(f"Timeout: {timeout}, runs: {num_runs}")
     #run multiple times to get some valid output and ensure angr isn't doing well as a one-off try
     for run in range(num_runs):
         with open(os.devnull, "w") as null:

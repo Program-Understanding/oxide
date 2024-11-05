@@ -85,7 +85,7 @@ def process(path,tactic,angr_solver):
         #loop over all stashes, trying to put them back into the active stash
         #from memory saver if we can once we've stepped all active states
         timed_out = False
-        while time.time() - start_time < timeout:
+        while time.time() - start_time < timeout and (simgr.active or ("lowmem" in simgr.stashes and simgr.stashes["lowmem"])):
             if simgr.active:
                 simgr.step()
                 if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
@@ -97,7 +97,7 @@ def process(path,tactic,angr_solver):
         if ending_time - start_time > timeout:
             timed_out = True
         #initialize results output dictionary
-        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'timed out' : timed_out}
+        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'reached max seconds' : timed_out}
     else:
         import angr
         #import backend_z3 so i can use my custom solver
@@ -122,7 +122,7 @@ def process(path,tactic,angr_solver):
         #loop over all stashes, trying to put them back into the active stash
         #from memory saver if we can once we've stepped all active states
         timed_out = False
-        while time.time() - start_time < timeout:
+        while time.time() - start_time < timeout and (simgr.active or ("lowmem" in simgr.stashes and simgr.stashes["lowmem"])):
             if simgr.active:
                 simgr.step()
                 if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
@@ -133,7 +133,7 @@ def process(path,tactic,angr_solver):
         ending_time = time.time()
         if ending_time - start_time > timeout:
             timed_out = True
-        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'timed out': timed_out}
+        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'reached max seconds': timed_out}
     #output the json of the results
     print(json.dumps(results))
 
