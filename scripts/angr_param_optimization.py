@@ -84,8 +84,9 @@ def process(path,tactic,angr_solver):
         start_time = time.time()
         #loop over all stashes, trying to put them back into the active stash
         #from memory saver if we can once we've stepped all active states
+        timed_out = False
         while time.time() - start_time < timeout:
-            while simgr.active:
+            if simgr.active:
                 simgr.step()
                 if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
                     for state in simgr.stashes["lowmem"]:
@@ -93,8 +94,10 @@ def process(path,tactic,angr_solver):
                         state.history.trim()
                     simgr.move(from_stash="lowmem", to_stash="active")
         ending_time = time.time()
+        if ending_time - start_time > timeout:
+            timed_out = True
         #initialize results output dictionary
-        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time}
+        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'timed out' : timed_out}
     else:
         import angr
         #import backend_z3 so i can use my custom solver
@@ -118,8 +121,9 @@ def process(path,tactic,angr_solver):
         start_time = time.time()
         #loop over all stashes, trying to put them back into the active stash
         #from memory saver if we can once we've stepped all active states
+        timed_out = False
         while time.time() - start_time < timeout:
-            while simgr.active:
+            if simgr.active:
                 simgr.step()
                 if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
                     for state in simgr.stashes["lowmem"]:
@@ -127,7 +131,9 @@ def process(path,tactic,angr_solver):
                         state.history.trim()
                     simgr.move(from_stash="lowmem", to_stash="active")
         ending_time = time.time()
-        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time}
+        if ending_time - start_time > timeout:
+            timed_out = True
+        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'timed out': timed_out}
     #output the json of the results
     print(json.dumps(results))
 
@@ -136,6 +142,8 @@ def process(path,tactic,angr_solver):
 #whether we're using the angr solver (redundant with argv2 but...)
 #and the basename of the file
 path = sys.argv[1]
+#timeout is saved as a global variable and is thus not a
+#direct argument to any other function
 timeout = float(sys.argv[2])
 try:
     my_tactic = sys.argv[3]

@@ -14,7 +14,7 @@ logger = logging.getLogger(NAME)
 
 from core import api
 
-opts_doc={"timeout": {"type": int, "mangle": True, "default": 120, "description": "Time in seconds for angr before it times out, default is 5 minutes"},
+opts_doc={"timeout": {"type": int, "mangle": True, "default": 600, "description": "Time in seconds for angr before it times out, default is 5 minutes"},
           "exploration": {"type": str, "mangle": True, "description": "Choose a different exploration technique. Should be from angr.exploration_techniques, such as 'angr.exploration_techniques.dfs'","default":""},
           "tactics": {"type": str, "mangle": True, "description": "Comma separated list of tactics to use as a z3.Solver() in claripy", "default": ""},
           "runs": {"type": int, "mangle": True, "description": "How many runs to do of the OID","default": 5}
