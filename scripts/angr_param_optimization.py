@@ -1,3 +1,4 @@
+AUTHOR="kevan"
 import sys
 import logging
 import time
@@ -101,7 +102,12 @@ def process(path,angr_solver):
     if ending_time - start_time > timeout:
         timed_out = True
     #initialize results output dictionary
-    results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'reached max seconds' : timed_out}
+    num_states = sum([len(simgr.stashes[stash]) for stash in simgr.stashes])
+    results = {'states': num_states, 'seconds': ending_time-start_time, 'reached max seconds' : timed_out}
+    #trying to maybe capture the solver's constraints if the results just have one state
+    if num_states == 1:
+        constraints = [state.solver.constraints for state in [simgr.stashes[stash] for stash in simgr.stashes]][0]
+        results['constraints'] = str(constraints)
     print(json.dumps(results))
 
 #main functionality,
