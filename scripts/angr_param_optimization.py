@@ -56,7 +56,7 @@ def my_solver(self, timeout=None, max_memory=None):
         s.set("max_memory", max_memory)
     return s
 
-def process(path,tactic,angr_solver):
+def process(path,angr_solver):
     """
     This module takes in various parameters as options to
     pass to angr or Z3 in order to try and optimize them for
@@ -66,75 +66,42 @@ def process(path,tactic,angr_solver):
     global timeout
     global my_tactic
     results = {}
-    if angr_solver:
-        import angr
-        my_tactic = tactic
-        #create the angr project for the oid
-        proj = angr.Project(path,load_options={"auto_load_libs":False})
-        angr_logger = logging.getLogger("angr")
-        angr_logger.setLevel(50)
-        #make the cfg using cfgfast
-        proj.analyses.CFGFast()
-        #start and initialize the execution at the entry state of the program
-        entry_state = proj.factory.entry_state(add_options=angr.options.simplification)
-        simgr = proj.factory.simgr(entry_state)
-        #make sure we don't use all the RAM and crash the interpreter
-        #leaving 25% of the RAM free
-        simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=int(psutil.virtual_memory().total*0.25)))
-        start_time = time.time()
-        #loop over all stashes, trying to put them back into the active stash
-        #from memory saver if we can once we've stepped all active states
-        timed_out = False
-        while time.time() - start_time < timeout and (simgr.active or ("lowmem" in simgr.stashes and simgr.stashes["lowmem"])):
-            if simgr.active:
-                simgr.step()
-                if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
-                    for state in simgr.stashes["lowmem"]:
-                        #trim the state history to lower its footprint
-                        state.history.trim()
-                    simgr.move(from_stash="lowmem", to_stash="active")
-        ending_time = time.time()
-        if ending_time - start_time > timeout:
-            timed_out = True
-        #initialize results output dictionary
-        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'reached max seconds' : timed_out}
-    else:
-        import angr
+    
+    import angr
+    #create the angr project for the oid
+    proj = angr.Project(path,load_options={"auto_load_libs":False})
+    angr_logger = logging.getLogger("angr")
+    angr_logger.setLevel(50)
+    #make the cfg using cfgfast, (can improve code discovery)
+    proj.analyses.CFGFast()
+    #start and initialize the execution at the entry state of the program
+    entry_state = proj.factory.entry_state(add_options=angr.options.simplification)
+    simgr = proj.factory.simgr(entry_state)
+    #make sure we don't use all the RAM and crash the interpreter
+    #leaving 30% of the RAM free
+    simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=int(psutil.virtual_memory().total*0.3)))
+    if not angr_solver:
         #import backend_z3 so i can use my custom solver
         from claripy.backends import backend_z3
-        #set the parameter helper's global variables
-        my_tactic = tactic
-        #now use my custom solver!
+        #now use the solver with the input tactic
         backend_z3.BackendZ3.solver = my_solver
-        #create the angr project for the oid
-        proj = angr.Project(path,load_options={"auto_load_libs":False})
-        angr_logger = logging.getLogger("angr")
-        angr_logger.setLevel(50)
-        #make the cfg using cfgfast
-        proj.analyses.CFGFast()
-        #start and initialize the execution at the entry state of the program
-        #the added option should make angr use Z3 more for simplification
-        entry_state = proj.factory.entry_state(add_options=angr.options.simplification)
-        simgr = proj.factory.simgr(entry_state)
-        #very important: make sure angr doesn't use all RAM and crash the system
-        simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=int(psutil.virtual_memory().total*0.25)))
-        start_time = time.time()
-        #loop over all stashes, trying to put them back into the active stash
-        #from memory saver if we can once we've stepped all active states
-        timed_out = False
-        while time.time() - start_time < timeout and (simgr.active or ("lowmem" in simgr.stashes and simgr.stashes["lowmem"])):
-            if simgr.active:
-                simgr.step()
-                if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
-                    for state in simgr.stashes["lowmem"]:
-                        #trim the state history to lower its footprint
-                        state.history.trim()
-                    simgr.move(from_stash="lowmem", to_stash="active")
-        ending_time = time.time()
-        if ending_time - start_time > timeout:
-            timed_out = True
-        results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'reached max seconds': timed_out}
-    #output the json of the results
+    start_time = time.time()
+    #loop over all stashes, trying to put them back into the active stash
+    #from memory saver if we can once we've stepped all active states
+    timed_out = False
+    while time.time() - start_time < timeout and (simgr.active or ("lowmem" in simgr.stashes and simgr.stashes["lowmem"])):
+        if simgr.active:
+            simgr.step()
+        if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
+            for state in simgr.stashes["lowmem"]:
+                #trim the state history to lower its footprint
+                state.history.trim()
+            simgr.move(from_stash="lowmem", to_stash="active")
+    ending_time = time.time()
+    if ending_time - start_time > timeout:
+        timed_out = True
+    #initialize results output dictionary
+    results = {'states': sum([len(simgr.stashes[stash]) for stash in simgr.stashes]), 'seconds': ending_time-start_time, 'reached max seconds' : timed_out}
     print(json.dumps(results))
 
 #main functionality,
@@ -145,6 +112,7 @@ path = sys.argv[1]
 #timeout is saved as a global variable and is thus not a
 #direct argument to any other function
 timeout = float(sys.argv[2])
+my_tactic = ""
 try:
     my_tactic = sys.argv[3]
 except Exception:
@@ -154,7 +122,7 @@ try:
         import z3
         new_z3_tactic = z3.Tactic(my_tactic)
         del z3, new_z3_tactic
-    process(path,my_tactic,bool(my_tactic))
+    process(path,bool(my_tactic))
 except ValueError as e:
     print("VALUE ERROR :(",e)
 except Exception as e:
