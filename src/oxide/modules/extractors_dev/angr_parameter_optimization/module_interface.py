@@ -78,7 +78,7 @@ def process(oid, opts):
     results['with no tactic'] = {'seconds':[]}
     angr_cmd = f"python3 {script_full_path} {file_full_path} {timeout} {z3_timeout}"
     #log out how many runs, timeout
-    logger.debug(f"Timeout: {timeout}, runs: {num_runs}")
+    logger.info(f"Timeout: {timeout}, z3 timeout: {z3_timeout}, runs: {num_runs}")
     #run multiple times to get some valid output and ensure angr isn't doing well as a one-off try
     for run in range(num_runs):
         with open(os.devnull, "w") as null:
@@ -88,9 +88,11 @@ def process(oid, opts):
                 for tactic_cmd in tactic_cmds:
                     #using tuple: output, tactic
                     logger.debug(f'Run {run+1}: command: {tactic_cmd[0]}')
-                    tactic_output.append((json.loads(subprocess.check_output(tactic_cmd[0], universal_newlines=True, shell=True, stderr=null)),tactic_cmd[1]))
+                    sub_proc_out = subprocess.check_output(tactic_cmd[0], universal_newlines=True, shell=True, stderr=null)
+                    tactic_output.append((json.loads(sub_proc_out),tactic_cmd[1]))
                 logger.debug(f'Run {run+1}: command: {angr_cmd}')
-                angr_output = json.loads(subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null))
+                sub_proc_out = subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null)
+                angr_output = json.loads(sub_proc_out)
                 for t_o in tactic_output:
                     #using tuple: json, tactic
                     tactic_output = t_o[0]
@@ -103,7 +105,8 @@ def process(oid, opts):
                 logger.error(f"Error occured in subprocess: {e}")
                 return False
             except json.decoder.JSONDecodeError as e:
-                logger.error(f"JSON decoding error {e}")
+                logger.error(f"JSON decoding error with subprocess output {e}")
+                logger.error(f"Subprocess output: {sub_proc_out}")
                 return False
             except Exception as e:
                 logger.error(f"Exception raised: {e}")

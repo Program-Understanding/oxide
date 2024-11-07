@@ -130,10 +130,14 @@ def process(path,angr_solver,z3_timeout):
         timed_out = True
     #initialize results output dictionary
     num_states = sum([len(simgr.stashes[stash]) for stash in simgr.stashes])
-    if num_states <= 1:
-        print("Likely Z3 timeout")
-        return
     results = {'states': num_states, 'seconds': ending_time-start_time, 'reached max seconds' : timed_out}
+    if num_states <= 1:
+        #add the disassembly to the results so we can see what's up
+        disassembly = ""
+        for func in proj.kb.functions:
+            for i in proj.factory.block(func).disassembly.insns:
+                disassembly += f"{hex(i.address)} {i.mnemonic} {i.op_str}\n"
+        results['angr disasm'] = disassembly
     print(json.dumps(results))
 
 #main functionality,
