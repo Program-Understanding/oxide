@@ -15,6 +15,7 @@ logger = logging.getLogger(NAME)
 from core import api
 
 opts_doc={"timeout": {"type": int, "mangle": True, "default": 600, "description": "Time in seconds for angr before it times out, default is 5 minutes"},
+          "z3_timeout": {"type": int, "mangle": True, "default": 120,"description": "Time in seconds (later converted to ms) before Z3 returns unsat for a query"},
           "exploration": {"type": str, "mangle": True, "description": "Choose a different exploration technique. Should be from angr.exploration_techniques, such as 'angr.exploration_techniques.dfs'","default":""},
           "tactics": {"type": str, "mangle": True, "description": "Comma separated list of tactics to use as a z3.Solver() in claripy", "default": ""},
           "runs": {"type": int, "mangle": True, "description": "How many runs to do of the OID","default": 5}
@@ -39,6 +40,7 @@ def process(oid, opts):
     try:
         timeout = opts['timeout']
         tactics = opts['tactics'].split(',')
+        z3_timeout = opts['z3_timeout']
     except Exception as e:
         logger.error(f"Unable to wrangle options, error: {e}")
         return False
@@ -71,10 +73,10 @@ def process(oid, opts):
     results = {}
     for tactic in tactics:
         #appending a tuple: command, tactic
-        tactic_cmds.append((f"python3 {script_full_path} {file_full_path} {timeout} {tactic}",tactic))
+        tactic_cmds.append((f"python3 {script_full_path} {file_full_path} {timeout} {z3_timeout} {tactic}",tactic))
         results[tactic] = {'seconds': []}
     results['with no tactic'] = {'seconds':[]}
-    angr_cmd = f"python3 {script_full_path} {file_full_path} {timeout}"
+    angr_cmd = f"python3 {script_full_path} {file_full_path} {timeout} {z3_timeout}"
     #log out how many runs, timeout
     logger.debug(f"Timeout: {timeout}, runs: {num_runs}")
     #run multiple times to get some valid output and ensure angr isn't doing well as a one-off try
@@ -86,22 +88,25 @@ def process(oid, opts):
                 for tactic_cmd in tactic_cmds:
                     #using tuple: output, tactic
                     logger.debug(f'Run {run+1}: command: {tactic_cmd[0]}')
-                    tactic_output.append((subprocess.check_output(tactic_cmd[0], universal_newlines=True, shell=True, stderr=null),tactic_cmd[1]))
+                    tactic_output.append((json.loads(subprocess.check_output(tactic_cmd[0], universal_newlines=True, shell=True, stderr=null)),tactic_cmd[1]))
                 logger.debug(f'Run {run+1}: command: {angr_cmd}')
-                angr_output = subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null)
+                angr_output = json.loads(subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null))
                 for t_o in tactic_output:
                     #using tuple: json, tactic
-                    tactic_output = json.loads(t_o[0])
+                    tactic_output = t_o[0]
                     results[t_o[1]][f'run {run+1}'] = tactic_output
                     results[t_o[1]]['seconds'].append(tactic_output['seconds'])
-                angr_output = json.loads(angr_output)
+                angr_output = angr_output
                 results['with no tactic'][f'run {run+1}'] = angr_output
                 results['with no tactic']['seconds'].append(angr_output['seconds'])
             except subprocess.CalledProcessError as e:
-                logger.error(f"Error occured: {e}")
+                logger.error(f"Error occured in subprocess: {e}")
+                return False
+            except json.decoder.JSONDecodeError as e:
+                logger.error(f"JSON decoding error {e}")
                 return False
             except Exception as e:
-                logger.error(f"Error occurred  when loading json: {e}")
+                logger.error(f"Exception raised: {e}")
                 return False
     #get mean, standard deviation, t-test
     results['with no tactic']['mean seconds'] = statistics.mean(results['with no tactic']['seconds'])
