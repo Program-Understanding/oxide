@@ -23,10 +23,11 @@ THE SOFTWARE.
 """
 
 import logging
+import multiprocessing
 import traceback
 from multiprocessing import Pool, Queue, Manager
 from multiprocessing.managers import BaseManager
-
+import concurrent.futures
 from oxide.core import oxide, config
 from oxide.core.progress import Progress
 from oxide.core.client import get_proxy
@@ -37,12 +38,11 @@ from typing import List, Callable, Tuple, Any
 NAME = "multiproc"
 logger = logging.getLogger(NAME)
 
-class MyManager(BaseManager):
-    pass
+BaseManager.register('Progress', Progress)
+BaseManager.register('Queue', Queue)
 
-MyManager.register('Progress', Progress)
-MyManager.register('Queue', Queue)
-
+#TODO: Switch from multiprocessing.blahblahblah to concurrent.futures
+#because we're getting some kind of pickling error if we don't
 
 max_processes = config.multiproc_max
 results_q = Queue()
@@ -68,9 +68,8 @@ def process_map(func: Callable, mod_name: str, oid_list: List[str], opts: dict =
 
     nprocs = min(num_oids, max_processes)
     with Pool(processes=nprocs) as pool:
-        manager = MyManager()
+        manager = BaseManager()
         manager.start()
-        p = manager.Progress(num_oids)
         try:
             pool.map(_process_map, [(func, mod_name, i, opts, p) for i in oid_list])
         except:
@@ -87,17 +86,14 @@ def multi_map(func: Callable, oid_list: List[str], opts: dict, blocking: bool = 
     if num_oids == 0:
         return True
     nprocs = min(num_oids, max_processes)
-    with Pool(processes=nprocs) as pool:
-        manager = MyManager()
-        manager.start()
-        p = manager.Progress(num_oids)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=nprocs) as executor:
         try:
-            pool.map(_map_wrapper, [(func, i, opts, p) for i in oid_list])
+            executor.map(func, [(i, opts) for i in oid_list])
         except:
             print('-'*60)
             traceback.print_exc()
+            print("Kindly let Kevan know his changes to multiprocessing didn't work...")
             print('-'*60)
-        manager.shutdown()
     return True
 
 
@@ -204,20 +200,6 @@ def _multi_map_process_wrapper(remote_job: Tuple[Tuple[str, int], str, str, dict
         print('-'*60)
         traceback.print_exc()
         print('-'*60)
-
-
-def _map_wrapper(job: Tuple[Callable, str, dict, Progress]) -> None:
-    """ Called through multi_map """
-    (func, i, opts, p) = job
-    try:
-        config.multiproc_on = False
-        func(i, opts)
-        p.tick()
-    except:
-        print('-'*60)
-        traceback.print_exc()
-        print('-'*60)
-
 
 def multi_mapreduce(map_func, reduce_func, oid_list, opts, jobid):
     try:
