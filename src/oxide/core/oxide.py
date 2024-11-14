@@ -521,20 +521,20 @@ def import_files(files_list: List[str], dir_override: Optional[str] = None) -> T
         oids = []
         new_file_count = 0
         
-        if config.multiproc_on:
-            files, _ = mp.multi_map_callable(import_file, files_list, {}, False)
-            for oid, new_file in files:
+#        if config.multiproc_on:
+#            files, _ = mp.multi_map_callable(import_file, files_list, {}, False)
+#            for oid, new_file in files:
+#                oids.append(oid)
+#                new_file_count += 1 if new_file else 0
+#        else:
+        p = progress.Progress(len(files_list))
+        for file_location in files_list:
+            oid, new_file = import_file(file_location, dir_override=dir_override)
+            p.tick()
+            if oid:
                 oids.append(oid)
-                new_file_count += 1 if new_file else 0
-        else:
-            p = progress.Progress(len(files_list))
-            for file_location in files_list:
-                oid, new_file = import_file(file_location, dir_override=dir_override)
-                p.tick()
-                if oid:
-                    oids.append(oid)
-                    if new_file:
-                        new_file_count += 1
+                if new_file:
+                    new_file_count += 1
     except:
         datastore.cleanup()
         raise

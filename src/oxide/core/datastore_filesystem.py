@@ -266,8 +266,11 @@ def acquire_file_lock(modname: str, oid: str, opts: dict, write: bool = False,
                         break
 
                     # For reading, get the next read lock
-                    lockfile = lockfile + "." + \
+                    try:
+                        lockfile = lockfile + "." + \
                         str(max([int(s.rsplit('.',1)[-1]) for s in other_read_locks])+1)
+                    except ValueError:
+                        lockid, lockfile = get_lockfilename(modname, oid, opts)
 
                 # No one else is reading or writing
                 else:

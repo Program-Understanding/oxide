@@ -23,10 +23,10 @@ THE SOFTWARE.
 """
 
 import logging
-import multiprocessing
+import multithreading as multiprocessing
 import traceback
-from multiprocessing import Pool, Queue, Manager
-from multiprocessing.managers import BaseManager
+from multithreading import Pool, Queue, Manager
+from multithreading.managers import BaseManager
 import concurrent.futures
 from oxide.core import oxide, config
 from oxide.core.progress import Progress
@@ -110,7 +110,7 @@ def multi_map_callable(func: Callable, oid_list: List[str], opts: dict, blocking
         if num_oids == 0:
             return [], 0
         
-        with MyManager() as manager:
+        with BaseManager() as manager:
             # quit()
     
             p = manager.Progress(num_oids)
@@ -122,7 +122,7 @@ def multi_map_callable(func: Callable, oid_list: List[str], opts: dict, blocking
             with Pool(processes=nprocs) as pool:
                 # print('qsize before', results_q.qsize())
                 
-                pool.map(_map_reduce_wrapper, [(func, i, opts, p, results_q) for i in oid_list])
+                pool.map(_map_reduce_wrapper, [(func, i, opts, p) for i in oid_list])
                 pool.close()
                 pool.join()
             results = []
@@ -208,7 +208,7 @@ def multi_mapreduce(map_func, reduce_func, oid_list, opts, jobid):
             return None
         nprocs = min(num_oids, max_processes)
         with Pool(processes=nprocs) as pool:
-            manager = MyManager()
+            manager = BaseManager()
             manager.start()
             p = manager.Progress(num_oids)
             pool.map(_map_reduce_wrapper, [(map_func, i, opts, p) for i in oid_list])
