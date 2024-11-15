@@ -616,7 +616,7 @@ def initialize_module(mod_name: str, mod_dir: str) -> bool:
         spec.loader.exec_module(mod)
         
         interface_path = os.path.join(module_path, "module_interface.py")
-        sub_spec = importlib.util.spec_from_file_location(mod_name, interface_path)
+        sub_spec = importlib.util.spec_from_file_location(mod_name, os.path.abspath(interface_path))
         submod = importlib.util.module_from_spec(sub_spec)
         sub_spec.loader.exec_module(submod)
 
