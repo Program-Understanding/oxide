@@ -30,7 +30,7 @@ def calculate_entropy(data):
         return 0
     counts = np.unique(list(data), return_counts=True)[1]
     ent = entropy(counts, base=2)
-    max_ent = np.log2(len(data))
+    max_ent = np.log2(256)
     normalized_ent = ent / max_ent if max_ent > 0 else 0
     return normalized_ent
 
