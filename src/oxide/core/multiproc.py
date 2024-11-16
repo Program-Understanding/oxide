@@ -235,7 +235,7 @@ def multi_mapreduce(map_func, reduce_func, oid_list, opts, jobid):
             return None
         nprocs = min(num_oids, max_processes)
         with Pool(processes=nprocs) as pool:
-            manager = BaseManager()
+            manager = MyManager()
             manager.start()
             p = manager.Progress(num_oids)
             pool.map(_map_reduce_wrapper, [(map_func, i, opts, p) for i in oid_list])
