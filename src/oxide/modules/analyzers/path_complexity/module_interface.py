@@ -1,5 +1,5 @@
 AUTHOR="KEVAN"
-DESC="Analyze path complexity of a binary to know if we gonna have path explosion"
+DESC="Analyze big O time complexity of a binary, useful to see if we may have path explosion"
 NAME="path_complexity"
 
 import logging
@@ -149,20 +149,7 @@ def results(oid_list, opts):
         data = api.get_field(api.source(oid), oid, "data", {})
         f_name = api.get_field("file_meta", oid, "names").pop()
         f_name = api.tmp_file(f_name, data)
-        logger.debug(f_name)
-        #quickly check if we should set up an angr project
-        #for the file
-        if opts['use_angr']:
-            #set the timeout option for our step function
-            timeout = opts['timeout']
-            #find out how long it'll take angr to symbolically execute this
-            #make an angr project and get the CFG
-            proj = angr.Project(f_name,load_options={"auto_load_libs":False})
-            #silence the logger
-            angr_logger = logging.getLogger("angr")
-            angr_logger.setLevel(50)
-            cfg = proj.analyses.CFGFast()
-        
+        logger.debug(f_name)        
         #use ghidra to get the adjacency matrix
         original_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
         funs = api.retrieve("function_extract",oid)
@@ -229,6 +216,16 @@ def results(oid_list, opts):
                 results[oid][fun]['ghidra disasm'] = ghidra_disasm
             #now we process angr
             if opts['use_angr']:
+                logger.warning("TODO: The angr parts of this module should be brought out into a separate script to stop angr from eating all RAM. Until then, the user should consider closely monitoring RAM and restarting Oxide when RAM is fully used...")
+                #set the timeout option for our step function
+                timeout = opts['timeout']
+                #find out how long it'll take angr to symbolically execute this
+                #make an angr project and get the CFG
+                proj = angr.Project(f_name,load_options={"auto_load_libs":False})
+                #silence the logger
+                angr_logger = logging.getLogger("angr")
+                angr_logger.setLevel(50)
+                cfg = proj.analyses.CFGFast()
                 #simply walk through all possible code paths
                 fun_addr = proj.loader.min_addr + funs[fun]['start']
                 state = proj.factory.blank_state(addr=fun_addr)
@@ -247,7 +244,7 @@ def results(oid_list, opts):
                             angr_func_blocks[block.addr-proj.loader.min_addr]=[]
                             for instruction in block.disassembly.insns:
                                 angr_func_blocks[block.addr-proj.loader.min_addr].append((instruction.address-proj.loader.min_addr, f"{instruction.mnemonic} {instruction.op_str}"))
-                    results[oid][fun]['angr disasm'] = angr_func_blocks
+                        results[oid][fun]['angr disasm'] = angr_func_blocks
                     #include the cyclomatic complexity from angr
                     results[oid][fun]["angr's reported cyclomatic complexity"] = cfg.kb.functions[fun_addr].cyclomatic_complexity
                     #build an adjacency matrix using angr
@@ -263,7 +260,6 @@ def results(oid_list, opts):
                     angr_adj_matrix[-1,-1] = 1
                     results[oid][fun]["angr's adj matrix"] = angr_adj_matrix
                     results[oid][fun]["apc with angr's adj matrix"] = calc_func_apc(angr_adj_matrix,n)
-
             #get output from Nathan's acfg module
             results[oid][fun]["acfg"] = acfg_out[oid][function_start]
         api.store(NAME,oid,results,opts)
