@@ -138,49 +138,13 @@ def generate_cfg(oid: str, opts: dict):
             cfg["block_calls"][dest]["called_by"].append(block_addr)
 
     # Extract functions, basic blocks, and disassembly
-    f_dict = {}
     names = api.get_field("file_meta", oid, "names")
     logger.debug("process(%s)", names)
 
-    funs = api.get_field("ghidra_disasm", oid, "functions")
+    funs = api.retrieve("function_extract", oid)
     if not funs:
         return False
-    bbs = api.get_field("ghidra_disasm", oid, "original_blocks")
-    insns = api.get_field("disassembly", oid, oid)
-    if insns and "instructions" in insns:
-        insns = insns["instructions"]
-    else:
-        return False
-
-    range = sorted(insns.keys())
-    logger.info("Instruction range: %d - %d", range[0], range[-1])
-
-    extracts = {}
-    for f in funs:
-        if f == 'meta':
-            continue
-        fname = funs[f]['name']
-        extracts[fname] = funs[f]
-        blocks = funs[f]['blocks']
-        extracts[fname]['instructions'] = {}
-        for b in blocks:
-            if b not in bbs:
-                continue
-            for insn_offset, insn_text in bbs[b]['members']:
-                if insn_offset not in insns.keys():
-                    logger.error("Basic Block member not found: %s", insn_offset)
-                    continue
-                extracts[fname]['instructions'][insn_offset] = insn_text
-            # Associate block with function
-            if b in cfg["block_calls"]:
-                cfg["block_calls"][b]["function"] = fname
-        range = sorted(extracts[fname]['instructions'].keys())
-        if range:
-            extracts[fname]["start"] = range[0]
-        else:
-            extracts[fname]["start"] = None
-
-    cfg["functions"] = extracts
+    cfg["functions"] = funs
 
     return cfg
 
