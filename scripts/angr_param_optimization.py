@@ -1,13 +1,21 @@
 AUTHOR="kevan"
+NAME="angr_parameter_optimization"
 import sys
 import logging
 import time
-import json
 import psutil
+import pickle
 
-logger = logging.getLogger("angr_parameter_optimization")
+
+#test string
+#debugpy :cwd "/home/kevan/oxide_dev/oxide/" :program "scripts/angr_param_optimization.py" :args ["/usr/bin/hostid" "123" "1500" "120" "qfidl"]
+
+#getting around issue of big ol ints
+sys.set_int_max_str_digits(0)
+
+logger = logging.getLogger(NAME)
 logging.basicConfig(level=logging.ERROR)
-
+from oxide.core import oxide as oxide
 #global variables passed between functions
 #could possibly be made into arguments to process and then
 #states or the simgr could probably hold these as attributes but...
@@ -28,6 +36,40 @@ def k_step_func(simmgr):
     if psutil.virtual_memory().available <= minimum_memory:
         simmgr.move(from_stash="active", to_stash="lowmem")
     return simmgr
+
+def function_call_breakpoint(state):
+    #called when we get to a function call
+    global results
+    global start_time
+    state_history_addrs = state.history.recent_bbl_addrs
+    try:
+        state_ip = state.ip.concrete_value
+    except Exception:
+        state_ip = state.ip
+    cons = state.solver.constraints
+    if not state_ip in results['calls']:
+        results['calls'][state_ip] = []
+    results['calls'][state_ip].append({"state history bb addrs": state_history_addrs,
+                                        "constraints": cons,
+                                        "seconds since start": time.time() - start_time,
+                                        "destination": state.inspect.function_address})
+
+def system_call_breakpoint(state):
+    #called when we get to a system call
+    global results
+    global start_time
+    state_history_addrs = state.history.recent_bbl_addrs
+    try:
+        state_ip = state.ip.concrete_value
+    except Exception:
+        state_ip = state.ip
+    cons = state.solver.constraints
+    if not state_ip in results['syscalls']:
+        results['syscalls'][state_ip] = []
+    results['syscalls'][state_ip].append({"state history bb addrs": state_history_addrs,
+                                          "constraints": cons,
+                                          "seconds since start": time.time() - start_time,
+                                          "destination": state.inspect.syscall_name})
 
 def my_solver(self, timeout=None, max_memory=None):
     """ 
@@ -77,7 +119,8 @@ def process(path,angr_solver,z3_timeout):
     global start_time
     global timeout
     global my_tactic
-    results = {}
+    global results
+    global oid
     import angr
     #create the angr project for the oid
     proj = angr.Project(path,load_options={"auto_load_libs":False})
@@ -97,14 +140,8 @@ def process(path,angr_solver,z3_timeout):
     #start and initialize the execution at the entry state of the program
     entry_state = proj.factory.entry_state(add_options=angr.options.simplification)
     entry_state.options.add(angr.options.TRACK_CONSTRAINTS)
-    simgr = proj.factory.simgr(entry_state)
-    #make sure we don't use all the RAM and crash the interpreter
-    #leaving 30% of the RAM free
-    #start w/ making a stash for states to go when memory is low
-    #RAM is handled in step function now...
-    simgr.stashes["lowmem"] = []
-    #commenting out this line which'll do the behaviour coded above for memory... commented out for debugging
-    #simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=int(psutil.virtual_memory().total*0.3)))
+    entry_state.inspect.b("call",action=function_call_breakpoint,when=angr.BP_BEFORE)
+    entry_state.inspect.b("syscall",action=system_call_breakpoint,when=angr.BP_BEFORE)
     if not angr_solver:
         #import backend_z3 so i can use my custom solver
         from claripy.backends import backend_z3
@@ -112,6 +149,15 @@ def process(path,angr_solver,z3_timeout):
         backend_z3.BackendZ3.solver = my_solver
     #set the solver's z3 timeout
     entry_state.solver._solver.timeout = z3_timeout
+    #construct the simulation manager
+    simgr = proj.factory.simgr(entry_state, save_unsat=True)
+    #make sure we don't use all the RAM and crash the interpreter
+    #leaving 30% of the RAM free
+    #start w/ making a stash for states to go when memory is low
+    #RAM is handled in step function now...
+    simgr.stashes["lowmem"] = []
+    #commenting out this line which'll do the behaviour coded above for memory... commented out for debugging
+    #simgr.use_technique(angr.exploration_techniques.MemoryWatcher(min_memory=int(psutil.virtual_memory().total*0.3)))
     start_time = time.time()
     #loop over all stashes, trying to put them back into the active stash
     #from memory saver if we can once we've stepped all active states
@@ -130,7 +176,9 @@ def process(path,angr_solver,z3_timeout):
         timed_out = True
     #initialize results output dictionary
     num_states = sum([len(simgr.stashes[stash]) for stash in simgr.stashes])
-    results = {'states': num_states, 'seconds': ending_time-start_time, 'reached max seconds' : timed_out}
+    results['num states'] = num_states
+    results['seconds'] = ending_time-start_time
+    results['reached max seconds'] = timed_out
     if num_states <= 1:
         #add the disassembly to the results so we can see what's up
         disassembly = ""
@@ -138,18 +186,23 @@ def process(path,angr_solver,z3_timeout):
             for i in proj.factory.block(func).disassembly.insns:
                 disassembly += f"{hex(i.address)} {i.mnemonic} {i.op_str}\n"
         results['angr disasm'] = disassembly
-    print(json.dumps(results))
+    #locally store the results
+    oxide.local_store(NAME,oid,results)
+    print("OK")
 
 #main functionality,
 #grab the path, tactic to use,
 #and the basename of the file
 path = sys.argv[1]
+oid = sys.argv[2]
 #timeout is saved as a global variable and is thus not a
 #direct argument to any other function
-timeout = float(sys.argv[2])
-z3_timeout = int(sys.argv[3])*1000
+timeout = float(sys.argv[3])
+z3_timeout = int(sys.argv[4])*1000
+#keep the results as a global for use w/ breakpoint function
+results = {"calls":{},"syscalls":{}}
 try:
-    my_tactic = sys.argv[4]
+    my_tactic = sys.argv[5]
 except Exception:
     my_tactic = ""
 try:
@@ -160,7 +213,3 @@ try:
     process(path,not bool(my_tactic),z3_timeout)
 except ValueError as e:
     print("VALUE ERROR : ",e)
-except TypeError as e:
-    print("TYPE ERROR : ",e)
-except Exception as e:
-    print("ERROR : ",e)

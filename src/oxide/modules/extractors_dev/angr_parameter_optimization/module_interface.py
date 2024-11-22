@@ -4,7 +4,7 @@ NAME="angr_parameter_optimization"
 
 import logging
 import subprocess
-import json
+import pickle
 import os
 import z3
 import statistics
@@ -48,7 +48,7 @@ def process(oid, opts):
     for tactic in tactics:
         try:
             z3.Tactic(tactic)
-        except z3.Z3Exception as e:
+        except Exception as e:
             logger.error(f"Unknown tactic: {tactic}, {e}")
             return False
     num_runs = int(opts['runs'])
@@ -73,10 +73,10 @@ def process(oid, opts):
     results = {}
     for tactic in tactics:
         #appending a tuple: command, tactic
-        tactic_cmds.append((f"python3 {script_full_path} {file_full_path} {timeout} {z3_timeout} {tactic}",tactic))
+        tactic_cmds.append((f"python3 {script_full_path} {file_full_path} {oid} {timeout} {z3_timeout} {tactic}",tactic))
         results[tactic] = {'seconds': []}
     results['with no tactic'] = {'seconds':[]}
-    angr_cmd = f"python3 {script_full_path} {file_full_path} {timeout} {z3_timeout}"
+    angr_cmd = f"python3 {script_full_path} {file_full_path} {oid} {timeout} {z3_timeout}"
     #log out how many runs, timeout
     logger.info(f"Timeout: {timeout}, z3 timeout: {z3_timeout}, runs: {num_runs}")
     #run multiple times to get some valid output and ensure angr isn't doing well as a one-off try
@@ -89,10 +89,14 @@ def process(oid, opts):
                     #using tuple: output, tactic
                     logger.debug(f'Run {run+1}: command: {tactic_cmd[0]}')
                     sub_proc_out = subprocess.check_output(tactic_cmd[0], universal_newlines=True, shell=True, stderr=null)
-                    tactic_output.append((json.loads(sub_proc_out),tactic_cmd[1]))
+                    #grab from the local store, then clear the data store before the next run
+                    tactic_output.append((api.local_retrieve(NAME,oid),tactic_cmd[1]))
+                    api.local_delete_data(NAME,oid)
                 logger.debug(f'Run {run+1}: command: {angr_cmd}')
                 sub_proc_out = subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null)
-                angr_output = json.loads(sub_proc_out)
+                #grab from local store and clear the data after
+                angr_output = api.local_retrieve(NAME,oid)
+                api.local_delete_data(NAME,oid)
                 for t_o in tactic_output:
                     #using tuple: json, tactic
                     tactic_output = t_o[0]
@@ -104,10 +108,10 @@ def process(oid, opts):
             except subprocess.CalledProcessError as e:
                 logger.error(f"Error occured in subprocess: {e}")
                 return False
-            except json.decoder.JSONDecodeError as e:
-                logger.error(f"JSON decoding error with subprocess output {e}")
-                logger.error(f"Subprocess output: {sub_proc_out}")
-                return False
+            # except pickle.decoder.JSONDecodeError as e:
+            #     logger.error(f"JSON decoding error with subprocess output {e}")
+            #     logger.error(f"Subprocess output: {sub_proc_out}")
+            #     return False
             except Exception as e:
                 logger.error(f"Exception raised: {e}")
                 return False
