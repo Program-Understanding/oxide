@@ -5,10 +5,9 @@ SUBPROC="angr_parameter_optimization_subproc"
 import logging
 import subprocess
 import os, sys
-import z3
 import statistics
 import scipy
-import traceback
+#used for debugging multithreading segfault i was having
 import faulthandler
 faulthandler.enable()
 
@@ -46,13 +45,13 @@ def process(oid, opts):
     except Exception as e:
         logger.error(f"Unable to wrangle options, error: {e}")
         return False
+    #sorry but this is the best way to test if the tactics are valid.... otherwise i get issues w/ multithreading
+    #if i call z3 here and don't set a thread context and stuff
+    z3_tactics = "ackermannize_bv subpaving horn horn-simplify nlsat qfnra-nlsat qe-light nlqsat qe qsat qe2 qe_rec psat sat sat-preprocess ctx-solver-simplify psmt unit-subsume-simplify aig add-bounds card2bv degree-shift diff-neq eq2bv factor fix-dl-var fm lia2card lia2pb nla2bv normalize-bounds pb2bv propagate-ineqs purify-arith recover-01 bit-blast bv1-blast bv_bound_chk propagate-bv-bounds propagate-bv-bounds2 reduce-bv-size bv-slice bvarray2uf dt2bv elim-small-bv max-bv-sharing blast-term-ite cofactor-term-ite collect-statistics ctx-simplify demodulator der distribute-forall dom-simplify elim-term-ite elim-uncnstr2 elim-uncnstr elim-predicates euf-completion injectivity snf nnf occf pb-preprocess propagate-values2 propagate-values reduce-args reduce-args2 simplify elim-and solve-eqs special-relations split-clause symmetry-reduce tseitin-cnf tseitin-cnf-core qffd pqffd smtfd fpa2bv qffp qffpbv qffplra default solver-subsumption qfbv-sls qfbv-new-sls qfbv-new-sls-core nra qfaufbv qfauflia qfbv qfidl qflia qflra qfnia qfnra qfuf qfufbv qfufbv_ackr ufnia uflra auflia auflira aufnira lra lia lira smt skip fail fail-if-undecided macro-finder quasi-macros ufbv-rewriter bv ufbv"
     #check validity of tactics
     for tactic in tactics:
-        try:
-            z3.Tactic(tactic)
-        except Exception as e:
-            logger.error(f"Unknown tactic: {tactic}, {e}")
-            return False
+        if tactic not in z3_tactics:
+            logger.error(f"invalid tactic {f}")
     num_runs = int(opts['runs'])
     #create temporary file to run through angr script
     data = api.get_field(api.source(oid), oid, "data", {}) #get file data
@@ -120,7 +119,6 @@ def process(oid, opts):
                 results['with no tactic']['seconds'].append(angr_output['seconds'])
             except subprocess.CalledProcessError as e:
                 logger.error(f"Error occured in subprocess: {e.output}")
-                print(traceback.format_exc())
                 api.local_delete_data(SUBPROC,oid)
                 return False
             # except pickle.decoder.JSONDecodeError as e:
