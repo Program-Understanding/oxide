@@ -188,7 +188,7 @@ def process(path,angr_solver,z3_timeout):
     results['seconds'] = ending_time-start_time
     results['reached max seconds'] = timed_out
     if num_states <= 1:
-        #add the disassembly to the results so we can see what's up
+        #add the disassembly to the results so we can see what's up and why we have so few states
         disassembly = ""
         for func in proj.kb.functions:
             for i in proj.factory.block(func).disassembly.insns:
@@ -229,4 +229,17 @@ except ImportError as e:
 except Exception as e:
     print(f"error in process(): {e}")
     print(traceback.format_exc())
+    if results["calls"] or results["syscalls"] or len(results) > 2:
+        print("partial results found; attempting to save data...")
+        try:
+            results["seconds"] = time.time()-start_time
+            results["valid"] = False
+            results["reached max seconds"] = True
+            results["num states"] = max(len(results["calls"]),len(results["syscalls"]))
+            oxide.local_store(NAME,oid,results)
+            #returning a different code to let the caller know we stored partial results
+            print("data successfully written out to local store")
+            sys.exit(2)
+        except Exception as e:
+            print(f"Failed to save data... {e}")
     sys.exit(1)

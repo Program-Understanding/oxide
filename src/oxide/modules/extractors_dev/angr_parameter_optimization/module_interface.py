@@ -19,7 +19,7 @@ opts_doc={"timeout": {"type": int, "mangle": True, "default": 600, "description"
           "z3_timeout": {"type": int, "mangle": True, "default": 120,"description": "Time in seconds (later converted to ms) before Z3 returns unsat for a query"},
           "exploration": {"type": str, "mangle": True, "description": "Choose a different exploration technique. Should be from angr.exploration_techniques, such as 'angr.exploration_techniques.dfs'","default":""},
           "tactics": {"type": str, "mangle": True, "description": "Comma separated list of tactics to use as a z3.Solver() in claripy", "default": ""},
-          "runs": {"type": int, "mangle": True, "description": "How many runs to do of the OID","default": 5}
+          "runs": {"type": int, "mangle": True, "description": "How many runs to do of the OID","default": 1}
           }
 
 def documentation():
@@ -51,7 +51,7 @@ def process(oid, opts):
     #check validity of tactics
     for tactic in tactics:
         if tactic not in z3_tactics:
-            logger.error(f"invalid tactic {f}")
+            logger.error(f"invalid tactic {tactic}")
     num_runs = int(opts['runs'])
     #create temporary file to run through angr script
     data = api.get_field(api.source(oid), oid, "data", {}) #get file data
@@ -94,63 +94,74 @@ def process(oid, opts):
                 for tactic_cmd in tactic_cmds:
                     #using tuple: output, tactic
                     logger.debug(f'Run {run+1}: command: {tactic_cmd[0]}')
-                    sub_proc_out = subprocess.check_output(tactic_cmd[0], universal_newlines=True, shell=True, stderr=null,env=env)
+                    #run the command and handle subprocess exception
+                    sub_proc_out = subproc_run(tactic_cmd[0],env,logger,null)
                     #grab from the local store, then clear the data store before the next run
                     tactic_output.append((api.local_retrieve(SUBPROC,oid),tactic_cmd[1]))
-                    if tactic_output[-1][0] is None:
-                        logger.error(f"No output from angr parameterization script")
+                    if not result_is_ok(tactic_output[-1][0],oid):
                         return False
-                    api.local_delete_data(SUBPROC,oid)
                 logger.debug(f'Run {run+1}: command: {angr_cmd}')
-                sub_proc_out = subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null,env=env)
+                sub_proc_out = subproc_run(angr_cmd,env,logger,null)
                 #grab from local store and clear the data after
                 angr_output = api.local_retrieve(SUBPROC,oid)
-                if angr_output is None:
-                    logger.error(f"No output from angr parameterization script")
+                if not result_is_ok(angr_output,oid):
                     return False
-                api.local_delete_data(SUBPROC,oid)
                 for t_o in tactic_output:
-                    #using tuple: json, tactic
+                    #using tuple: output, tactic
                     tactic_output = t_o[0]
                     results[t_o[1]][f'run {run+1}'] = tactic_output
                     results[t_o[1]]['seconds'].append(tactic_output['seconds'])
                 angr_output = angr_output
                 results['with no tactic'][f'run {run+1}'] = angr_output
                 results['with no tactic']['seconds'].append(angr_output['seconds'])
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Error occured in subprocess: {e.output}")
-                api.local_delete_data(SUBPROC,oid)
-                return False
-            # except pickle.decoder.JSONDecodeError as e:
-            #     logger.error(f"JSON decoding error with subprocess output {e}")
-            #     logger.error(f"Subprocess output: {sub_proc_out}")
-            #     return False
             except Exception as e:
                 logger.error(f"Exception raised: {e}")
-                if sub_proc_out:
+                if "sub_proc_out" in locals():
                     logger.error(f"Subprocess output: {sub_proc_out}")
                 api.local_delete_data(SUBPROC,oid)
                 return False
     #get mean, standard deviation, t-test
-    results['with no tactic']['mean seconds'] = statistics.mean(results['with no tactic']['seconds'])
-    results['with no tactic']['std. deviation'] = statistics.stdev(results['with no tactic']['seconds'])
-    for tactic in tactics:
-        results[tactic]['mean seconds'] = statistics.mean(results[tactic]['seconds'])
-        results[tactic]['std. deviation'] = statistics.stdev(results['with no tactic']['seconds'])
-        t_test_p_value = scipy.stats.ttest_ind(results['with no tactic']['seconds'], results[tactic]['seconds'], equal_var=False).pvalue
-        results[tactic][f'p-value of the t-test putting tactic against angr'] = t_test_p_value
-        results[tactic][f'p-value < 0.05'] = float(t_test_p_value) < 0.05
-    #ranking the tactics by mapping each tactic to its average seconds,
-    #but returning only the tactics that are statistically significantly better than
-    #the default solver used by angr
-    mapped_tactics = []
-    for tactic in tactics:
-        if results[tactic][f'p-value < 0.05']:
-            mapped_tactics.append((tactic,results[tactic]['mean seconds']))
-    if mapped_tactics:
-        sorted_tactics = sorted(mapped_tactics,key=lambda mapt: mapt[1])
-        results['statistically significant tactics ranked'] = [(tactic[0],round(tactic[1],4)) for tactic in sorted_tactics]
-    else:
-        results['statistically significant tactics ranked'] = "No statistically significant improvement with any tactic"
+    #check if we've done bare minimum amount of runs first
+    if num_runs > 1:
+        results['with no tactic']['mean seconds'] = statistics.mean(results['with no tactic']['seconds'])
+        results['with no tactic']['std. deviation'] = statistics.stdev(results['with no tactic']['seconds'])
+        for tactic in tactics:
+            results[tactic]['mean seconds'] = statistics.mean(results[tactic]['seconds'])
+            results[tactic]['std. deviation'] = statistics.stdev(results['with no tactic']['seconds'])
+            t_test_p_value = scipy.stats.ttest_ind(results['with no tactic']['seconds'], results[tactic]['seconds'], equal_var=False).pvalue
+            results[tactic][f'p-value of the t-test putting tactic against angr'] = t_test_p_value
+            results[tactic][f'p-value < 0.05'] = float(t_test_p_value) < 0.05
+        #ranking the tactics by mapping each tactic to its average seconds,
+        #but returning only the tactics that are statistically significantly better than
+        #the default solver used by angr
+        mapped_tactics = []
+        for tactic in tactics:
+            if results[tactic][f'p-value < 0.05']:
+                mapped_tactics.append((tactic,results[tactic]['mean seconds']))
+        if mapped_tactics:
+            sorted_tactics = sorted(mapped_tactics,key=lambda mapt: mapt[1])
+            results['statistically significant tactics ranked'] = [(tactic[0],round(tactic[1],4)) for tactic in sorted_tactics]
+        else:
+            results['statistically significant tactics ranked'] = "No statistically significant improvement with any tactic"
     api.store(NAME,oid,results,opts)
+    return True
+
+def subproc_run(command, env, logger, null):
+    sub_proc_out = ""
+    try:
+        sub_proc_out = subprocess.check_output(command, universal_newlines=True, shell=True, stderr=null,env=env)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error occured in subprocess: {e.output}")
+        if e.returncode != 2:
+            raise Exception(f"Subprocess data unrecoverable, return code {e.returncode}")
+    return sub_proc_out
+
+def result_is_ok(result,oid):
+    if result is None:
+        logger.error(f"Nothing stored by angr parameterization script")
+        #clear the local datastore so we can write to it again later
+        api.local_delete_data(SUBPROC,oid)
+        return False
+    #clear the local datastore so we can write to it again later
+    api.local_delete_data(SUBPROC,oid)
     return True
