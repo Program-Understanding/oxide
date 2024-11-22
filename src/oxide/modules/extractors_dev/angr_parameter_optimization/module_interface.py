@@ -1,7 +1,7 @@
 AUTHORS="KEVAN,DYLAN"
 DESC="Pass options to try and analyze effect on angr and Z3"
 NAME="angr_parameter_optimization"
-
+SUBPROC="angr_parameter_optimization_subproc"
 import logging
 import subprocess
 import pickle
@@ -90,13 +90,13 @@ def process(oid, opts):
                     logger.debug(f'Run {run+1}: command: {tactic_cmd[0]}')
                     sub_proc_out = subprocess.check_output(tactic_cmd[0], universal_newlines=True, shell=True, stderr=null)
                     #grab from the local store, then clear the data store before the next run
-                    tactic_output.append((api.local_retrieve(NAME,oid),tactic_cmd[1]))
-                    api.local_delete_data(NAME,oid)
+                    tactic_output.append((api.local_retrieve(SUBPROC,oid),tactic_cmd[1]))
+                    api.local_delete_data(SUBPROC,oid)
                 logger.debug(f'Run {run+1}: command: {angr_cmd}')
                 sub_proc_out = subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null)
                 #grab from local store and clear the data after
-                angr_output = api.local_retrieve(NAME,oid)
-                api.local_delete_data(NAME,oid)
+                angr_output = api.local_retrieve(SUBPROC,oid)
+                api.local_delete_data(SUBPROC,oid)
                 for t_o in tactic_output:
                     #using tuple: json, tactic
                     tactic_output = t_o[0]

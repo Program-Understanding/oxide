@@ -1,5 +1,5 @@
 AUTHOR="kevan"
-NAME="angr_parameter_optimization"
+NAME="angr_parameter_optimization_subproc"
 import sys
 import logging
 import time
@@ -189,6 +189,7 @@ def process(path,angr_solver,z3_timeout):
     #locally store the results
     oxide.local_store(NAME,oid,results)
     print("OK")
+    sys.exit(0)
 
 #main functionality,
 #grab the path, tactic to use,
