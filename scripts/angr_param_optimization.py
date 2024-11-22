@@ -15,7 +15,7 @@ sys.set_int_max_str_digits(0)
 
 logger = logging.getLogger(NAME)
 logging.basicConfig(level=logging.ERROR)
-from oxide.core import oxide as oxide
+
 #global variables passed between functions
 #could possibly be made into arguments to process and then
 #states or the simgr could probably hold these as attributes but...
@@ -211,6 +211,11 @@ try:
         import z3
         new_z3_tactic = z3.Tactic(my_tactic)
         del z3, new_z3_tactic
+    from oxide.core import oxide as oxide
     process(path,not bool(my_tactic),z3_timeout)
 except ValueError as e:
     print("VALUE ERROR : ",e)
+    sys.exit(1)
+except ImportError as e:
+    print(f"Importing failed... {e}")
+    sys.exit(1)
