@@ -4,11 +4,13 @@ NAME="angr_parameter_optimization"
 SUBPROC="angr_parameter_optimization_subproc"
 import logging
 import subprocess
-import pickle
-import os
+import os, sys
 import z3
 import statistics
 import scipy
+import traceback
+import faulthandler
+faulthandler.enable()
 
 logger = logging.getLogger(NAME)
 
@@ -77,6 +79,11 @@ def process(oid, opts):
         results[tactic] = {'seconds': []}
     results['with no tactic'] = {'seconds':[]}
     angr_cmd = f"python3 {script_full_path} {file_full_path} {oid} {timeout} {z3_timeout}"
+    #set up the proper python path for the environment
+    pythonpath = ""
+    for directory in sys.path:
+        pythonpath = pythonpath + directory + ";"
+    env = os.environ.copy()
     #log out how many runs, timeout
     logger.info(f"Timeout: {timeout}, z3 timeout: {z3_timeout}, runs: {num_runs}")
     #run multiple times to get some valid output and ensure angr isn't doing well as a one-off try
@@ -88,14 +95,20 @@ def process(oid, opts):
                 for tactic_cmd in tactic_cmds:
                     #using tuple: output, tactic
                     logger.debug(f'Run {run+1}: command: {tactic_cmd[0]}')
-                    sub_proc_out = subprocess.check_output(tactic_cmd[0], universal_newlines=True, shell=True, stderr=null)
+                    sub_proc_out = subprocess.check_output(tactic_cmd[0], universal_newlines=True, shell=True, stderr=null,env=env)
                     #grab from the local store, then clear the data store before the next run
                     tactic_output.append((api.local_retrieve(SUBPROC,oid),tactic_cmd[1]))
+                    if tactic_output[-1][0] is None:
+                        logger.error(f"No output from angr parameterization script")
+                        return False
                     api.local_delete_data(SUBPROC,oid)
                 logger.debug(f'Run {run+1}: command: {angr_cmd}')
-                sub_proc_out = subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null)
+                sub_proc_out = subprocess.check_output(angr_cmd, universal_newlines=True, shell=True, stderr=null,env=env)
                 #grab from local store and clear the data after
                 angr_output = api.local_retrieve(SUBPROC,oid)
+                if angr_output is None:
+                    logger.error(f"No output from angr parameterization script")
+                    return False
                 api.local_delete_data(SUBPROC,oid)
                 for t_o in tactic_output:
                     #using tuple: json, tactic
@@ -106,7 +119,9 @@ def process(oid, opts):
                 results['with no tactic'][f'run {run+1}'] = angr_output
                 results['with no tactic']['seconds'].append(angr_output['seconds'])
             except subprocess.CalledProcessError as e:
-                logger.error(f"Error occured in subprocess: {e}")
+                logger.error(f"Error occured in subprocess: {e.output}")
+                print(traceback.format_exc())
+                api.local_delete_data(SUBPROC,oid)
                 return False
             # except pickle.decoder.JSONDecodeError as e:
             #     logger.error(f"JSON decoding error with subprocess output {e}")
@@ -114,6 +129,9 @@ def process(oid, opts):
             #     return False
             except Exception as e:
                 logger.error(f"Exception raised: {e}")
+                if sub_proc_out:
+                    logger.error(f"Subprocess output: {sub_proc_out}")
+                api.local_delete_data(SUBPROC,oid)
                 return False
     #get mean, standard deviation, t-test
     results['with no tactic']['mean seconds'] = statistics.mean(results['with no tactic']['seconds'])

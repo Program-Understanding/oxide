@@ -3,9 +3,8 @@ NAME="angr_parameter_optimization_subproc"
 import sys
 import logging
 import time
+import traceback
 import psutil
-import pickle
-
 
 #test string
 #debugpy :cwd "/home/kevan/oxide_dev/oxide/" :program "scripts/angr_param_optimization.py" :args ["/usr/bin/hostid" "123" "1500" "120" "qfidl"]
@@ -14,7 +13,16 @@ import pickle
 sys.set_int_max_str_digits(0)
 
 logger = logging.getLogger(NAME)
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.CRITICAL)
+logging.getLogger("oxide").disabled=True
+logging.getLogger("pharos_disasm").disabled=True
+logging.getLogger("disasm_utils").disabled=True
+logging.getLogger("claripy.frontend.light_frontend").disabled=True
+logging.getLogger("exhaust_disasm").disabled=True
+logging.getLogger("disassembly").disabled=True
+#turn off logging before we load oxide
+from oxide.core import oxide as oxide
+print(f"Finished loading oxide")
 
 #global variables passed between functions
 #could possibly be made into arguments to process and then
@@ -211,11 +219,14 @@ try:
         import z3
         new_z3_tactic = z3.Tactic(my_tactic)
         del z3, new_z3_tactic
-    from oxide.core import oxide as oxide
     process(path,not bool(my_tactic),z3_timeout)
 except ValueError as e:
     print("VALUE ERROR : ",e)
     sys.exit(1)
 except ImportError as e:
     print(f"Importing failed... {e}")
+    sys.exit(1)
+except Exception as e:
+    print(f"error in process(): {e}")
+    print(traceback.format_exc())
     sys.exit(1)
