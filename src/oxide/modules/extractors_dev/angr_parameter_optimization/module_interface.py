@@ -1,7 +1,8 @@
 AUTHORS="KEVAN,DYLAN"
 DESC="Pass options to try and analyze effect on angr and Z3"
 NAME="angr_parameter_optimization"
-SUBPROC="angr_parameter_optimization_subproc"
+SUBPROC="angr_constraint_grabber"
+SUBPROC_B="angr_optimization_test"
 import logging
 import subprocess
 import os, sys
@@ -10,10 +11,12 @@ import scipy
 #used for debugging multithreading segfault i was having
 import faulthandler
 faulthandler.enable()
-
+import traceback
 logger = logging.getLogger(NAME)
 
-from core import api
+from core import api, config
+
+#debugging in oxide run: random_sample --n=2 &core_utils | run angr_parameter_optimization --timeout=1500 --z3_timeout=120 --tactics=qfufbv_ackr,qfnra,qfidl,qflra,qfauflia,qfbv
 
 opts_doc={"timeout": {"type": int, "mangle": True, "default": 600, "description": "Time in seconds for angr before it times out, default is 5 minutes"},
           "z3_timeout": {"type": int, "mangle": True, "default": 120,"description": "Time in seconds (later converted to ms) before Z3 returns unsat for a query"},
@@ -61,64 +64,67 @@ def process(oid, opts):
     if not os.path.isfile(file_full_path):
         logger.error(f"Scratch file not found: {file_full_path}")
         return False
-    #getting the script name to append to the path
-    script_name = "angr_param_optimization.py"
-    script_full_path = os.path.join(api.scripts_dir, script_name)
-    if not os.path.isfile(script_full_path):
-        logger.error(f"Script not found: {script_full_path}")
+    #getting the script to grab constraints' name to append to the path
+    constraint_script_name = "angr_constraint_grabber.py"
+    constraint_script_full_path = os.path.join(api.scripts_dir, constraint_script_name)
+    if not os.path.isfile(constraint_script_full_path):
+        logger.error(f"Script not found: {constraint_script_full_path}")
         return False
-    #this has to be run separate times since angr will not let go of RAM
-    #so we'll make as many commands as we have tactics
+    #getting the script to run constraints' name to append to the path
+    opt_script_name = "angr_optimization_test.py"
+    opt_script_full_path = os.path.join(api.scripts_dir, opt_script_name)
+    if not os.path.isfile(opt_script_full_path):
+        logger.error(f"Script not found: {opt_script_full_path}")
+        return False
+    # we'll make as many commands as we have tactics
     tactic_cmds = []
     #initialize results dictionary as well
     results = {}
     for tactic in tactics:
         #appending a tuple: command, tactic
-        tactic_cmds.append((f"python3 {script_full_path} {file_full_path} {oid} {timeout} {z3_timeout} {tactic}",tactic))
-        results[tactic] = {'seconds': []}
-    results['with no tactic'] = {'seconds':[]}
-    angr_cmd = f"python3 {script_full_path} {file_full_path} {oid} {timeout} {z3_timeout}"
+        tactic_cmds.append((f"python3 {opt_script_full_path} {SUBPROC} {oid} {z3_timeout} {config.multiproc_max} {tactic}",tactic))
+        results[tactic] = {}
+    angr_cmd = f"python3 {constraint_script_full_path} {file_full_path} {oid} {timeout} {z3_timeout}"
+    results['with no tactic'] = {}
     #set up the proper python path for the environment
     pythonpath = ""
     for directory in sys.path:
         pythonpath = pythonpath + directory + ";"
     env = os.environ.copy()
     #log out how many runs, timeout
-    logger.info(f"Timeout: {timeout}, z3 timeout: {z3_timeout}, runs: {num_runs}")
+    logger.info(f"Timeout: {timeout}, z3 timeout: {z3_timeout}")
+    logger.debug(f'Running command: {angr_cmd}')
+    with open(os.devnull, "w") as null:
+            try:
+                sub_proc_out = subproc_run(angr_cmd,env,logger,null)
+            except Exception as e:
+                logger.error(f"Exception raised: {e}")
+                if "sub_proc_out" in locals():
+                    logger.error(f"Subprocess output: {sub_proc_out}")
+                api.local_delete_data(SUBPROC,oid)
+                return False
     #run multiple times to get some valid output and ensure angr isn't doing well as a one-off try
     for run in range(num_runs):
         with open(os.devnull, "w") as null:
             try:
-                #get the output from angr and with tactics, and translate it to a json dictionary
-                tactic_output = []
+                #get the output from angr and with tactics
                 for tactic_cmd in tactic_cmds:
                     #using tuple: output, tactic
                     logger.debug(f'Run {run+1}: command: {tactic_cmd[0]}')
                     #run the command and handle subprocess exception
                     sub_proc_out = subproc_run(tactic_cmd[0],env,logger,null)
                     #grab from the local store, then clear the data store before the next run
-                    tactic_output.append((api.local_retrieve(SUBPROC,oid),tactic_cmd[1]))
-                    if not result_is_ok(tactic_output[-1][0],oid):
-                        return False
-                logger.debug(f'Run {run+1}: command: {angr_cmd}')
-                sub_proc_out = subproc_run(angr_cmd,env,logger,null)
-                #grab from local store and clear the data after
-                angr_output = api.local_retrieve(SUBPROC,oid)
-                if not result_is_ok(angr_output,oid):
-                    return False
-                for t_o in tactic_output:
-                    #using tuple: output, tactic
-                    tactic_output = t_o[0]
-                    results[t_o[1]][f'run {run+1}'] = tactic_output
-                    results[t_o[1]]['seconds'].append(tactic_output['seconds'])
-                angr_output = angr_output
-                results['with no tactic'][f'run {run+1}'] = angr_output
-                results['with no tactic']['seconds'].append(angr_output['seconds'])
+                    results[tactic_cmd[1]][f'run {run+1}'] = api.local_retrieve(SUBPROC_B,oid)
+                    api.local_delete_data(SUBPROC_B,oid)
+                #next we run w/o any tactic
+                sub_proc_out = subproc_run(f"python3 {opt_script_full_path} {SUBPROC} {oid} {z3_timeout} {config.multiproc_max}",env,logger,null)
+                results['with no tactic'][f'run {run+1}'] = api.local_retrieve(SUBPROC_B,oid)
+                api.local_delete_data(SUBPROC_B,oid)
             except Exception as e:
-                logger.error(f"Exception raised: {e}")
+                logger.error(f"Exception raised: {e},traceback: {traceback.format_exc()}")
                 if "sub_proc_out" in locals():
                     logger.error(f"Subprocess output: {sub_proc_out}")
-                api.local_delete_data(SUBPROC,oid)
+                api.local_delete_data(SUBPROC_B,oid)
                 return False
     #get mean, standard deviation, t-test
     #check if we've done bare minimum amount of runs first
@@ -151,17 +157,9 @@ def subproc_run(command, env, logger, null):
     try:
         sub_proc_out = subprocess.check_output(command, universal_newlines=True, shell=True, stderr=null,env=env)
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error occured in subprocess: {e.output}")
+        logger.error(f"Error occured running in subprocess: {e.output}")
         if e.returncode != 2:
             raise Exception(f"Subprocess data unrecoverable, return code {e.returncode}")
+        else:
+            logger.error(f"Traceback: {traceback.format_exc()}")
     return sub_proc_out
-
-def result_is_ok(result,oid):
-    if result is None:
-        logger.error(f"Nothing stored by angr parameterization script")
-        #clear the local datastore so we can write to it again later
-        api.local_delete_data(SUBPROC,oid)
-        return False
-    #clear the local datastore so we can write to it again later
-    api.local_delete_data(SUBPROC,oid)
-    return True
