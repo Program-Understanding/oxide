@@ -73,6 +73,8 @@ def my_solver(self, timeout=None, max_memory=None):
 
 def is_sat(solver,constraints):
     try:
+        #passing the constraints as extra constraints instead of adding them to the
+        #solver turns out to be huge in terms of saving ram
         return solver.satisfiable(extra_constraints=constraints)
     except claripy.errors.ClaripyZ3Error:
         return False
@@ -158,9 +160,10 @@ def subprocess(oid, name):
     #across deadends, syscalls, and funcalls
     total_time_in_seconds = 0
     for category in ['deadends','function calls', 'syscalls']:
-        for state_ip in stats[category].keys():
-            for list_item in stats[category][state_ip]:
-                total_time_in_seconds += list_item["seconds taken to determine sat"]
+        if category in stats:
+            for state_ip in stats[category].keys():
+                for list_item in stats[category][state_ip]:
+                    total_time_in_seconds += list_item["seconds taken to determine sat"]
     stats["total seconds"] = total_time_in_seconds
     #store the results in the local oxide store and exit gracefully
     oxide.local_store(NAME,oid,stats)

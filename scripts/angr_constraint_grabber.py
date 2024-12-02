@@ -146,7 +146,6 @@ def subprocess(path,z3_timeout):
                 disassembly += f"{hex(i.address)} {i.mnemonic} {i.op_str}\n"
         results['angr disasm'] = disassembly
     #capture the constraints from the deadended states
-    results['deadends'] = {}
     for state in simgr.stashes["deadended"]:
         if not state.ip in results['deadends']:
             results['deadends'][state.ip] = []
@@ -167,7 +166,7 @@ oid = sys.argv[2]
 timeout = float(sys.argv[3])
 z3_timeout = int(sys.argv[4])*1000
 #keep the results as a global for use w/ breakpoint function
-results = {"calls":{},"syscalls":{}}
+results = {"calls":{},"syscalls":{}, "deadends":{}}
 try:
     subprocess(path,z3_timeout)
 except ValueError as e:
