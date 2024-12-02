@@ -108,8 +108,7 @@ def subprocess(oid, name):
             stats['syscalls'][state_ip].append({"number of constraints": len(entry["constraints"]),
                                                 "seconds taken to determine sat": time.time()-ini_time,
                                                 "state recent blocks": entry["state history bb addrs"],
-                                                "satisfiable": sat,
-                                                "constraints": entry["constraints"]})
+                                                "satisfiable": sat})
     del slvr.constraints, slvr.variables, slvr._finalized
     slvr.constraints = []
     slvr.variables = set()
@@ -129,8 +128,7 @@ def subprocess(oid, name):
             stats['function calls'][state_ip].append({"number of constraints": len(entry["constraints"]),
                                                       "seconds taken to determine sat": time.time()-ini_time,
                                                       "state recent blocks": entry["state history bb addrs"],
-                                                      "satisfiable": sat,
-                                                      "constraints": entry["constraints"]})
+                                                      "satisfiable": sat})
     del slvr.constraints, slvr.variables, slvr._finalized
     slvr.constraints = []
     slvr.variables = set()
@@ -153,8 +151,7 @@ def subprocess(oid, name):
                 stats['deadends'][state_ip].append({"number of constraints": len(entry["constraints"]),
                                                     "seconds taken to determine sat": time.time()-ini_time,
                                                     "state recent blocks": entry["state bb history"],
-                                                    "satisfiable": sat,
-                                                    "constraints": entry["constraints"]})
+                                                    "satisfiable": sat})
         del slvr.constraints, slvr.variables, slvr._finalized, slvr
     #finally, need to calculate the total time taken by adding up the number of seconds
     #across deadends, syscalls, and funcalls
