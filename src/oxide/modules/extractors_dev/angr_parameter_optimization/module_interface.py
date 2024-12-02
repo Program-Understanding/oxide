@@ -16,7 +16,6 @@ logger = logging.getLogger(NAME)
 
 from core import api, config
 
-#debugging in oxide run: random_sample --n=2 &core_utils | run angr_parameter_optimization --timeout=1500 --z3_timeout=120 --tactics=qfufbv_ackr,qfnra,qfidl,qflra,qfauflia,qfbv
 
 opts_doc={"timeout": {"type": int, "mangle": True, "default": 600, "description": "Time in seconds for angr before it times out, default is 5 minutes"},
           "z3_timeout": {"type": int, "mangle": True, "default": 120,"description": "Time in seconds (later converted to ms) before Z3 returns unsat for a query"},
@@ -115,10 +114,12 @@ def process(oid, opts):
                     sub_proc_out = subproc_run(tactic_cmd[0],env,logger,null)
                     #grab from the local store, then clear the data store before the next run
                     results[tactic_cmd[1]][f'run {run+1}'] = api.local_retrieve(SUBPROC_B,oid)
+                    results[tactic_cmd[1]][f'run {run+1} angr optimization test output'] = sub_proc_out
                     api.local_delete_data(SUBPROC_B,oid)
                 #next we run w/o any tactic
                 sub_proc_out = subproc_run(f"python3 {opt_script_full_path} {SUBPROC} {oid} {z3_timeout} {config.multiproc_max}",env,logger,null)
                 results['with no tactic'][f'run {run+1}'] = api.local_retrieve(SUBPROC_B,oid)
+                results['with no tactic'][f'run {run+1} angr optimization test output'] = sub_proc_out
                 api.local_delete_data(SUBPROC_B,oid)
             except Exception as e:
                 logger.error(f"Exception raised: {e},traceback: {traceback.format_exc()}")
@@ -129,12 +130,13 @@ def process(oid, opts):
     #get mean, standard deviation, t-test
     #check if we've done bare minimum amount of runs first
     if num_runs > 1:
-        results['with no tactic']['mean seconds'] = statistics.mean(results['with no tactic']['seconds'])
-        results['with no tactic']['std. deviation'] = statistics.stdev(results['with no tactic']['seconds'])
+        #TODO update this to calculate total seconds taken over the entire script's execution
+        results['with no tactic']['mean seconds'] = statistics.mean(results['with no tactic']['total seconds'])
+        results['with no tactic']['std. deviation'] = statistics.stdev(results['with no tactic']['total seconds'])
         for tactic in tactics:
-            results[tactic]['mean seconds'] = statistics.mean(results[tactic]['seconds'])
-            results[tactic]['std. deviation'] = statistics.stdev(results['with no tactic']['seconds'])
-            t_test_p_value = scipy.stats.ttest_ind(results['with no tactic']['seconds'], results[tactic]['seconds'], equal_var=False).pvalue
+            results[tactic]['mean seconds'] = statistics.mean(results[tactic]['total seconds'])
+            results[tactic]['std. deviation'] = statistics.stdev(results['with no tactic']['total seconds'])
+            t_test_p_value = scipy.stats.ttest_ind(results['with no tactic']['total seconds'], results[tactic]['total seconds'], equal_var=False).pvalue
             results[tactic][f'p-value of the t-test putting tactic against angr'] = t_test_p_value
             results[tactic][f'p-value < 0.05'] = float(t_test_p_value) < 0.05
         #ranking the tactics by mapping each tactic to its average seconds,
