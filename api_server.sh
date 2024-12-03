@@ -2,7 +2,7 @@
 
 # Set the current directory as the working directory
 # Ensures this works regardless of where script is executed from
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/api_server"
 
 # Add the src directory to PYTHONPATH
 echo $pwd
