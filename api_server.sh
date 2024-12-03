@@ -10,4 +10,4 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/src
 echo $PYTHONPATH
 
 # Execute your Python script
-python3 api_server/main.py
+python3 main.py
