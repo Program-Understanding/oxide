@@ -6,6 +6,7 @@ import logging
 import time
 import psutil
 import claripy
+#debugging RAM malarcky
 from sys import getsizeof
 
 #trying to get rid of as much excess logging as possible to help w/ debugging if anything goes wrong
@@ -72,7 +73,12 @@ def my_solver(self, timeout=None, max_memory=None):
     return s
 
 def is_sat(solver,constraints):
+    global process
     try:
+        #check memory
+        max_bytes = (1024*1024*1024) * 5
+        if process.memory_info().rss > max_bytes:
+            raise Exception(f"USING MORE THAN {max_bytes} bytes of RAM")
         #passing the constraints as extra constraints instead of adding them to the
         #solver turns out to be huge in terms of saving ram
         return solver.satisfiable(extra_constraints=constraints)
@@ -98,10 +104,10 @@ def subprocess(oid, name):
     slvr.max_memory = max(int(((psutil.virtual_memory().total*0.33)/2**6)/num_processes), 1024)
     for state_ip in inp['syscalls'].keys():
         stats['syscalls'][state_ip] = []
-        del slvr.constraints, slvr.variables, slvr._finalized
-        slvr.constraints = []
-        slvr.variables = set()
-        slvr._finalized = False
+        # del slvr.constraints, slvr.variables, slvr._finalized
+        # slvr.constraints = []
+        # slvr.variables = set()
+        # slvr._finalized = False
         for entry in inp['syscalls'][state_ip]:
             ini_time = time.time()
             sat = is_sat(slvr,entry["constraints"])
@@ -109,19 +115,18 @@ def subprocess(oid, name):
                                                 "seconds taken to determine sat": time.time()-ini_time,
                                                 "state recent blocks": entry["state history bb addrs"],
                                                 "satisfiable": sat})
-    del slvr.constraints, slvr.variables, slvr._finalized
-    slvr.constraints = []
-    slvr.variables = set()
-    slvr._finalized = False
+    # del slvr.constraints, slvr.variables, slvr._finalized
+    # slvr.constraints = []
+    # slvr.variables = set()
+    # slvr._finalized = False
     #looping through function calls
     stats['function calls'] = {}
-    slvr = claripy.Solver()
     for state_ip in inp['calls'].keys():
         stats['function calls'][state_ip] = []
-        del slvr.constraints, slvr.variables, slvr._finalized
-        slvr.constraints = []
-        slvr.variables = set()
-        slvr._finalized = False
+        # del slvr.constraints, slvr.variables, slvr._finalized
+        # slvr.constraints = []
+        # slvr.variables = set()
+        # slvr._finalized = False
         for entry in inp['calls'][state_ip]:
             ini_time = time.time()
             sat = is_sat(slvr,entry["constraints"])
@@ -129,22 +134,20 @@ def subprocess(oid, name):
                                                       "seconds taken to determine sat": time.time()-ini_time,
                                                       "state recent blocks": entry["state history bb addrs"],
                                                       "satisfiable": sat})
-    del slvr.constraints, slvr.variables, slvr._finalized
-    slvr.constraints = []
-    slvr.variables = set()
-    slvr._finalized = False
+    # del slvr.constraints, slvr.variables, slvr._finalized
+    # slvr.constraints = []
+    # slvr.variables = set()
+    # slvr._finalized = False
     #looping through deadended states
     #making sure we even have any deadends first
     if 'deadends' in inp and inp['deadends']:
         stats['deadends'] = {}
-        slvr = claripy.Solver()
         for state_ip in inp['deadends'].keys():
             stats['deadends'][state_ip] = []
-            del slvr.constraints, slvr.variables, slvr._finalized
-            slvr.constraints = []
-            slvr.variables = set()
-            slvr._finalized = False
-            slvr = claripy.Solver()
+            # del slvr.constraints, slvr.variables, slvr._finalized
+            # slvr.constraints = []
+            # slvr.variables = set()
+            # slvr._finalized = False
             for entry in inp['deadends'][state_ip]:
                 ini_time = time.time()
                 sat = is_sat(slvr,entry["constraints"])
@@ -165,7 +168,8 @@ def subprocess(oid, name):
     #store the results in the local oxide store and exit gracefully
     oxide.local_store(NAME,oid,stats)
     sys.exit(0)
-    
+
+process = psutil.Process()
 name = sys.argv[1]
 oid = sys.argv[2]
 #timeout is saved as a global variable and is thus not a

@@ -16,6 +16,8 @@ logger = logging.getLogger(NAME)
 
 from core import api, config
 
+#debugging in oxide run: random_sample --n=2 &core_utils | run angr_parameter_optimization --timeout=1500 --z3_timeout=120 --tactics=qfufbv_ackr,qfnra,qfidl,qflra,qfauflia,qfbv
+#random_sample --n=1 &small_bins | run angr_parameter_optimization --timeout=1500 --z3_timeout=120 --tactics=qfufbv_ackr,qfnra,qfidl,qflra,qfauflia,qfbv
 
 opts_doc={"timeout": {"type": int, "mangle": True, "default": 600, "description": "Time in seconds for angr before it times out, default is 5 minutes"},
           "z3_timeout": {"type": int, "mangle": True, "default": 120,"description": "Time in seconds (later converted to ms) before Z3 returns unsat for a query"},

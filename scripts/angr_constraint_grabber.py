@@ -122,14 +122,26 @@ def subprocess(path,z3_timeout):
     #from memory saver if we can once we've stepped all active states
     timed_out = False
     while time.time() - start_time < timeout and (simgr.active or ("lowmem" in simgr.stashes and simgr.stashes["lowmem"])):
+        #if we still have active states, step them
         if simgr.active:
             simgr.step(step_func=k_step_func)
-        if "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
-            for state in simgr.stashes["lowmem"]:
-                #trim the state history to lower its footprint
-                state.history.trim()
+        #else we should see about moving the states back in from lowmem
+        #to do that, and not use up /more/ RAM, we should see about storing the constraints in the results from the
+        #deadended states, and deleting the states to make more room
+        elif "lowmem" in simgr.stashes and simgr.stashes["lowmem"]:
+            #move the deaded states into results and then delete them
+            for state in simgr.stashes["deadended"]:
+                if not state.ip in results['deadends']:
+                    results['deadends'][state.ip] = []
+                results['deadends'][state.ip].append({"state bb history": state.history.recent_bbl_addrs,
+                                                      "state_ins_history": state.history.recent_ins_addrs,
+                                                      "constraints": state.solver.constraints})
+            #move a state back and try to step it
+            state = simgr.stashes["lowmem"].pop()
+            #trim the state history to lower its footprint
+            state.history.trim()
             #move the states back into active
-            simgr.move(from_stash="lowmem", to_stash="active")
+            simgr.stashes["active"].append(state)
     ending_time = time.time()
     if ending_time - start_time > timeout:
         timed_out = True
