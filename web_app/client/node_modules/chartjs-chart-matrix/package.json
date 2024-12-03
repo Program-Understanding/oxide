@@ -1,0 +1,98 @@
+{
+  "name": "chartjs-chart-matrix",
+  "version": "2.0.1",
+  "description": "Chart.js module for creating matrix charts",
+  "type": "module",
+  "main": "dist/chartjs-chart-matrix.cjs",
+  "module": "dist/chartjs-chart-matrix.esm.js",
+  "types": "types/index.esm.d.ts",
+  "jsdelivr": "dist/chartjs-chart-matrix.min.js",
+  "unpkg": "dist/chartjs-chart-matrix.min.js",
+  "exports": {
+    "types": "./types/index.esm.d.ts",
+    "import": "./dist/chartjs-chart-matrix.esm.js",
+    "require": "./dist/chartjs-chart-matrix.cjs",
+    "script": "./dist/chartjs-chart-matrix.min.js"
+  },
+  "sideEffects": [
+    "dist/chartjs-chart-matrix.cjs",
+    "dist/chartjs-chart-matrix-min.js"
+  ],
+  "scripts": {
+    "autobuild": "rollup -c -w",
+    "build": "rollup -c",
+    "dev": "karma start ./karma.conf.cjs --no-signle-run --auto-watch --browsers chrome",
+    "docs": "npm run build && vuepress build docs --no-cache",
+    "docs:dev": "npm run build && vuepress dev docs --no-cache",
+    "lint": "concurrently -r \"npm:lint-*\"",
+    "lint-js": "eslint \"src/**/*.js\" \"test/**/*.js\" \"docs/**/*.js\"",
+    "lint-md": "eslint \"**/*.md\"",
+    "lint-types": "eslint \"types/**/*.ts\" && tsc -p types/tests/",
+    "test": "cross-env NODE_ENV=test concurrently \"npm:test-*\"",
+    "test-lint": "npm run lint",
+    "test-karma": "karma start ./karma.conf.cjs --auto-watch --single-run",
+    "test-integration:node-commonjs": "npm run test --prefix test/integration/node-commonjs",
+    "test-integration:node-module": "npm run test --prefix test/integration/node-module"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kurkle/chartjs-chart-matrix.git"
+  },
+  "keywords": [
+    "chart.js",
+    "chart",
+    "matrix"
+  ],
+  "files": [
+    "dist/*",
+    "!dist/docs/**",
+    "types/index.esm.d.ts"
+  ],
+  "author": "Jukka Kurkela",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/kurkle/chartjs-chart-matrix/issues"
+  },
+  "homepage": "https://chartjs-chart-matrix.pages.dev/",
+  "devDependencies": {
+    "@napi-rs/canvas": "^0.1.30",
+    "@rollup/plugin-commonjs": "^24.0.1",
+    "@rollup/plugin-json": "^6.0.0",
+    "@rollup/plugin-node-resolve": "^15.0.1",
+    "@rollup/plugin-terser": "^0.4.0",
+    "@typescript-eslint/eslint-plugin": "^5.6.0",
+    "@typescript-eslint/parser": "^5.6.0",
+    "chart.js": "^4.0.1",
+    "chartjs-adapter-date-fns": "^2.0.0",
+    "chartjs-test-utils": "^0.5.0",
+    "concurrently": "^7.4.0",
+    "cross-env": "^7.0.3",
+    "date-fns": "^2.19.0",
+    "eslint": "^8.4.1",
+    "eslint-config-chartjs": "^0.3.0",
+    "eslint-plugin-es": "^4.1.0",
+    "eslint-plugin-html": "^7.1.0",
+    "eslint-plugin-markdown": "^3.0.0",
+    "jasmine-core": "^4.4.0",
+    "karma": "^6.2.0",
+    "karma-chrome-launcher": "^3.1.0",
+    "karma-coverage": "^2.0.3",
+    "karma-firefox-launcher": "^2.1.0",
+    "karma-jasmine": "^5.1.0",
+    "karma-jasmine-html-reporter": "^2.0.0",
+    "karma-rollup-preprocessor": "7.0.7",
+    "karma-spec-reporter": "^0.0.36",
+    "pixelmatch": "^5.2.1",
+    "rollup": "^3.3.0",
+    "rollup-plugin-analyzer": "^4.0.0",
+    "rollup-plugin-istanbul": "^4.0.0",
+    "typescript": "^4.5.2",
+    "vuepress": "^1.9.7",
+    "vuepress-plugin-flexsearch": "^0.3.0",
+    "vuepress-plugin-redirect": "^1.2.5",
+    "vuepress-theme-chartjs": "^0.2.0"
+  },
+  "peerDependencies": {
+    "chart.js": ">=3.0.0"
+  }
+}

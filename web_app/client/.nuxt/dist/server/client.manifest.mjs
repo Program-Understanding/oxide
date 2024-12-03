@@ -1,0 +1,1 @@
+export { default } from "file:///home/camster/Desktop/Reverse/oxide/web_app/client/node_modules/@nuxt/vite-builder/dist/runtime/client.manifest.mjs"

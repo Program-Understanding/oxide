@@ -1,0 +1,1 @@
+import{k as e,S as n,Q as t}from"./vendor/json-editor-vue-mdfcgt41.js";const c={"h-screen":"","w-screen":"","bg-black":""},r=e({__name:"__blank",setup(o){return(s,_)=>(t(),n("div",c))}});export{r as default};
