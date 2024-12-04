@@ -1,13 +1,13 @@
 <template>
-    <div>
+    <div class="container">
         <div class="node-list">
             <ul>
-                <li v-for="node in nodeIds" :key="node" @click="selectNode(node)">
-                    {{ node }}
+                <li v-for="func in functions" :key="func" @click="selectNode(func)">
+                    {{ func }}
                 </li>
             </ul>
         </div>
-        <div id="network" style="width: 100%; height: 100vh"></div>
+        <div id="network" style="width: 100vw; height: 100vh;"></div>
         <LoadingSpinner :visible="loading" />
     </div>
 </template>
@@ -36,6 +36,7 @@ export default {
         const networkInstance = ref(null);
         const loading = ref(true);
         const nodeIds = ref([]);
+        const functions = ref([]);
 
         const fetchDataAndPlot = async () => {
             try {
@@ -63,6 +64,11 @@ export default {
                 const edges = data.edges; // ex. {"from" : 4096, "to" : 4118}
                 const functionToFirstBlock = {};
                 const functionBlocks = data.functions;
+
+                functions.value = Object.keys(data["functions"]).filter(
+                    (func) => data["functions"][func].blocks.length > 0
+                );
+                console.log(functions.value);
 
                 // Map functions to their first block ID
                 for (const functionName in functionBlocks) {
@@ -199,6 +205,16 @@ export default {
                                 "curve-style": "bezier",
                             },
                         },
+                        {
+                            selector: '.highlighted',
+                            style: {
+                                'background-color': 'salmon',
+                                'line-color': 'salmon',
+                                'target-arrow-color': 'salmon',
+                                'transition-property': 'background-color, line-color, target-arrow-color',
+                                'transition-duration': '0.5s'
+                            }
+                        },
                     ],
                     layout: {
                         name: "dagre",
@@ -219,11 +235,26 @@ export default {
             }
         };
 
-        const selectNode = (nodeId) => {
+        const selectNode = (functionName) => {
             const cy = networkInstance.value;
             if (cy) {
-                cy.$(`#${nodeId}`).select();
-                cy.center(cy.$(`#${nodeId}`));
+                // Find the node with the specified function name
+                const node = cy.nodes().filter(`[label *= "Function: ${functionName}"]`);
+                if (node.length > 0) {
+                    // Reset previous highlights
+                    cy.elements().removeClass('highlighted');
+
+                    // Highlight connected edges and nodes
+                    const connectedEdges = node.connectedEdges();
+                    connectedEdges.addClass('highlighted');
+                    connectedEdges.connectedNodes().addClass('highlighted');
+
+                    // Center the view on the selected node
+                    node.removeClass('highlighted');
+                    cy.center(node);
+                } else {
+                    console.warn(`Node with function name ${functionName} not found.`);
+                }
             }
         };
 
@@ -279,6 +310,7 @@ export default {
             loading,
             nodeIds,
             selectNode,
+            functions,
         };
     },
 };
@@ -286,8 +318,17 @@ export default {
 
 <style scoped>
 #network {
-    width: 100%;
-    height: 100%;
+    width: 100vw;
+    height: 100vh;
+}
+
+.container {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: center;
+    width: 100vw;
+    height: 100vh;
 }
 
 .node-list {
