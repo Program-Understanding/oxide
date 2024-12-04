@@ -1,15 +1,25 @@
 <template>
     <div>
-        <div id="network" style="width: 100%; height: 100vh;"></div>
+        <div class="node-list">
+            <ul>
+                <li v-for="node in nodeIds" :key="node" @click="selectNode(node)">
+                    {{ node }}
+                </li>
+            </ul>
+        </div>
+        <div id="network" style="width: 100%; height: 100vh"></div>
         <LoadingSpinner :visible="loading" />
     </div>
 </template>
 
 <script>
-import { ref, onMounted, watch } from 'vue';
-import { Network } from 'vis-network/standalone/esm/vis-network';
-import domtoimage from 'dom-to-image';
+import { ref, onMounted, watch } from "vue";
+import cytoscape from "cytoscape";
+import dagre from "cytoscape-dagre";
+import domtoimage from "dom-to-image";
 import LoadingSpinner from "./LoadingSpinner.vue";
+
+cytoscape.use(dagre);
 
 export default {
     components: {
@@ -21,113 +31,205 @@ export default {
         selectedCollection: String,
         oid: String,
     },
-    emits: ['update:downloadChart'],
-    setup(props, {emit}) {
+    emits: ["update:downloadChart"],
+    setup(props, { emit }) {
         const networkInstance = ref(null);
         const loading = ref(true);
+        const nodeIds = ref([]);
 
         const fetchDataAndPlot = async () => {
             try {
                 loading.value = true;
 
                 const url = new URL("http://localhost:8000/api/retrieve");
-                url.searchParams.append("selected_module", props.selectedModule);
-                url.searchParams.append("selected_collection", props.selectedCollection);
+                url.searchParams.append("selected_module", "control_flow_graph");
+                url.searchParams.append(
+                    "selected_collection",
+                    props.selectedCollection
+                );
 
                 const response = await fetch(url);
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 const normalData = await response.json();
-                console.log('API Response:', normalData);
                 const data = normalData[props.oid];
+                console.log(data);
 
                 const container = document.getElementById("network");
 
-                const nodes = [];
-                const edges = [];
-                const callCounts = {};
+                const elements = [];
+                const functionCalls = data.function_calls; // ex. {4096 : {called_by : []}, {calls : ["printf"]}}}
+                const edges = data.edges; // ex. {"from" : 4096, "to" : 4118}
+                const functionToFirstBlock = {};
+                const functionBlocks = data.functions;
+
+                // Map functions to their first block ID
+                for (const functionName in functionBlocks) {
+                    const blocks = data.functions[functionName].blocks;
+                    if (blocks.length > 0) {
+                        functionToFirstBlock[functionName] = blocks[0];
+                        console.log(`Mapped function ${functionName} to first block ID ${blocks[0]}`);
+                    }
+                }
 
                 // Nodes
-                for (const nodeId in data._node) {
-                    callCounts[nodeId] = { incomingCalls: 0, outgoingCalls: 0 };
-                    const node = data._node[nodeId];
-                    nodes.push({
-                        id: nodeId,
-                        label: node.label || nodeId, // Use node label if available
-                        title: `Node ID: ${nodeId}\nTimes called: ${callCounts[nodeId].incomingCalls}\nCalls made: ${callCounts[nodeId].outgoingCalls}`
+                for (const functionName in functionToFirstBlock) {
+                    const blockId = functionToFirstBlock[functionName];
+
+                    elements.push({
+                        data: {
+                            id: blockId,
+                            label: `Block ID: ${blockId}\nFunction: ${functionName}`,
+                        }
                     });
+                    nodeIds.value.push(blockId);
+                    console.log(`Added node for function ${functionName} with block ID ${blockId}`);
                 }
+                // Ensure all nodes are added before creating edges
+                for (let i = 0; i < edges.length; i++) {
+                    const edge = edges[i];
+                    const fromNode = edge.from;
+                    const toNode = edge.to;
+
+                    // Add "from" node if it doesn't already exist and is not part of a function
+                    if (!nodeIds.value.includes(fromNode) && !isPartOfFunction(fromNode, data.functions)) {
+                        elements.push({
+                            data: {
+                                id: fromNode,
+                                label: `Block ID: ${fromNode}`,
+                            }
+                        });
+                        nodeIds.value.push(fromNode);
+                        console.log(`Added node for block ID ${fromNode}`);
+                    }
+
+                    // Add "to" node if it doesn't already exist and is not part of a function
+                    if (!nodeIds.value.includes(toNode) && !isPartOfFunction(toNode, data.functions)) {
+                        elements.push({
+                            data: {
+                                id: toNode,
+                                label: `Block ID: ${toNode}`,
+                            }
+                        });
+                        nodeIds.value.push(toNode);
+                        console.log(`Added node for block ID ${toNode}`);
+                    }
+                }
+
+                function isPartOfFunction(blockId, functions) {
+                    for (const functionName in functions) {
+                        if (functions[functionName].blocks.includes(blockId)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
 
                 // Edges
-                for (const fromNode in data._adj) {
-                    for (const toNode in data._adj[fromNode]) {
-                        edges.push({ from: fromNode, to: toNode });
-                        // Increment the call counters
-                        callCounts[fromNode].outgoingCalls += 1;
-                        callCounts[toNode].incomingCalls += 1;
+                for (let i = 0; i < edges.length; i++) {
+                    const edge = edges[i];
+                    const fromNode = edge.from;
+                    const toNode = edge.to;
+
+                    const fromFunction = getFunctionName(fromNode, data.functions);
+                    const toFunction = getFunctionName(toNode, data.functions);
+
+                    // Filter out calls from and to the same function, unless the function is unknown
+                    if (fromFunction && toFunction && fromFunction === toFunction) {
+                        console.log(`Skipped edge from block ID ${fromNode} to block ID ${toNode} (same function)`);
+                        continue;
                     }
+
+                    const fromBlockId = functionToFirstBlock[fromFunction] || fromNode;
+                    const toBlockId = functionToFirstBlock[toFunction] || toNode;
+
+                    // Add edge
+                    elements.push({
+                        data: {
+                            id: `edge-${fromBlockId}-${toBlockId}`,
+                            source: fromBlockId,
+                            target: toBlockId,
+                        }
+                    });
+                    console.log(`Added edge from block ID ${fromBlockId} to block ID ${toBlockId}`);
                 }
 
-                // Update nodes with call counts
-                nodes.forEach(node => {
-                    const nodeId = node.id;
-                    node.title = `Node ID: ${nodeId}\nLabel: ${node.label}\nTimes called: ${callCounts[nodeId].incomingCalls}\nCalls made: ${callCounts[nodeId].outgoingCalls}`;
+                // Helper function to get function name by block ID
+                function getFunctionName(blockId, functions) {
+                    for (const functionName in functions) {
+                        if (functions[functionName].blocks.includes(blockId)) {
+                            return functionName;
+                        }
+                    }
+                    return blockId;
+                }
+                const cy = cytoscape({
+                    container: container,
+                    elements: elements,
+                    style: [
+                        {
+                            selector: "node",
+                            style: {
+                                "background-color": "#1f77b4",
+                                label: "data(label)",
+                                "text-valign": "center",
+                                "text-justification": "left",
+                                color: "#fff",
+                                shape: "roundrectangle",
+                                width: "label",
+                                height: "label",
+                                padding: "10px",
+                                "text-wrap": "wrap",
+                                "text-max-width": "300px",
+                                "font-family": "monospace",
+                                "font-size": "12px",
+                                "min-zoomed-font-size": 12,
+                            },
+                        },
+                        {
+                            selector: "edge",
+                            style: {
+                                width: 2,
+                                "line-color": "#9dbaea",
+                                "target-arrow-color": "#9dbaea",
+                                "target-arrow-shape": "triangle",
+                                "arrow-scale": 1.5,
+                                "curve-style": "bezier",
+                            },
+                        },
+                    ],
+                    layout: {
+                        name: "dagre",
+                        fit: true,
+                        padding: 10,
+                    },
+                    minZoom: 0.1, // Minimum zoom level
+                    maxZoom: 2, // Maximum zoom level
+                    zoom: 1, // Initial zoom level
+                    wheelSensitivity: 0.2,
                 });
 
-                const dataForNetwork = { nodes, edges };
-                const options = {
-                    nodes: {
-                        shape: 'dot',
-                        size: 16,
-                        font: {
-                            size: 32,
-                            color: '#ffffff'
-                        },
-                        borderWidth: 2
-                    },
-                    edges: {
-                        width: 2,
-                        font: {
-                            size: 12,
-                            align: 'middle'
-                        },
-                        arrows: {
-                            to: { enabled: true, scaleFactor: 1.2 }
-                        }
-                    },
-                    layout: {
-                        hierarchical: {
-                            direction: 'UD',
-                            sortMethod: 'directed', // Sort by directed edges
-                            levelSeparation: 150, // Adjust level separation
-                            nodeSpacing: 200 // Adjust node spacing
-                        }
-                    },
-                    physics: {
-                        enabled: true,
-                        stabilization: {
-                            iterations: 200,
-                        },
-                    },
-                    interaction: {
-                        keyboard: true,
-                        tooltipDelay: 200
-                    }
-                };
-
-                networkInstance.value = new Network(container, dataForNetwork, options);
+                networkInstance.value = cy;
                 loading.value = false;
-
             } catch (error) {
-                console.error('Error creating call graph:', error);
+                console.error("Error creating call graph:", error);
+                loading.value = false;
+            }
+        };
+
+        const selectNode = (nodeId) => {
+            const cy = networkInstance.value;
+            if (cy) {
+                cy.$(`#${nodeId}`).select();
+                cy.center(cy.$(`#${nodeId}`));
             }
         };
 
         onMounted(() => {
             fetchDataAndPlot();
-            emit('update:downloadChart', downloadChart);
-
+            emit("update:downloadChart", downloadChart);
         });
 
         const downloadChart = () => {
@@ -136,7 +238,19 @@ export default {
             // Temporarily set the background to dark
             container.style.backgroundColor = "#333";
 
-            domtoimage.toSvg(container)
+            const scale = 3;
+
+            domtoimage
+                .toSvg(container, {
+                    width: container.clientWidth * scale,
+                    height: container.clientHeight * scale,
+                    style: {
+                        transform: `scale(${scale})`,
+                        transformOrigin: "top left",
+                        width: `${container.clientWidth}px`,
+                        height: `${container.clientHeight}px`,
+                    },
+                })
                 .then((dataUrl) => {
                     // Reset the background color
                     container.style.backgroundColor = "";
@@ -153,14 +267,18 @@ export default {
                 });
         };
 
-
-        watch(() => [props.selectedModule, props.selectedCollection, props.file], () => {
-            fetchDataAndPlot();
-        });
+        watch(
+            () => [props.selectedModule, props.selectedCollection, props.file],
+            () => {
+                fetchDataAndPlot();
+            }
+        );
 
         return {
             networkInstance,
             loading,
+            nodeIds,
+            selectNode,
         };
     },
 };
@@ -170,5 +288,32 @@ export default {
 #network {
     width: 100%;
     height: 100%;
+}
+
+.node-list {
+    width: 200px;
+    margin-right: 20px;
+    max-height: 100%;
+    overflow-y: auto;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    padding: 10px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+.node-list ul {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+}
+
+.node-list li {
+    cursor: pointer;
+    padding: 5px;
+    border-bottom: 1px solid #ccc;
+}
+
+.node-list li:hover {
+    background: salmon;
 }
 </style>
