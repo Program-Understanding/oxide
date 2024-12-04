@@ -92,6 +92,7 @@ export default {
                     nodeIds.value.push(blockId);
                     console.log(`Added node for function ${functionName} with block ID ${blockId}`);
                 }
+                console.log(functionToFirstBlock)
                 // Ensure all nodes are added before creating edges
                 for (let i = 0; i < edges.length; i++) {
                     const edge = edges[i];
@@ -99,7 +100,7 @@ export default {
                     const toNode = edge.to;
 
                     // Add "from" node if it doesn't already exist and is not part of a function
-                    if (!nodeIds.value.includes(fromNode) && !isPartOfFunction(fromNode, data.functions)) {
+                    if (!nodeIds.value.includes(fromNode) && !isPartOfFunction(fromNode, data.functions) && !functionToFirstBlock[fromNode]) {
                         elements.push({
                             data: {
                                 id: fromNode,
@@ -111,7 +112,7 @@ export default {
                     }
 
                     // Add "to" node if it doesn't already exist and is not part of a function
-                    if (!nodeIds.value.includes(toNode) && !isPartOfFunction(toNode, data.functions)) {
+                    if (!nodeIds.value.includes(toNode) && !isPartOfFunction(toNode, data.functions) && !functionToFirstBlock[toNode]) {
                         elements.push({
                             data: {
                                 id: toNode,
