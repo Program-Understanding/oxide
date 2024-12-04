@@ -3,7 +3,7 @@ from functools import reduce
 
 def get_cfg_features(G):
 
-    start_node = min(list(G))
+    start_node = min(node for node in G if isinstance(node, int))
     loops, back_edges = natural_loops(G, start_node)
     loops_inter, _ = natural_loops(G, start_node, use_intersect=True)
     sccs = list(nx.strongly_connected_components(G))

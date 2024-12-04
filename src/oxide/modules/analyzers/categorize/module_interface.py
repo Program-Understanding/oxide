@@ -22,13 +22,14 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-DESC = " This module is a template for analyzer, new analyzers can copy this format"
-NAME = "possible_archs"
+DESC = ""
+NAME = "categorize"
 
 # imports
 import logging
 
 from typing import Dict, Any, List
+import os
 
 from oxide.core import api
 
@@ -58,27 +59,41 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     oid_list = api.expand_oids(oid_list)
     results = {}
     for oid in oid_list:
-        archs = {}
+        category = None
+        src_type = api.get_field("src_type", oid, "type").pop()
+        file_name = api.get_field("file_meta", oid, "names").pop()
+        file_extension = os.path.splitext(file_name)[1][1:]
 
-        # Header
-        try:
-            header = api.get_field("object_header", oid, oid)
-            archs["ARCH_HEADER"] = [header.machine] if header.machine != "Unknown" else None
-        except Exception:
-            archs["ARCH_HEADER"] = None
         
-        # CPU_REC2
-        archs["ARCH_CPU_REC2"] = api.get_field('cpu_rec', oid, 'cpu_rec2', {"mode": "cpu_rec2"})
+        if 'ELF' in src_type or "PE" in src_type or "MACHO" in src_type or ('ZIP' in src_type and '.jar' in file_extension):
+            category = "executable"    
 
-        # Check Strings
-        arch_strings = api.retrieve('strings_components_finder', oid, {"component": "architecture"})
-        archs["ARCH_STRINGS"] = list(arch_strings.keys()) if arch_strings else None
+        if 'ZIP' in src_type or "GZIP" in src_type or "TAR" in src_type or "BZ2" in src_type:
+            category = "archive"
 
-        # Check strings for cores
-        arch_cores = api.retrieve('strings_components_finder', oid, {"component": "architecture", "mode": "possible"})
-        archs["ARCH_CORES"] = list(arch_cores.keys()) if arch_cores else None
+        if ('PNG' in src_type or "JPG" in src_type or "GIF" in src_type or "MP3" in src_type or
+            'TIFF' in src_type or "BMP" in src_type or "WAV" in src_type or
+            "OGG" in src_type):
+            category = "media"
+
+        if ".crt" in file_extension:
+            category = "certificate"
+
+        if 'PDF' in src_type:
+            category = "documentation"
+
+        if 'TTF' in src_type or 'XML' in src_type:
+            category = "resource"
+        
+        if 'Script' in src_type:
+            category = "source"
+
+        # TEXT FILES, BASED ON FILE EXTENSION ONLY
+        if (".c" == file_extension or ".cpp" == file_extension or ".cxx" == file_extension or ".java" == file_extension or ".rs" == file_extension or
+            ".go" == file_extension):
+            category = "source"
 
 
-        results[oid] = archs
+        results[oid] = category
 
     return results

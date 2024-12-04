@@ -43,6 +43,7 @@ logger.debug("init")
 
 opts_doc = {"version": {"type": int, "mangle": True, "default": -1},
            "rebase-off": {"type": bool, "mangle": True, "default": False},
+           "processor": {"type": str, "mangle": True, "default": "none"}
            }
 
 
@@ -53,6 +54,10 @@ def documentation() -> Dict[str, Any]:
 
 def process(oid: str, opts: dict) -> bool:
     logger.debug("process()")
+
+    processor = None
+    if opts["processor"] != "none":
+        processor = opts["processor"]
 
     path = None
     # tracks version of ghidra that was used to extract instructions
@@ -100,7 +105,7 @@ def process(oid: str, opts: dict) -> bool:
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data)
 
-    result = ghidra_extract.extract(f_name, header)
+    result = ghidra_extract.extract(f_name, header, processor)
     if result is None: return False
     api.store(NAME, oid, result, opts)
     return True

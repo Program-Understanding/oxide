@@ -36,7 +36,7 @@ from cpu_rec import which_arch, which_arch2
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"mode": {"type": str, "mangle": True, "default": "cpu_rec"}}
+opts_doc = {"mode": {"type": str, "mangle": True, "default": "none"}}
 """
 options dictionary defines expected options, including type, default value, and whether
 presence of option distinguishes a version of output (mangle).
@@ -55,42 +55,33 @@ def documentation() -> Dict[str, Any]:
             "atomic": True, "category": CATEGORY}
 
 
-def process(oid: str, opts: dict) -> bool:
-    """ Extractors run analysis, do not interact with stdout, and only store to database
-        they take in a single oid (as opposed to analyzers which take oid_list)
-        and opts is ensured to atleast contain values defined by opts_doc defined above.
-    """
-    logger.debug("process()")
+def process(oid:str, opts:dict) -> bool:
+    results = {}
 
-    """
-    src = api.source(oid)
-    # if extractor needs file bytes
-    data = api.get_field(src, oid, "data", {})
-    if not data:
-        logger.debug("Not able to process %s", oid)
-        return False
-
-    # if extractor needs to inspect executable files header
-    header = api.get_field("object_header", oid, oid)
-    if not header:
-        logger.warning('No header found for %s in %s', oid, NAME)
-        return False
-
-    # if extractor needs a file on disk to analyze
-    f_name = api.get_field("file_meta", oid, "names").pop()
-    f_name = api.tmp_file(f_name, data)
-    """
-
-    src = api.source(oid)
-    data = api.get_field(src, oid, "data", {})
-    mode = opts['mode']
-    if mode == "cpu_rec2":
-        result = which_arch2(data)
-    elif mode == "cpu_rec":
-        result = which_arch(data)
+    if opts["mode"] == "cpu_rec2" or opts["mode"] == "cpu_rec" or opts["mode"] == "both":
+        mode = opts["mode"]
     else:
+        logger.warning("Invalid cpu_rec mode")
         return False
+    
+    data = api.get_field(api.source(oid), oid, "data", {}) 
+    file_name = api.get_field("file_meta", oid, "names").pop()
+    f_name = api.tmp_file(file_name, data) 
 
-    if result is None: return False
-    api.store(NAME, oid, result, opts)
+    if mode == "cpu_rec2":
+        cpu_rec2_result = which_arch2(open(f_name, "rb").read())
+        results["cpu_rec2"] = cpu_rec2_result
+
+    elif mode == "both":
+        cpu_rec_result = which_arch(open(f_name, "rb").read())
+        results["cpu_rec"] = cpu_rec_result
+        cpu_rec2_result = which_arch2(open(f_name, "rb").read())
+        results["cpu_rec2"] = cpu_rec2_result
+
+    else:
+        cpu_rec_result = which_arch(open(f_name, "rb").read())
+        results["cpu_rec"] = cpu_rec_result
+
+    if results is None: return False
+    api.store(NAME, oid, results, opts)
     return True

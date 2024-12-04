@@ -11,11 +11,15 @@ import itertools
 
 from cfg_features import get_cfg_features
 from cg_features import get_cg_features
+from asm_features import get_asm_features
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {}
+opts_doc = {"version": {"type": int, "mangle": True, "default": -1},
+           "rebase-off": {"type": bool, "mangle": True, "default": False},
+            "processor": {"type": str, "mangle": True, "default": "none"}
+           }
 
 
 def documentation() -> Dict[str, Any]:
@@ -57,14 +61,25 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     oid_list = api.expand_oids(oid_list)
     results = {}
 
+    processor = opts["processor"]
+        
     for oid in oid_list:
         results[oid] = {}
-        basic_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
+        basic_blocks = api.get_field('ghidra_disasm', oid, "original_blocks", {"processor": processor})
+        instructions = api.get_field('ghidra_disasm', oid, "instructions", {"processor": processor})
+        functions = api.get_field('ghidra_disasm', oid, "functions", {"processor": processor})
         call_mapping = api.retrieve("call_mapping", oid)
-        bb_graph = _cfg_to_networkx(basic_blocks)
-        cfg_features = get_cfg_features(bb_graph)
-        cg_features = get_cg_features(call_mapping)
-        results[oid]["cfg_features"] = cfg_features
-        results[oid]["cg_features"] = cg_features
+        if basic_blocks != {}:
+            bb_graph = _cfg_to_networkx(basic_blocks)
+            cfg_features = get_cfg_features(bb_graph)
+            cg_features = get_cg_features(call_mapping)
+            asm_features = get_asm_features(bb_graph, instructions)
+            results[oid]["cfg_features"] = cfg_features
+            results[oid]["cg_features"] = cg_features
+            results[oid]["asm_features"] = asm_features
+            results[oid]["num_functions"] = len(functions)
+
+        else:
+            results[oid] = "None"
         
     return results

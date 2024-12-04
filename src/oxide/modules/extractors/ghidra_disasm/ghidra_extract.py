@@ -50,8 +50,13 @@ LOAD_ADDR = 0
 """
 
 
-def extract_ghidra_disasm(file_test: str) -> Optional[str]:
-    cmd = "{} {} {} ".format(GHIDRA_PATH, GHIDRA_Project_PATH, GHIDRA_Project_NAME) + \
+def extract_ghidra_disasm(file_test: str, processor: str) -> Optional[str]:
+    if processor:
+        cmd = "{} {} {} ".format(GHIDRA_PATH, GHIDRA_Project_PATH, GHIDRA_Project_NAME) + \
+            "-import {} -processor {} -overwrite -scriptPath {} ".format(file_test, processor, SCRIPTS_PATH)   + \
+            "-postScript {}".format(EXTRACT_SCRIPT)
+    else:
+        cmd = "{} {} {} ".format(GHIDRA_PATH, GHIDRA_Project_PATH, GHIDRA_Project_NAME) + \
           "-import {} -overwrite -scriptPath {} ".format(file_test, SCRIPTS_PATH)   + \
           "-postScript {}".format(EXTRACT_SCRIPT)
     logger.info("cmd: %s", cmd)
@@ -191,7 +196,7 @@ def _sort_lines(extract_lines: str) -> Tuple[list, list, list]:
     return LOAD_ADDR, ghidra_inst_ref, ghidra_block_ref, ghidra_function_ref
 
 
-def extract(file_test: str, header) -> dict:
+def extract(file_test: str, header, processor) -> dict:
     """ Runs instruction extraction from ghidraHEADLESS using a java language
         script.
 
@@ -214,7 +219,7 @@ def extract(file_test: str, header) -> dict:
         return None
 
     start = time.time()
-    extract_script_dump = extract_ghidra_disasm(file_test)
+    extract_script_dump = extract_ghidra_disasm(file_test, processor)
     end = time.time()
 
     if not extract_script_dump:

@@ -75,7 +75,6 @@ def isPNG(stream: bytes) -> bool:
     return stream[:8] == b"\x89\x50\x4E\x47\x0D\x0A\x1A\x0A"
 
 def isSVG(stream: bytes) -> bool:
-    print(stream[:10])
     return stream[:] == b""
 
 def isBMP(stream: bytes) -> bool:
@@ -91,11 +90,9 @@ def isPS(stream: bytes) -> bool:
     return stream[:2] == b"%!"
 
 def isMP3(stream: bytes) -> bool:
-    print(stream[:12])
     return stream[:12] == b"\x49\x44\x33\x03\x00\x00\x00"
 
 def isMP4(stream: bytes) -> bool:
-    print(stream[:12])
     return (stream[:12] == b"\x00\x00\x00\x14ftyp3gp5" or
             stream[:12] == b"\x00\x00\x00\x14ftypisom" or
             stream[:12] == b"\x00\x00\x00\x1cftypisom" or
@@ -120,7 +117,6 @@ def isZIP(stream: bytes) -> bool:
     return stream[:4] == b"PK\x03\x04"
 
 def isXZ(stream: bytes) -> bool:
-    print(stream[:4])
     return stream[:4] == b"\xde\xca"
 
 def isCompress(stream: bytes) -> bool:
