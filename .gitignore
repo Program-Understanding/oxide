@@ -4,6 +4,14 @@ src/oxide.egg-info/
 env/
 .venv/
 
+api_server/config.ini
+web_app/*.json
+web_app/node_modules/
+web_app/client/node_modules/
+web_app/client/*.json
+web_app/client/.nuxt/
+
+
 # residual oxide directories and files
 !datastore/sample_datasets
 __pycache__/
