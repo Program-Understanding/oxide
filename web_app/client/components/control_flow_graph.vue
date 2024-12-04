@@ -10,20 +10,6 @@
         </div>
         <div id="network"></div>
         <LoadingSpinner :visible="loading" />
-        <div class="settings-dropdown">
-            <button @click="toggleDropdown">Settings</button>
-            <div v-if="dropdownVisible" class="dropdown-content">
-                <label>
-                    <input type="checkbox" v-model="showControlFlowGraph" />
-                    Control Flow Graph
-                </label>
-                <label>
-                    <input type="checkbox" v-model="showCallGraph" />
-                    Call Graph
-                </label>
-                <button @click="reloadGraphs">Reload</button>
-            </div>
-        </div>
     </div>
 </template>
 
@@ -128,79 +114,6 @@ export default {
                 });
             }
 
-            if (showCallGraph.value) {
-                // Add nodes and edges for function calls within the function
-                functionBlocks.forEach((blockId) => {
-                    const functionCall = functionCalls[blockId];
-                    if (functionCall) {
-                        functionCall.calls.forEach((calleeId) => {
-                            if (typeof calleeId === "string" && !nodeIds.has(calleeId)) {
-                                // Create a node for the string destination if it doesn't exist
-                                elements.push({
-                                    data: {
-                                        id: calleeId,
-                                        label: calleeId,
-                                    },
-                                });
-                                nodeIds.add(calleeId);
-
-                                const edgeKey = `${blockId}-${calleeId}`;
-                                if (!edgeSet.has(edgeKey)) {
-                                    elements.push({
-                                        data: {
-                                            source: blockId,
-                                            target: calleeId,
-                                        },
-                                    });
-                                    edgeSet.add(edgeKey);
-                                }
-                            }
-                        });
-                    }
-                });
-                functionBlocks.forEach((blockId) => {
-                    const blockCall = blockCalls[blockId];
-                    if (blockCall) {
-                        blockCall.calls.forEach((calleeId) => {
-                            if (!nodeIds.has(calleeId)) {
-                                // Create a node for the external block if it doesn't exist
-                                const externalNode = nodes.find((node) => node["block id"] === calleeId);
-                                if (externalNode) {
-                                    const functionName = Object.keys(data.functions).find((fn) =>
-                                        data.functions[fn].blocks.includes(calleeId) ? fn : undefined
-                                    );
-                                    const instructions = externalNode.instructions
-                                        .map((instr) => {
-                                            return `${instr[0]}: ${instr[1]}`;
-                                        })
-                                        .join("\n\n");
-
-                                    elements.push({
-                                        data: {
-                                            id: externalNode["block id"],
-                                            label: `Block ${externalNode["block id"]}\n\n${instructions}\n\nFunction: ${functionName}`,
-                                            instructions: instructions,
-                                        },
-                                    });
-                                    nodeIds.add(externalNode["block id"]);
-
-                                    const edgeKey = `${blockId}-${externalNode["block id"]}`;
-                                    if (!edgeSet.has(edgeKey)) {
-                                        elements.push({
-                                            data: {
-                                                source: blockId,
-                                                target: externalNode["block id"],
-                                            },
-                                        });
-                                        edgeSet.add(edgeKey);
-                                    }
-                                }
-                            }
-                        });
-                    }
-                });
-            }
-
             console.log("Elements for Cytoscape:", elements);
 
             const cy = cytoscape({
@@ -297,14 +210,6 @@ export default {
             plotFlowGraph(func);
         };
 
-        const toggleDropdown = () => {
-            dropdownVisible.value = !dropdownVisible.value;
-        };
-
-        const reloadGraphs = () => {
-            fetchDataAndPlot();
-        };
-
         onMounted(() => {
             fetchDataAndPlot();
             emit("update:downloadChart", downloadChart);
@@ -361,11 +266,7 @@ export default {
             selectFunction,
             plotFlowGraph,
             loading,
-            dropdownVisible,
             showControlFlowGraph,
-            showCallGraph,
-            toggleDropdown,
-            reloadGraphs,
         };
     },
 };
@@ -400,44 +301,5 @@ export default {
     flex-grow: 1;
     width: 100%;
     height: 100%;
-}
-
-.settings-dropdown {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-}
-
-.settings-dropdown button {
-    border: 1px solid #333;
-    color: white;
-    border: none;
-    padding: 10px;
-    cursor: pointer;
-    border-radius: 5px;
-}
-
-.settings-dropdown .dropdown-content {
-    display: flex;
-    flex-direction: column;
-    background-color: #333;
-    border: 1px solid #ccc;
-    border-radius: 5px;
-    padding: 10px;
-    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-    margin-top: 5px;
-}
-
-.settings-dropdown .dropdown-content label {
-    margin-bottom: 10px;
-}
-
-.settings-dropdown .dropdown-content button {
-    background-color: #3498db;
-    color: white;
-    border: none;
-    padding: 10px;
-    cursor: pointer;
-    border-radius: 5px;
 }
 </style>
