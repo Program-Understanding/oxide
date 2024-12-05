@@ -1,5 +1,5 @@
 <template>
-    <div id="container" class="flex flex-col min-h-screen h-screen bg-zinc-900">
+    <div id="container" class="flex flex-col min-h-screen h-screen bg-zinc-900"> 
         <Sidebar>
             <div id="currentFile">Current file: {{ selectedFile }}</div>
             <button @click="togglePopup">Select New Chart/File</button>
