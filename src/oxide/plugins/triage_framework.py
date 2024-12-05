@@ -6,9 +6,6 @@ import os
 import concurrent.futures
 import os
 import shutil
-import pandas as pd
-from tabulate import tabulate
-import json
 import tlsh
 from prettytable import PrettyTable
 from threading import Event
