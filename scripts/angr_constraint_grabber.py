@@ -6,6 +6,7 @@ import logging
 import time
 import traceback
 import psutil
+from pickle import dumps
 
 logger = logging.getLogger(NAME)
 logging.basicConfig(level=logging.CRITICAL)
@@ -75,7 +76,7 @@ def system_call_breakpoint(state):
                                           "seconds since start": time.time() - start_time,
                                           "destination": state.inspect.syscall_name})
 
-def subprocess(path,z3_timeout):
+def subprocess(path,z3_timeout,path):
     """
     This module takes in various parameters as options to
     pass to angr or Z3 in order to try and optimize them for
@@ -165,22 +166,25 @@ def subprocess(path,z3_timeout):
                                               "state_ins_history": state.history.recent_ins_addrs,
                                               "constraints": state.solver.constraints})
     #locally store the results
-    oxide.local_store(NAME,oid,results)
+    #oxide.local_store(NAME,oid,results)
+    with open(path,"wb") as f:
+        f.write(dumps(results))
     print("OK")
     sys.exit(0)
 
 #main functionality,
 #grab the path and the basename of the file
 path = sys.argv[1]
-oid = sys.argv[2]
+out_path = sys.argv[2]
+oid = sys.argv[3]
 #timeout is saved as a global variable and is thus not a
 #direct argument to any other function
-timeout = float(sys.argv[3])
-z3_timeout = int(sys.argv[4])*1000
+timeout = float(sys.argv[4])
+z3_timeout = int(sys.argv[5])*1000
 #keep the results as a global for use w/ breakpoint function
 results = {"calls":{},"syscalls":{}, "deadends":{}}
 try:
-    subprocess(path,z3_timeout)
+    subprocess(path,z3_timeout,out_path)
 except ValueError as e:
     print("VALUE ERROR : ",e)
     sys.exit(1)
@@ -197,7 +201,9 @@ except Exception as e:
             results["valid"] = False
             results["reached max seconds"] = True
             results["num states"] = max(len(results["calls"]),len(results["syscalls"]))
-            oxide.local_store(NAME,oid,results)
+            with open(out_path, "wb") as f:
+                f.write(dumps(results))
+            #oxide.local_store(NAME,oid,results)
             #returning a different code to let the caller know we stored partial results
             print("data successfully written out to local store")
             sys.exit(2)

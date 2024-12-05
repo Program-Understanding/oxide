@@ -6,6 +6,7 @@ import logging
 import time
 import psutil
 import claripy
+from pickle import loads, dumps
 #debugging RAM malarcky
 from sys import getsizeof
 
@@ -85,7 +86,7 @@ def is_sat(solver,constraints):
     except claripy.errors.ClaripyZ3Error:
         return False
 
-def subprocess(oid, name):
+def subprocess(constraint_file,out_path):
     #this function will load the constraints from the oxide datastore using the oid and name,
     #then it will run through the constraints with the tactic given, making sure to use the appropriate
     #z3 timeout and keeping track of how long it takes to solve each constraint
@@ -93,7 +94,9 @@ def subprocess(oid, name):
     #now use the solver with the input tactic
     global num_processes
     claripy.backends.backend_z3.BackendZ3.solver = my_solver
-    inp = oxide.local_retrieve(name,oid)
+    #inp = oxide.local_retrieve(name,oid)
+    with open(constraint_file,"rb") as f:
+        inp = loads(f.read())
     stats = {}
     #need to loop through syscalls', function calls', and deadends' constraints
     #looping through syscalls:
@@ -166,25 +169,28 @@ def subprocess(oid, name):
                     total_time_in_seconds += list_item["seconds taken to determine sat"]
     stats["total seconds"] = total_time_in_seconds
     #store the results in the local oxide store and exit gracefully
-    oxide.local_store(NAME,oid,stats)
+    #oxide.local_store(NAME,oid,stats)
+    with open(out_path,"wb") as f:
+        f.write(dumps(stats))
     sys.exit(0)
 
 process = psutil.Process()
-name = sys.argv[1]
-oid = sys.argv[2]
+constraint_file = sys.argv[1]
+output_path = sys.argv[2]
+oid = sys.argv[3]
 #timeout is saved as a global variable and is thus not a
 #direct argument to any other function
-z3_timeout = int(sys.argv[3])*1000
+z3_timeout = int(sys.argv[4])*1000
 #keep the results as a global for use w/ breakpoint function
-num_processes = int(sys.argv[4])
+num_processes = int(sys.argv[5])
 results = {"calls":{},"syscalls":{}}
 print("Initialized results, starting process...")
 try:
-    my_tactic = sys.argv[5]
+    my_tactic = sys.argv[6]
 except Exception:
     my_tactic = ""
 try:
-    subprocess(oid,name)
+    subprocess(constraint_file,output_path)
 except Exception as e:
     print(f"Exception occurred in subprcess(): {e}")
     print(traceback.format_exc())
