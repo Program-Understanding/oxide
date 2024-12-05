@@ -357,5 +357,5 @@ export default {
 
 .node-list li:hover {
     background: salmon;
-}
+} 
 </style>
