@@ -81,7 +81,7 @@ def process(oid, opts):
     # make a file path to store the constraints gathered from angr
     constraint_out_path = os.path.join(api.scratch_dir,f"{SUBPROC}_{oid}.out")
     # make an incomplete file path to store the angr optimization script output
-    opt_out_path = os.path.join(api.scratch_dir,f"{SUBPROC_B}_{oid}_")
+    opt_out_path = os.path.join(api.scratch_dir,f"{SUBPROC_B}_{oid}.out")
     # we'll make as many commands as we have tactics
     tactic_cmds = []
     #initialize results dictionary as well
@@ -91,7 +91,7 @@ def process(oid, opts):
         tactic_cmds.append((f"python3 {opt_script_full_path} {constraint_out_path} {opt_out_path} {oid} {z3_timeout} {config.multiproc_max} {tactic}",tactic))
         #keeping track of the total seconds for the tactic used
         results[tactic] = {"total seconds": 0}
-    angr_cmd = f"python3 {constraint_script_full_path} {file_full_path} {oid} {timeout} {z3_timeout} {constraint_out_path}"
+    angr_cmd = f"python3 {constraint_script_full_path} {file_full_path} {constraint_out_path} {oid} {timeout} {z3_timeout}"
     #keeping track of the total seconds w/ no tactic
     results['with no tactic'] = {"total seconds": 0}
     #set up the proper python path for the environment
@@ -129,7 +129,7 @@ def process(oid, opts):
                     results[tactic_cmd[1]]["total seconds"] += results[tactic_cmd[1]][f'run {run+1}']["total seconds"]
                     #api.local_delete_data(SUBPROC_B,oid)
                 #next we run w/o any tactic
-                sub_proc_out = subproc_run(f"python3 {opt_script_full_path} {SUBPROC} {oid} {z3_timeout} {config.multiproc_max}",env,logger,null)
+                sub_proc_out = subproc_run(f"python3 {opt_script_full_path} {constraint_out_path} {opt_out_path} {oid} {z3_timeout} {config.multiproc_max}",env,logger,null)
                 with open(opt_out_path, "rb") as f:
                     results['with no tactic'][f'run {run+1}'] = loads(f.read())#api.local_retrieve(SUBPROC_B,oid)
                 results['with no tactic']['total seconds'] += results['with no tactic'][f'run {run+1}']['total seconds']
@@ -174,9 +174,9 @@ def subproc_run(command, env, logger, null):
     try:
         sub_proc_out = subprocess.check_output(command, universal_newlines=True, shell=True, stderr=null,env=env)
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error occured running in subprocess: {e.output}")
+        logger.warning(f"Error occured running in subprocess: {e.output}")
         if e.returncode != 2:
             raise Exception(f"Subprocess data unrecoverable, return code {e.returncode}")
-        else:
-            logger.error(f"Traceback: {traceback.format_exc()}")
+        # else:
+        #     logger.error(f"Traceback: {traceback.format_exc()}")
     return sub_proc_out

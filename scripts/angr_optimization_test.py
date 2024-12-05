@@ -70,7 +70,7 @@ def my_solver(self, timeout=None, max_memory=None):
         s.set("max_memory", max_memory)
     else:
         #making sure to make sure that max memory is really for real getting set because it doesn't otherwise look like it
-        s.set("max_memory",max(int(((psutil.virtual_memory().total*0.33)/2**6)/num_processes), 1024))
+        s.set("max_memory",max(int(((psutil.virtual_memory().total*0.66)/2**6)/num_processes), 1024))
     return s
 
 def is_sat(solver,constraints):
@@ -99,74 +99,52 @@ def subprocess(constraint_file,out_path):
         inp = loads(f.read())
     stats = {}
     #need to loop through syscalls', function calls', and deadends' constraints
-    #looping through syscalls:
-    stats['syscalls'] = {}
-    #initialize solver w/ max memory being coded to 33% of ram divided by number of processes running
+    #initialize solver w/ max memory being coded to 66% of ram divided by number of processes running
     slvr = claripy.Solver() #need to divide by 2**6 as max_memory should be sent in MB and not B
     #setting also a minimum value of 1024 MB as recommended by z3, though this shouldn't ever be hit
-    slvr.max_memory = max(int(((psutil.virtual_memory().total*0.33)/2**6)/num_processes), 1024)
-    for state_ip in inp['syscalls'].keys():
-        stats['syscalls'][state_ip] = []
-        # del slvr.constraints, slvr.variables, slvr._finalized
-        # slvr.constraints = []
-        # slvr.variables = set()
-        # slvr._finalized = False
-        for entry in inp['syscalls'][state_ip]:
+    slvr.max_memory = max(int(((psutil.virtual_memory().total*0.66)/2**6)/num_processes), 1024)
+    # for state_ip in inp['syscalls'].keys():
+    #looping through syscalls:
+    if inp['syscalls']:
+        stats['syscalls'] = []
+        for cons in inp['syscalls']:
             ini_time = time.time()
-            sat = is_sat(slvr,entry["constraints"])
-            stats['syscalls'][state_ip].append({"number of constraints": len(entry["constraints"]),
-                                                "seconds taken to determine sat": time.time()-ini_time,
-                                                "state recent blocks": entry["state history bb addrs"],
-                                                "satisfiable": sat})
-    # del slvr.constraints, slvr.variables, slvr._finalized
-    # slvr.constraints = []
-    # slvr.variables = set()
-    # slvr._finalized = False
+            sat = is_sat(slvr,cons)
+            stats['syscalls'].append({"number of constraints": len(cons),
+                                      "seconds taken to determine sat": time.time()-ini_time,
+                                      "satisfiable": sat})
+
     #looping through function calls
-    stats['function calls'] = {}
-    for state_ip in inp['calls'].keys():
-        stats['function calls'][state_ip] = []
-        # del slvr.constraints, slvr.variables, slvr._finalized
-        # slvr.constraints = []
-        # slvr.variables = set()
-        # slvr._finalized = False
-        for entry in inp['calls'][state_ip]:
-            ini_time = time.time()
-            sat = is_sat(slvr,entry["constraints"])
-            stats['function calls'][state_ip].append({"number of constraints": len(entry["constraints"]),
-                                                      "seconds taken to determine sat": time.time()-ini_time,
-                                                      "state recent blocks": entry["state history bb addrs"],
-                                                      "satisfiable": sat})
-    # del slvr.constraints, slvr.variables, slvr._finalized
-    # slvr.constraints = []
-    # slvr.variables = set()
-    # slvr._finalized = False
+    if inp['calls']:
+        stats['function calls'] = []
+    # for state_ip in inp['calls'].keys():
+    #     stats['function calls'][state_ip] = []
+        for cons in inp['calls']:
+                ini_time = time.time()
+                sat = is_sat(slvr,cons)
+                stats['function calls'].append({"number of constraints": len(cons),
+                                                "seconds taken to determine sat": time.time()-ini_time,
+                                                "satisfiable": sat})
     #looping through deadended states
     #making sure we even have any deadends first
-    if 'deadends' in inp and inp['deadends']:
-        stats['deadends'] = {}
-        for state_ip in inp['deadends'].keys():
-            stats['deadends'][state_ip] = []
-            # del slvr.constraints, slvr.variables, slvr._finalized
-            # slvr.constraints = []
-            # slvr.variables = set()
-            # slvr._finalized = False
-            for entry in inp['deadends'][state_ip]:
-                ini_time = time.time()
-                sat = is_sat(slvr,entry["constraints"])
-                stats['deadends'][state_ip].append({"number of constraints": len(entry["constraints"]),
-                                                    "seconds taken to determine sat": time.time()-ini_time,
-                                                    "state recent blocks": entry["state bb history"],
-                                                    "satisfiable": sat})
-        del slvr.constraints, slvr.variables, slvr._finalized, slvr
+    if inp['deadends']:
+        stats['deadends'] = []
+        # for state_ip in inp['deadends'].keys():
+            # stats['deadends'][state_ip] = []
+        for cons in inp['deadends']:
+            ini_time = time.time()
+            sat = is_sat(slvr,cons)
+            stats['deadends'].append({"number of constraints": len(cons),
+                                      "seconds taken to determine sat": time.time()-ini_time,
+                                      "satisfiable": sat})
     #finally, need to calculate the total time taken by adding up the number of seconds
     #across deadends, syscalls, and funcalls
     total_time_in_seconds = 0
     for category in ['deadends','function calls', 'syscalls']:
         if category in stats:
-            for state_ip in stats[category].keys():
-                for list_item in stats[category][state_ip]:
-                    total_time_in_seconds += list_item["seconds taken to determine sat"]
+            # for state_ip in stats[category].keys():
+            for list_item in stats[category]:
+                total_time_in_seconds += list_item["seconds taken to determine sat"]
     stats["total seconds"] = total_time_in_seconds
     #store the results in the local oxide store and exit gracefully
     #oxide.local_store(NAME,oid,stats)
