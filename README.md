@@ -86,7 +86,7 @@ pip3 install angr
 Capa is an open source tool used to analyze executable files and provide a list of capabilities.
 
 ```
-$ pip install flare-capa
+pip install flare-capa
 ```
 
 ## How to get Binary Ninja to work
