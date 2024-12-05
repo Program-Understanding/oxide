@@ -321,6 +321,8 @@ export default {
 #network {
     width: 100vw;
     height: 100vh;
+    position: absolute;
+    z-index: 1;
 }
 
 .container {
@@ -340,7 +342,12 @@ export default {
     border: 1px solid #ccc;
     border-radius: 5px;
     padding: 10px;
+    background-color: rgba(0, 0, 0, 0.5) ;
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    z-index: 2;
+    position: absolute;
+    top: 0;
+    left: 0;
 }
 
 .node-list ul {
