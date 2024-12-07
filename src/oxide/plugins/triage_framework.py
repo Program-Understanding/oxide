@@ -20,7 +20,7 @@ info = """
         """
 print(info)
 
-pp = pprint.PrettyPrinter(depth=4)
+pp = pprint.PrettyPrinter()
 
 TIMEOUT_SHORT = 200
 TIMEOUT_LONG = 500
@@ -79,22 +79,6 @@ class FileAnalyzer:
                     else:
                         oid_archs[arch] = [arch_approach]
         self.tags["ARCH_POSSIBLE"] = oid_archs
-
-    # def tag_disasm_w_timeout(self):
-    #     p = multiprocessing.Process(target=self.tag_disasm)
-    #     p.start()
-    #     p.join(TIMEOUT_LONG)
-    #     if p.is_alive():
-    #         p.terminate()
-    #         p.join()
-    #         print(f"Timeout while processing DISASM for {self.oid}")
-
-    #         _clean_up_disasm()
-    #         self.tags["DISASM"] = {
-    #             "RESULT": "TIMEOUT",
-    #             "PASS": {},
-    #             "FAIL": {}
-    #             }
                 
     def tag_arch_w_timeout(self):
         p = multiprocessing.Process(target=self.tag_all_archs())
@@ -106,17 +90,41 @@ class FileAnalyzer:
             print(f"Timeout while processing ARCH for {self.oid}")
             self.tags["ARCH"] = ["TIMEOUT"]
 
-    # def tag_disasm(self):
-    #     if "DISASM" not in self.tags or self.force == "DISASM":
-    #         print(self.tags)
-    #         archs = []
-    #         archs_file = self.tags["ARCH_POSSIBLE"]
-    #         archs_collection = self.collection_archs["ARCH_POSSIBLE"]
-    #         archs = list(archs_file.keys()) + archs_collection
-    #         disasm = api.get_field("guess_arch_disasm", self.oid, self.oid, {"archs": archs})
-    #         self.tags["DISASM"] = disasm['DISASM']
-    #         self.tags['SELECTED_ARCH'] = disasm['SELECTED']
-    #         print(self.tags)
+    def tag_selected_arch(self):
+        if "SELECTED_ARCH" not in self.tags or self.force == "SELECTED_ARCH":
+            disasm = self.tags.get("DISASM")
+            if disasm["RESULT"] == "PASS":
+                best = {"arch": [],
+                        "functions": 0,
+                        "cfg_size": 0,
+                        "source": []
+                        }
+                for arch in disasm["PASS"]:
+                    disasm_features = disasm["PASS"][arch]["FEATURES"]
+                    disasm_source = disasm['PASS'][arch]['SOURCE']
+                    num_functions = disasm_features["num_functions"]
+                    cfg_size = disasm_features["cfg_features"]["cfg_size"]
+                    if cfg_size > best["cfg_size"]:
+                        best.update({
+                            'arch': [arch],
+                            'functions': num_functions,
+                            'cfg_size': cfg_size,
+                            'source': [disasm_source]
+                        })
+                    elif cfg_size == best["cfg_size"] and cfg_size > 0:
+                        if num_functions > best["functions"]:
+                            best.update({
+                                'arch': [arch],
+                                'functions': num_functions,
+                                'cfg_size': cfg_size,
+                                'source': [disasm_source]
+                            })
+                        elif num_functions == best["functions"]:
+                            best['arch'].append(arch)
+                            best['source'].append(disasm_source)
+            else:
+                best = None
+            self.tags["SELECTED_ARCH"] = best
 
     def tag_function_tlsh(self):
         hashes = {}
@@ -458,18 +466,13 @@ class FrameworkAnalyzer:
         print(table)
 
 def file_pre_analysis(args, opts) -> None:
-
-    if args:
-        collections, invalid = api.valid_oids(args)
-        oids = api.expand_oids(collections)
-    else:
-        collections = api.collection_cids()
+    collections = get_collections(args, opts)
 
     force = opts.get('force')
 
     count = 1
-    for collection in collections:
-        print(f"{count}: {api.get_colname_from_oid(collection)}")
+    for collection_num, collection in enumerate(collections, start=1):
+        print(f"COLLECTION {collection_num} of {len(collections)}: {api.get_colname_from_oid(collection)}")
         oids = api.expand_oids(collection)
         p = progress.Progress(len(oids))
 
@@ -491,11 +494,7 @@ def file_pre_analysis(args, opts) -> None:
 
 
 def collection_pre_analysis(args, opts) -> None:
-    if args:
-        valid, invalid = api.valid_oids(args)
-        collections = [valid]
-    else:
-        collections = api.collection_cids()
+    collections = get_collections(args, opts)
 
     p = progress.Progress(len(collections))
     for collection in collections:
@@ -549,26 +548,10 @@ def collection_pre_analysis(args, opts) -> None:
         }
 
         api.apply_tags(collection, collection_tags)
-        p.tick()
-
-
-def tag_disasm(oid, force, tags, collection_archs):
-    if "DISASM" not in tags or force == "DISASM":
-        archs = []
-        archs_file = tags["ARCH_POSSIBLE"]
-        archs_collection = collection_archs["ARCH_POSSIBLE"]
-        archs = list(archs_file.keys()) + archs_collection
-        disasm = api.get_field("ghidra_disasm_archs", oid, oid, {"archs": archs})
-        tags["DISASM"] = disasm['DISASM']
-        tags['SELECTED_ARCH'] = disasm['SELECTED']
-    return tags             
+        p.tick()         
 
 def file_analysis(args, opts) -> None:
-    if args:
-        collections, invalid = api.valid_oids(args)
-        oids = api.expand_oids(collections)
-    else:
-        collections = api.collection_cids()
+    collections = get_collections(args, opts)
 
     force = opts.get('force', None)
 
@@ -601,21 +584,19 @@ def file_analysis(args, opts) -> None:
                         "PASS": {},
                         "FAIL": {}
                     }
+                
 
-                if analyzer.tags["DISASM"].get("RESULT") == "PASS":
+                if analyzer.tags.get("DISASM").get("RESULT") == "PASS":
+                    analyzer.tag_selected_arch()
                     analyzer.tag_function_tlsh()
                 exe_count += 1
 
-            # Apply the tags to the OID
-            api.apply_tags(oid, analyzer.tags)
+                # Apply the tags to the OID
+                api.apply_tags(oid, analyzer.tags)
 
 
 def collection_analysis(args, opts):
-    if args:
-        valid, invalid = api.valid_oids(args)
-        collections = [valid]
-    else:
-        collections = api.collection_cids()
+    collections = get_collections(args, opts)
 
     p = progress.Progress(len(collections))
     for collection in collections:
@@ -623,12 +604,8 @@ def collection_analysis(args, opts):
         oids = api.expand_oids(collection)
 
         # Initialize data structures for device attributes
-        collection_disasm = {
-            "framework": {},
-            "arch_dect": {},
-            "ghidra": {},
-            "selected_arch": {} 
-        }
+
+        collection_disasm = {}
         collection_func_tlsh = {}
         collection_selected_archs = {}
 
@@ -640,24 +617,12 @@ def collection_analysis(args, opts):
             if tags.get("DISASM"):
                 # Check Framework Result
                 disasm_result = tags["DISASM"].get("RESULT")
-                collection_disasm["framework"][disasm_result] = collection_disasm["framework"].get(disasm_result, 0) + 1
+                collection_disasm[disasm_result] = collection_disasm.get(disasm_result, 0) + 1
 
-                # Check arch dect Result: 
-
-                # Check ghidra result:
-                if tags["DISASM"].get("PASS"):
-                    if "DEFAULT" in tags["DISASM"].get("PASS"):
-                        collection_disasm["ghidra"]["PASS"] = collection_disasm["ghidra"].get("PASS", 0) + 1
-                    else:
-                        collection_disasm["ghidra"]["FAIL"] = collection_disasm["ghidra"].get("FAIL", 0) + 1
-                else:
-                    disasm_result = tags["DISASM"].get("RESULT")
-                    collection_disasm["ghidra"][disasm_result] = collection_disasm["ghidra"].get(disasm_result, 0) + 1
-
-                if tags["DISASM"].get("SELECTED_ARCH"):
-                    selected_archs = tags["DISASM"]["SELECTED_ARCH"]["arch"]
+                if tags.get("SELECTED_ARCH"):
+                    selected_archs = tags["SELECTED_ARCH"]["arch"]
                     for selected_arch in selected_archs:
-                        collection_disasm["selected_arch"][selected_arch] = collection_disasm["selected_arch"].get(selected_arch, 0) + 1
+                        collection_selected_archs[selected_arch] = collection_selected_archs.get(selected_arch, 0) + 1
             
             if tags.get("FUNC_TLSH"):
                 for function in tags['FUNC_TLSH']:
@@ -676,12 +641,7 @@ def collection_analysis(args, opts):
 
 
 def framework_analysis(args, opts):
-    if args:
-        valid, invalid = api.valid_oids(args)
-        collections = valid
-    else:
-        collections = api.collection_cids()
-
+    collections = get_collections(args, opts)
 
     force = opts.get('force', None)
 
@@ -689,9 +649,9 @@ def framework_analysis(args, opts):
 
     p = progress.Progress(len(collections))
     for collection in collections:
-        print(collection)
+        print(f"COLLECTION: {api.get_colname_from_oid(collection)}")
         p2 = progress.Progress(len(ref_collections))
-        for ref_collection in ref_collections:    
+        for ref_collection in collections:    
             collection_tags = api.get_tags(collection)
             if not (collection_tags.get("FRAMEWORK_DATA") and collection_tags["FRAMEWORK_DATA"].get(ref_collection)) or force == "COMPARE":
                 analyzer = FrameworkAnalyzer(collection, ref_collection)   
@@ -796,62 +756,34 @@ def get_cross_collection_analysis(args, opts):
 
 
 def get_collection_tags(args, opts):
-    def print_device_info(device, name, tags):
+    def print_collection_info(device, name, tags):
         """Helper function to format and print device information."""
         print("\n----------------------------------------------")
-        print(f"cid - {device}\nFirmware - {name}\ntags -")
-        pp.pprint(tags)
+        print(f"CID - {device}\nCOLLECTION - {name}\nTAGS -")
+        print("SELECTED_ARCHS:")
+        pp.pprint(tags.get("SELECTED_ARCHS"))
+        print("SRC_TYPE")
+        pp.pprint(tags.get("SRC_TYPE"))
+        print("FILe_CATEGORY")
+        pp.pprint(tags.get("CATEGORY"))
         print("----------------------------------------------")
 
-    # Determine devices based on args and apply filters
-    devices = api.valid_oids(args)[0] if args else api.collection_cids()
-    for filter_key, filter_value in opts.items():
-        devices = oid_filter(devices, filter_key, filter_value)
-
+    collections = get_collections(args, opts)
+    
     # Fetch and print information for each device
-    for device in devices:
-        name = api.get_colname_from_oid(device)
-        tags = api.get_tags(device)
-        print_device_info(device, name, tags)
+    for collection in collections:
+        name = api.get_colname_from_oid(collection)
+        tags = api.get_tags(collection)
+        print_collection_info(collection, name, tags)
     
 def get_file_tags(args, opts):
-    def fetch_and_filter_oids(oids, filters):
-        """Expand and filter OIDs based on provided filters."""
-        expanded_oids = api.expand_oids(oids)
-        for filter_key, filter_value in filters.items():
-            expanded_oids = oid_filter(expanded_oids, filter_key, filter_value)
-        return expanded_oids
-
     # Process OIDs based on whether specific collections are provided
-    if args:
-        valid_oids, _ = api.valid_oids(args)
-        oids = fetch_and_filter_oids(valid_oids, opts)
-        _print_file_tags(oids)
-    else:
-        devices = api.collection_cids()
-        for device in devices:
-            oids = fetch_and_filter_oids(device, opts)
-            _print_file_tags(oids)
+    collections = get_collections(args, opts)
 
-# def import_samples(args, opts):
-#     dir_path = args[0]
-
-#     # Check if the provided path is a valid directory
-#     if not os.path.isdir(dir_path):
-#         raise ShellSyntaxError("Enter a valid directory with firmware from devices")
-
-#     def import_sample(sample_name, sample_path):
-#         """Helper function to import a directory or file and create a collection."""
-#         oids, new_files = (
-#             api.import_directory(sample_path) if os.path.isdir(sample_path)
-#             else api.import_file(sample_path)
-#         )
-#         api.create_collection(sample_name, oids, oids)
-
-#     # Iterate over samples in the directory and import them
-#     for sample in os.listdir(dir_path):
-#         sample_path = os.path.join(dir_path, sample)
-#         import_sample(sample, sample_path)
+    for collection in collections:
+        oids = api.expand_oids(collection)
+        for oid in oids:
+            _print_file_tags(oid)
 
 def import_samples(args, opts):
     dir_path = args[0]
@@ -889,23 +821,79 @@ def analysis(args, opts):
     collection_analysis(args, opts)
     framework_analysis(args, opts)
 
-exports = [file_pre_analysis, file_analysis, collection_pre_analysis, collection_analysis, framework_analysis, get_file_tags, get_collection_tags, framework_analysis, get_cross_collection_analysis, compare_collections, import_samples, pre_analysis, analysis]
+def run_framework(args, opts):
+    file_pre_analysis(args, opts)
+    collection_pre_analysis(args, opts)
+    file_analysis(args, opts)
+    collection_analysis(args, opts)
+    framework_analysis(args, opts)
+
+exports = [file_pre_analysis, file_analysis, collection_pre_analysis, collection_analysis, framework_analysis, get_file_tags, get_collection_tags, framework_analysis, get_cross_collection_analysis, compare_collections, import_samples, pre_analysis, run_framework]
 
 ############################
 ### SUPPORTING FUNCTIONS ###
 ############################
 
+def get_collections(args=None, opts=None):
+    """
+    Process collections based on provided arguments or a filter.
+
+    Parameters:
+        api (object): The API object that provides necessary methods.
+        args (list or None): List of arguments to validate and expand OIDs.
+        opts (dict or None): Options that may include a 'force' filter.
+
+    Returns:
+        list: A list of processed collections.
+    """
+    # Default options to an empty dictionary if None
+    opts = opts or {}
+
+    if args:
+        valid, invalid = api.valid_oids(args)
+        collections = [valid]
+    else:
+        # Handle case when no arguments are provided
+        filter_value = opts.get('filter')
+        if filter_value:
+            # Retrieve all collection CIDs
+            all_collections = api.collection_cids()
+            collections = []
+            for collection in all_collections:
+                # Get collection name and check the filter
+                collection_name = api.get_colname_from_oid(collection)
+                if collection_name.startswith(filter_value):
+                    collections.append(collection)
+            
+            if not collections:
+                # Print a message and return empty list if no matches
+                print("No collection matches for filter")
+                return []
+        else:
+            # Default case: retrieve all collection CIDs
+            collections = api.collection_cids()
+
+    return collections
+
+def tag_disasm(oid, force, tags, collection_archs):
+    if "DISASM" not in tags or force == "DISASM":
+        archs = []
+        archs_file = tags["ARCH_POSSIBLE"]
+        archs_collection = collection_archs["ARCH_POSSIBLE"]
+        archs = list(archs_file.keys()) + archs_collection
+        tags["DISASM"] = api.get_field("ghidra_disasm_archs", oid, oid, {"archs": archs})    
+    return tags    
+
+
 def oid_filter(oids, filter, value):
     oids = api.tag_filter(oids, filter, value)
     return oids
 
-def _print_file_tags(oids):
-    for oid in oids:
-        file_name = api.get_field("file_meta", oid, "names").pop()
-        tags = api.get_tags(oid)
-        if tags and len(tags) > 1:
-            print(f"\nid - {oid}\nfile name - {file_name}\ntags -")
-            pp.pprint(tags)
+def _print_file_tags(oid):
+    tags = api.get_tags(oid)
+    if tags and len(tags) > 1:
+        print(f"\nid - {oid}\n \ntags -")
+        pp.pprint(tags)
 
 def _clean_up_disasm():
     # Define the base directory

@@ -156,11 +156,8 @@ def collection_disasm_stats(args, opts):
         print("----------------------------------------------")
 
 def num_files_disasm(args, opts):
-    if args:
-        collections, invalid = api.valid_oids(args)
-        oids = api.expand_oids(collections)
-    else:
-        collections = api.collection_cids()
+    collections = get_collections(args, opts)
+
     
     total_exes = 0
     total_disasm = 0
@@ -173,21 +170,19 @@ def num_files_disasm(args, opts):
         timeout_count = 0
         oids = api.expand_oids(collection)
         for oid in oids:
-            if api.get_tags(oid) is None:
-                continue
-            elif len(api.get_tags(oid)) > 1:
-                tags = api.get_tags(oid)
-                if tags.get("FILE_CATEGORY") == "executable":
-                    exe_count += 1
-                    if tags.get("DISASM"):
-                        disasm_count += 1
-                        if tags["DISASM"].get("RESULT") == "PASS":
-                            pass_count += 1
-                        elif tags["DISASM"].get("RESULT") == "FAIL":
-                            fail_count += 1       
-                        if tags["DISASM"].get("RESULT") == "TIMEOUT":
-                            pass_count += 1
+            tags = api.get_tags(oid)
+            if tags.get("FILE_CATEGORY") == "executable":
+                exe_count += 1
+                if tags.get("DISASM"):
+                    disasm_count += 1
+                    if tags["DISASM"].get("RESULT") == "PASS":
+                        pass_count += 1
+                    elif tags["DISASM"].get("RESULT") == "FAIL":
+                        fail_count += 1       
+                    if tags["DISASM"].get("RESULT") == "TIMEOUT":
+                        pass_count += 1
         print(f"{api.get_colname_from_oid(collection)}: {disasm_count} of {exe_count} ({(disasm_count/exe_count) * 100}%)")
+        # if opts.get('results'):
         print(f"\tPASS: {pass_count}")
         print(f"\tFAIL: {fail_count}")
         print(f"\tTIMEOUT: {timeout_count}")
@@ -234,3 +229,45 @@ def _flatten_dict(d, parent_key='', sep='_'):
         else:
             items.append((new_key, v))
     return dict(items)
+
+
+def get_collections(args=None, opts=None):
+    """
+    Process collections based on provided arguments or a filter.
+
+    Parameters:
+        api (object): The API object that provides necessary methods.
+        args (list or None): List of arguments to validate and expand OIDs.
+        opts (dict or None): Options that may include a 'force' filter.
+
+    Returns:
+        list: A list of processed collections.
+    """
+    # Default options to an empty dictionary if None
+    opts = opts or {}
+
+    if args:
+        valid, invalid = api.valid_oids(args)
+        collections = [valid]
+    else:
+        # Handle case when no arguments are provided
+        filter_value = opts.get('filter')
+        if filter_value:
+            # Retrieve all collection CIDs
+            all_collections = api.collection_cids()
+            collections = []
+            for collection in all_collections:
+                # Get collection name and check the filter
+                collection_name = api.get_colname_from_oid(collection)
+                if collection_name.startswith(filter_value):
+                    collections.append(collection)
+            
+            if not collections:
+                # Print a message and return empty list if no matches
+                print("No collection matches for filter")
+                return []
+        else:
+            # Default case: retrieve all collection CIDs
+            collections = api.collection_cids()
+
+    return collections
