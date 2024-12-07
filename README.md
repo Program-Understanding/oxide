@@ -113,6 +113,7 @@ pip3 install
 * py-tlsh
 * pyahocorasick
 * opencv-python
+* prettytable
 
 If you are using **MacOS**, you will need to install GNU objdump.
 With Brew, `brew install binutils` and symlink `gobjdump` to `/usr/local/bin/gobjdump`
