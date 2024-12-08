@@ -4,6 +4,7 @@ src/oxide.egg-info/
 env/
 .venv/
 
+api_server/config.ini
 web_app/node_modules/
 web_app/client/node_modules/
 web_app/client/.nuxt/
@@ -46,4 +47,4 @@ localstore/*
 
 # pytorch saves
 *.pt
-api_server/config.ini
+
