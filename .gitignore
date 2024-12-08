@@ -46,3 +46,4 @@ localstore/*
 
 # pytorch saves
 *.pt
+api_server/config.ini
