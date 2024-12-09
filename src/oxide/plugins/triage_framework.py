@@ -536,7 +536,16 @@ def collection_pre_analysis(args, opts) -> None:
 
             # Handle File Category
             cat = tags.get("FILE_CATEGORY")
-            device_file_category[cat] = device_file_category.get(cat, 0) + 1
+            if cat in device_file_category:
+                device_file_category[cat]["COUNT"] += 1
+                device_file_category[cat]["SRC_TYPE"].get(src_type, 0) + 1
+                device_file_category[cat]["FILE_EXT"].get(ext, 0) + 1
+            else:
+                device_file_category[cat] = {
+                    "COUNT": 1,
+                    "SRC_TYPES": {src_type: 1},
+                    "FILE_EXTS": {ext: 1}
+                }
 
         # Aggregate device tags
         collection_tags = {
@@ -624,9 +633,11 @@ def collection_analysis(args, opts):
                     for selected_arch in selected_archs:
                         collection_selected_archs[selected_arch] = collection_selected_archs.get(selected_arch, 0) + 1
             
-            if tags.get("FUNC_TLSH"):
-                for function in tags['FUNC_TLSH']:
-                    collection_func_tlsh[function] = tags["FUNC_TLSH"][function]
+                if tags.get("FUNC_TLSH"):
+                    for function in tags['FUNC_TLSH']:
+                        collection_func_tlsh[function] = tags["FUNC_TLSH"][function]
+
+
 
 
         # Aggregate device tags
@@ -647,11 +658,10 @@ def framework_analysis(args, opts):
 
     ref_collections = api.collection_cids()
 
-    p = progress.Progress(len(collections))
     for collection in collections:
         print(f"COLLECTION: {api.get_colname_from_oid(collection)}")
         p2 = progress.Progress(len(ref_collections))
-        for ref_collection in collections:    
+        for ref_collection in ref_collections:  
             collection_tags = api.get_tags(collection)
             if not (collection_tags.get("FRAMEWORK_DATA") and collection_tags["FRAMEWORK_DATA"].get(ref_collection)) or force == "COMPARE":
                 analyzer = FrameworkAnalyzer(collection, ref_collection)   
@@ -663,7 +673,6 @@ def framework_analysis(args, opts):
                     collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.report
                 api.apply_tags(collection, collection_tags)
             p2.tick()
-        p.tick()
 
 def compare_collections(args, opts):
     if len(args) < 2:

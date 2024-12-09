@@ -189,7 +189,36 @@ def num_files_disasm(args, opts):
         total_exes += exe_count
         total_disasm += disasm_count
     print(f"TOTAL: {total_disasm} of {total_exes} ({(total_disasm/total_exes) * 100}%)")
-exports = [collection_disasm_stats, num_files_disasm, intersection_data]
+
+
+def get_src_types(args, opts):
+    collections = get_collections(args, opts)
+
+    for collection in collections:
+        tags = api.get_tags(collection)
+        print(f"COLLECTION: {api.get_colname_from_oid(collection)}")
+        pprint.pprint(tags.get("SRC_TYPE"))
+
+def get_file_exts(args, opts):
+    collections = get_collections(args, opts)
+
+    for collection in collections:
+        tags = api.get_tags(collection)
+        print(f"COLLECTION: {api.get_colname_from_oid(collection)}")
+        pprint.pprint(tags.get("EXT"))
+
+def get_file_category(args, opts):
+    collections = get_collections(args, opts)
+
+    for collection in collections:
+        tags = api.get_tags(collection)
+        print(f"COLLECTION: {api.get_colname_from_oid(collection)}")
+        pprint.pprint(tags.get("CATEGORY"))
+
+exports = [collection_disasm_stats, num_files_disasm, intersection_data, get_src_types, get_file_exts, get_file_category]
+
+
+
 
 ############################
 ### SUPPORTING FUNCTIONS ###
