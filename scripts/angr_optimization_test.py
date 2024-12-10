@@ -146,10 +146,10 @@ def subprocess(constraint_file,out_path):
             for list_item in stats[category]:
                 total_time_in_seconds += list_item["seconds taken to determine sat"]
     stats["total seconds"] = total_time_in_seconds
-    #store the results in the local oxide store and exit gracefully
-    #oxide.local_store(NAME,oid,stats)
+    #store the results in the local oxide scratch and exit gracefully
     with open(out_path,"wb") as f:
         f.write(dumps(stats))
+    print("Done")
     sys.exit(0)
 
 process = psutil.Process()
