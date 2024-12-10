@@ -147,6 +147,10 @@ export default {
                     const toBlockId = functionToFirstBlock[toFunction] || toNode;
 
                     // Check for non-function nodes
+                    if (!elements.some(el => el.data.id === fromBlockId)) {
+                        console.error(`Error creating call graph: Error: Can not create edge \`edge-${fromBlockId}-${toBlockId}\` with nonexistant source \`${fromBlockId}\``);
+                        continue;
+                    }
                     if (!elements.some(el => el.data.id === toBlockId || el.data.id === fromBlockId)) {
                         console.error(`Error creating call graph: Error: Can not create edge \`edge-${fromBlockId}-${toBlockId}\` with nonexistant target \`${toBlockId}\``);
                         continue;
