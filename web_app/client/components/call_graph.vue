@@ -77,6 +77,8 @@ export default {
                     if (blocks.length > 0) {
                         functionToFirstBlock[functionName] = blocks[0];
                         console.log(`Mapped function ${functionName} to first block ID ${blocks[0]}`);
+                    } else {
+                        functionToFirstBlock[functionName] = functionName;
                     }
                 }
 
@@ -84,14 +86,25 @@ export default {
                 for (const functionName in functionToFirstBlock) {
                     const blockId = functionToFirstBlock[functionName];
 
-                    elements.push({
-                        data: {
-                            id: blockId,
-                            label: `Block ID: ${blockId}\nFunction: ${functionName}`,
-                        }
-                    });
-                    nodeIds.value.push(blockId);
-                    console.log(`Added node for function ${functionName} with block ID ${blockId}`);
+                    if (isNaN(blockId)) {
+                        elements.push({
+                            data: {
+                                id: blockId,
+                                label: `Function: ${functionName}`,
+                            }
+                        });
+                        nodeIds.value.push(blockId);
+                    } 
+                    else {
+                        elements.push({
+                            data: {
+                                id: blockId,
+                                label: `Block ID: ${blockId}\nFunction: ${functionName}`,
+                            }
+                        });
+                        nodeIds.value.push(blockId);
+                        console.log(`Added node for function ${functionName} with block ID ${blockId}`);
+                    }
                 }
 
                 console.log(functionToFirstBlock)
@@ -103,11 +116,11 @@ export default {
                     const toNode = edge.to;
 
                     // Add "from" node if it doesn't already exist and is a function
-                    if (!nodeIds.value.includes(fromNode) && !isNaN) {
+                    if (!nodeIds.value.includes(fromNode) && isNaN(fromNode) && !(Object.keys(functionToFirstBlock).includes(toNode))) {
                         elements.push({
                             data: {
                                 id: fromNode,
-                                label: `Block ID: ${fromNode}`,
+                                label: `Function: ${fromNode}`,
                             }
                         });
                         nodeIds.value.push(fromNode);
@@ -115,17 +128,18 @@ export default {
                     }
 
                     // Add "to" node if it doesn't already exist and is a fuction
-                    if (!nodeIds.value.includes(toNode) && !isNaN) {
+                    if (!nodeIds.value.includes(toNode) && isNaN(toNode) && !(Object.keys(functionToFirstBlock).includes(toNode))) {
                         elements.push({
                             data: {
                                 id: toNode,
-                                label: `Block ID: ${toNode}`,
+                                label: `Function: ${toNode}`,
                             }
                         });
                         nodeIds.value.push(toNode);
                         console.log(`Added node for block ID ${toNode}`);
                     }
                 }
+                console.log(functionToFirstBlock);
 
 
                 // Edges
@@ -174,7 +188,7 @@ export default {
                             return functionName;
                         }
                     }
-                    return blockId;
+                    return null;
                 }
                 const cy = cytoscape({
                     container: container,
