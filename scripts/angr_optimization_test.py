@@ -5,11 +5,13 @@ import sys
 import logging
 import time
 import psutil
-import claripy
 from pickle import loads, dumps
 #debugging RAM malarcky
 from sys import getsizeof
-
+import z3
+#add option to set verbosity of z3
+z3.set_option("verbose", 10)
+import claripy
 #trying to get rid of as much excess logging as possible to help w/ debugging if anything goes wrong
 logger = logging.getLogger(NAME)
 logging.basicConfig(level=logging.CRITICAL)
@@ -34,8 +36,8 @@ def my_solver(self, timeout=None, max_memory=None):
     global num_processes
     from threading import current_thread, main_thread
     if not self.reuse_z3_solver or getattr(self._tls, "solver", None) is None:
-        import z3
-        #add option to set verbosity of z3
+        
+        #again add option to set verbosity of z3 just in case
         z3.set_option("verbose", 10)
 
         if my_tactic:

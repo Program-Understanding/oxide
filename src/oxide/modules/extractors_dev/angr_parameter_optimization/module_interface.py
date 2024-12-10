@@ -102,42 +102,40 @@ def process(oid, opts):
     #log out how many runs, timeout
     logger.info(f"Timeout: {timeout}, z3 timeout: {z3_timeout}")
     logger.debug(f'Running command: {constraint_grabber_cmd}')
-    with open(os.devnull, "w") as null:
+    #get the constraints and put them in the scratch dir
+    try:
+        sub_proc_out = subproc_run(constraint_grabber_cmd,env,logger)
+    except Exception as e:
+        logger.error(f"Exception raised: {e}")
+        if "sub_proc_out" in locals():
+            logger.error(f"Subprocess output: {sub_proc_out}")
+        api.store(NAME,oid,results,opts)
+        return False
+    #run multiple times to get some valid output and ensure angr isn't doing well as a one-off try
+    for run in range(num_runs):
         try:
-            sub_proc_out = subproc_run(constraint_grabber_cmd,env,logger,null)
+            #get the output from angr with tactics run instead of the default solver
+            for tactic_cmd in tactic_cmds:
+                logger.debug(f'Run {run+1}: command: {tactic_cmd[0]}')
+                #run the command and handle subprocess exception
+                sub_proc_out = subproc_run(tactic_cmd[0],env,logger)
+                #grab from the local store, then clear the data store before the next run
+                with open(opt_out_path, "rb") as f:
+                    results[tactic_cmd[1]][f'run {run+1}'] = loads(f.read())
+                results[tactic_cmd[1]][f'run {run+1}']['optimization test output'] = sub_proc_out
+                results[tactic_cmd[1]]["total seconds"] += results[tactic_cmd[1]][f'run {run+1}']["total seconds"]
+            #next we run w/o any tactic
+            sub_proc_out = subproc_run(f"python3 {opt_script_full_path} {constraint_out_path} {opt_out_path} {oid} {z3_timeout} {config.multiproc_max}",env,logger)
+            with open(opt_out_path, "rb") as f:
+                results['with no tactic'][f'run {run+1}'] = loads(f.read())
+            results['with no tactic']['total seconds'] += results['with no tactic'][f'run {run+1}']['total seconds']
+            results['with no tactic'][f'run {run+1}']['optimization test output'] = sub_proc_out
         except Exception as e:
-            logger.error(f"Exception raised: {e}")
+            logger.error(f"Exception raised: {e},traceback: {traceback.format_exc()}")
             if "sub_proc_out" in locals():
                 logger.error(f"Subprocess output: {sub_proc_out}")
             api.store(NAME,oid,results,opts)
             return False
-    #run multiple times to get some valid output and ensure angr isn't doing well as a one-off try
-    for run in range(num_runs):
-        with open(os.devnull, "w") as null:
-            try:
-                #get the output from angr and with tactics
-                for tactic_cmd in tactic_cmds:
-                    #using tuple: output, tactic
-                    logger.debug(f'Run {run+1}: command: {tactic_cmd[0]}')
-                    #run the command and handle subprocess exception
-                    sub_proc_out = subproc_run(tactic_cmd[0],env,logger,null)
-                    #grab from the local store, then clear the data store before the next run
-                    with open(opt_out_path, "rb") as f:
-                        results[tactic_cmd[1]][f'run {run+1}'] = loads(f.read())
-                    results[tactic_cmd[1]][f'run {run+1}']['optimization test output'] = sub_proc_out
-                    results[tactic_cmd[1]]["total seconds"] += results[tactic_cmd[1]][f'run {run+1}']["total seconds"]
-                #next we run w/o any tactic
-                sub_proc_out = subproc_run(f"python3 {opt_script_full_path} {constraint_out_path} {opt_out_path} {oid} {z3_timeout} {config.multiproc_max}",env,logger,null)
-                with open(opt_out_path, "rb") as f:
-                    results['with no tactic'][f'run {run+1}'] = loads(f.read())
-                results['with no tactic']['total seconds'] += results['with no tactic'][f'run {run+1}']['total seconds']
-                results['with no tactic'][f'run {run+1}']['optimization test output'] = sub_proc_out
-            except Exception as e:
-                logger.error(f"Exception raised: {e},traceback: {traceback.format_exc()}")
-                if "sub_proc_out" in locals():
-                    logger.error(f"Subprocess output: {sub_proc_out}")
-                api.store(NAME,oid,results,opts)
-                return False
     #get mean, standard deviation, t-test
     #check if we've done bare minimum amount of runs first
     if num_runs > 1:
@@ -165,7 +163,7 @@ def process(oid, opts):
     api.store(NAME,oid,results,opts)
     return True
 
-def subproc_run(command, env, logger, null):
+def subproc_run(command, env, logger):
     sub_proc_out = ""
     try:
         sub_proc_out = subprocess.check_output(command, universal_newlines=True, shell=True, stderr=subprocess.STDOUT,env=env)
