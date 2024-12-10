@@ -151,7 +151,7 @@ export default {
                         console.error(`Error creating call graph: Error: Can not create edge \`edge-${fromBlockId}-${toBlockId}\` with nonexistant source \`${fromBlockId}\``);
                         continue;
                     }
-                    if (!elements.some(el => el.data.id === toBlockId || el.data.id === fromBlockId)) {
+                    if (!elements.some(el => el.data.id === toBlockId)) {
                         console.error(`Error creating call graph: Error: Can not create edge \`edge-${fromBlockId}-${toBlockId}\` with nonexistant target \`${toBlockId}\``);
                         continue;
                     }
