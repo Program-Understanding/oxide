@@ -88,7 +88,7 @@ export default {
                     elements.push({
                         data: {
                             id: node["block id"],
-                            label: `Block ${node["block id"]}\n\n${instructions}\n\nFunction: ${functionName}`,
+                            label: `Block ${node["block id"]}\n\n${instructions}`,
                             instructions: instructions,
                         },
                     });
