@@ -104,7 +104,7 @@ def process(oid, opts):
     logger.debug(f'Running command: {constraint_grabber_cmd}')
     #get the constraints and put them in the scratch dir
     try:
-        sub_proc_out = subproc_run(constraint_grabber_cmd,env,logger)
+        results['constraint grabber out'] = subproc_run(constraint_grabber_cmd,env,logger)
     except Exception as e:
         logger.error(f"Exception raised: {e}")
         if "sub_proc_out" in locals():

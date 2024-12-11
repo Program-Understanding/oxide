@@ -25,7 +25,7 @@ print(f"Finished loading oxide")
 #global variables passed between functions
 #could possibly be made into arguments to process and then
 #states or the simgr could probably hold these as attributes but...
-start_time = float()
+start_time = time.time()
 minimum_memory=int(psutil.virtual_memory().total*0.3)
 
 def k_step_func(simmgr):
