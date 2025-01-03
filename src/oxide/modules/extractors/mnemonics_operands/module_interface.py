@@ -22,7 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-DESC = "Extracts function calls from instructions."
+DESC = "Splits mnemonics and operands for each instruction"
 NAME = "mnemonics_operands"
 CATEGORY = ""  # used for filtering of modules e.g. disassemblers like ida
 

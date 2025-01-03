@@ -52,12 +52,41 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         names = api.get_field("file_meta", oid, "names")
         names = ",".join(names)
         f_dict = {}
-        funs = api.get_field("ghidra_disasm", oid, "functions")
+        ghidra_dis = api.retrieve("ghidra_disasm", oid)
+        complexity = api.retrieve("cyclo_complexity", oid)
+        disassembly = api.get_field("disassembly", oid,oid)['instructions']
+        if "functions" in ghidra_dis:
+            funs = ghidra_dis["functions"]
+        else: funs = None
         if not funs: continue
         for f in funs:
             if f == 'meta': continue
+            num_insns = 0
+            operands = {"imm":0, "reg":0, "mem":0}
+            for b in funs[f]['blocks']:
+                num_insns += len(ghidra_dis["original_blocks"][b]['members'])
+                for i in ghidra_dis["original_blocks"][b]['members']:
+                    addr = i[0]
+                    if not addr in disassembly:
+                        continue
+                    for op in disassembly[addr]["operands"]:
+                        op_info = disassembly[addr]["operands"][op]
+                        if "type.imm" in op_info:
+                            operands["imm"] += 1
+                        if "type.reg" in op_info:
+                            operands["reg"] += 1
+                        if "type.mem" in op_info:
+                            operands["mem"] += 1
+            if num_insns == 0:
+                continue
             f_dict[funs[f]['name']] = {'offset':f,
                 'signature':funs[f]['signature']}
+            f_dict[funs[f]['name']]["num_insns"] = num_insns
+            f_dict[funs[f]['name']]["complexity"] = complexity[f]["complexity"]
+            f_dict[funs[f]['name']]["complexity_desc"] = complexity[f]["desc"]
+            f_dict[funs[f]['name']]["operands"] = operands
+            
+
         results[oid] = f_dict
 
     return results
