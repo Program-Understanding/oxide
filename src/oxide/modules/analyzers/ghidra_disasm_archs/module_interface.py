@@ -99,47 +99,12 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                             else:
                                 disasm["PASS"][ga] = {
                                     "FEATURES": api.get_field("tiknib_features", oid, oid, {"processor": ga}),
-                                    "SOURCE": arch_guess
+                                    "SOURCE": archs[arch_guess]
                                     }
                                 disasm["RESULT"] = "PASS"
                         except:
                             disasm["FAIL"].append(ga)
 
                         proccessor_attempts.append(ga)
-        
-        if disasm["RESULT"] == "PASS":
-            best = {"arch": [],
-                    "functions": 0,
-                    "cfg_size": 0,
-                    "source": []
-                    }
-            for arch in disasm["PASS"]:
-                disasm_features = disasm["PASS"][arch]["FEATURES"]
-                disasm_source = disasm['PASS'][arch]['SOURCE']
-                num_functions = disasm_features["num_functions"]
-                cfg_size = disasm_features["cfg_features"]["cfg_size"]
-                if num_functions > best["functions"]:
-                    best.update({
-                        'arch': [arch],
-                        'functions': num_functions,
-                        'cfg_size': cfg_size,
-                        'source': [disasm_source]
-                    })
-                elif num_functions == best["functions"] and num_functions > 0:
-                    if cfg_size > best["cfg_size"]:
-                        best.update({
-                            'arch': [arch],
-                            'functions': num_functions,
-                            'cfg_size': cfg_size,
-                            'source': [disasm_source]
-                        })
-                    elif cfg_size == best["cfg_size"]:
-                        best['arch'].append(arch)
-                        best['source'].append(disasm_source)
-        else:
-            best = None
-
-        results[oid]['DISASM'] = disasm
-        results[oid]['SELECTED'] = best
-
+        results[oid] = disasm
     return results

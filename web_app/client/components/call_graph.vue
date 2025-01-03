@@ -55,6 +55,7 @@ export default {
                 }
                 const normalData = await response.json();
                 const data = normalData[props.oid];
+
                 console.log(data);
 
                 const container = document.getElementById("network");
@@ -76,6 +77,8 @@ export default {
                     if (blocks.length > 0) {
                         functionToFirstBlock[functionName] = blocks[0];
                         console.log(`Mapped function ${functionName} to first block ID ${blocks[0]}`);
+                    } else {
+                        functionToFirstBlock[functionName] = functionName;
                     }
                 }
 
@@ -83,55 +86,60 @@ export default {
                 for (const functionName in functionToFirstBlock) {
                     const blockId = functionToFirstBlock[functionName];
 
-                    elements.push({
-                        data: {
-                            id: blockId,
-                            label: `Block ID: ${blockId}\nFunction: ${functionName}`,
-                        }
-                    });
-                    nodeIds.value.push(blockId);
-                    console.log(`Added node for function ${functionName} with block ID ${blockId}`);
+                    if (isNaN(blockId)) {
+                        elements.push({
+                            data: {
+                                id: blockId,
+                                label: `Function: ${functionName}`,
+                            }
+                        });
+                        nodeIds.value.push(blockId);
+                    } 
+                    else {
+                        elements.push({
+                            data: {
+                                id: blockId,
+                                label: `Block ID: ${blockId}\nFunction: ${functionName}`,
+                            }
+                        });
+                        nodeIds.value.push(blockId);
+                        console.log(`Added node for function ${functionName} with block ID ${blockId}`);
+                    }
                 }
+
                 console.log(functionToFirstBlock)
+
                 // Ensure all nodes are added before creating edges
                 for (let i = 0; i < edges.length; i++) {
                     const edge = edges[i];
                     const fromNode = edge.from;
                     const toNode = edge.to;
 
-                    // Add "from" node if it doesn't already exist and is not part of a function
-                    if (!nodeIds.value.includes(fromNode) && !isPartOfFunction(fromNode, data.functions) && !functionToFirstBlock[fromNode]) {
+                    // Add "from" node if it doesn't already exist and is a function
+                    if (!nodeIds.value.includes(fromNode) && isNaN(fromNode) && !(Object.keys(functionToFirstBlock).includes(toNode))) {
                         elements.push({
                             data: {
                                 id: fromNode,
-                                label: `Block ID: ${fromNode}`,
+                                label: `Function: ${fromNode}`,
                             }
                         });
                         nodeIds.value.push(fromNode);
                         console.log(`Added node for block ID ${fromNode}`);
                     }
 
-                    // Add "to" node if it doesn't already exist and is not part of a function
-                    if (!nodeIds.value.includes(toNode) && !isPartOfFunction(toNode, data.functions) && !functionToFirstBlock[toNode]) {
+                    // Add "to" node if it doesn't already exist and is a fuction
+                    if (!nodeIds.value.includes(toNode) && isNaN(toNode) && !(Object.keys(functionToFirstBlock).includes(toNode))) {
                         elements.push({
                             data: {
                                 id: toNode,
-                                label: `Block ID: ${toNode}`,
+                                label: `Function: ${toNode}`,
                             }
                         });
                         nodeIds.value.push(toNode);
                         console.log(`Added node for block ID ${toNode}`);
                     }
                 }
-
-                function isPartOfFunction(blockId, functions) {
-                    for (const functionName in functions) {
-                        if (functions[functionName].blocks.includes(blockId)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
+                console.log(functionToFirstBlock);
 
 
                 // Edges
@@ -143,7 +151,7 @@ export default {
                     const fromFunction = getFunctionName(fromNode, data.functions);
                     const toFunction = getFunctionName(toNode, data.functions);
 
-                    // Filter out calls from and to the same function, unless the function is unknown
+                    // Filter out calls from and to the same function
                     if (fromFunction && toFunction && fromFunction === toFunction) {
                         console.log(`Skipped edge from block ID ${fromNode} to block ID ${toNode} (same function)`);
                         continue;
@@ -151,6 +159,16 @@ export default {
 
                     const fromBlockId = functionToFirstBlock[fromFunction] || fromNode;
                     const toBlockId = functionToFirstBlock[toFunction] || toNode;
+
+                    // Check for non-function nodes
+                    if (!elements.some(el => el.data.id === fromBlockId)) {
+                        console.error(`Error creating call graph: Error: Can not create edge \`edge-${fromBlockId}-${toBlockId}\` with nonexistant source \`${fromBlockId}\``);
+                        continue;
+                    }
+                    if (!elements.some(el => el.data.id === toBlockId)) {
+                        console.error(`Error creating call graph: Error: Can not create edge \`edge-${fromBlockId}-${toBlockId}\` with nonexistant target \`${toBlockId}\``);
+                        continue;
+                    }
 
                     // Add edge
                     elements.push({
@@ -170,7 +188,7 @@ export default {
                             return functionName;
                         }
                     }
-                    return blockId;
+                    return null;
                 }
                 const cy = cytoscape({
                     container: container,
@@ -270,8 +288,6 @@ export default {
             // Temporarily set the background to dark
             container.style.backgroundColor = "#333";
 
-            const scale = 3;
-
             domtoimage
                 .toSvg(container, {
                     width: container.clientWidth * scale,
@@ -342,7 +358,7 @@ export default {
     border: 1px solid #ccc;
     border-radius: 5px;
     padding: 10px;
-    background-color: rgba(0, 0, 0, 0.5) ;
+    background-color: rgba(0, 0, 0, 0.5);
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
     z-index: 2;
     position: absolute;
@@ -364,5 +380,5 @@ export default {
 
 .node-list li:hover {
     background: salmon;
-} 
+}
 </style>

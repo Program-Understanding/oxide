@@ -6,6 +6,8 @@ import logging
 import time
 import traceback
 import psutil
+import claripy
+from z3 import unknown as z3unknown, sat as z3sat
 from pickle import dumps
 
 logger = logging.getLogger(NAME)
@@ -23,19 +25,25 @@ print(f"Finished loading oxide")
 #global variables passed between functions
 #could possibly be made into arguments to process and then
 #states or the simgr could probably hold these as attributes but...
-start_time = float()
+start_time = time.time()
 minimum_memory=int(psutil.virtual_memory().total*0.3)
 
 def k_step_func(simmgr):
     #global start_time
     #global timeout
     global minimum_memory
+    global results
     #not handling time here anymore as its handled in the main loop
     # if time.time() - start_time > timeout: #checking timeout limit
     #     #if we've timed out, move states to deadend, we're done
     #     simmgr.move(from_stash="active", to_stash="deadend")
     #     if len(simmgr.stashes["lowmem"]):
     #         simmgr.move(from_stash="lowmem", to_stash="deadend")
+    #check the unsat states, move their constraints to results and get rid of them
+    if "unsat" in simmgr.stashes and len(simmgr.stashes["unsat"]):
+        for state in simmgr.stashes["unsat"]:
+            results['unsat'].append(state.solver.constraints)
+        simmgr.stashes["unsat"].clear()
     #check the virtual memory
     if psutil.virtual_memory().available <= minimum_memory:
         simmgr.move(from_stash="active", to_stash="lowmem")
@@ -81,6 +89,21 @@ def system_call_breakpoint(state):
     #                                       "seconds since start": time.time() - start_time,
     #                                       "destination": state.inspect.syscall_name})
 
+def my_z3_solver_sat(solver, extra_constraints, _):
+    #capture time before and after, store it in results
+    global results
+    starting_time = time.time()
+    result = solver.check(extra_constraints)
+    results["seconds spent in solver"] += time.time()-starting_time
+    if result == z3unknown:
+        reason = solver.reason_unknown()
+        if reason in ("interrupted from keyboard", "interrupted"):
+            raise KeyboardInterrupt
+        if reason in ("timeout", "max. resource limit exceeded", "max. memory exceeded"):
+            raise claripy.errors.ClaripySolverInterruptError(reason)
+        raise claripy.errors.ClaripyZ3Error("solver unknown: " + reason)
+    return result == z3sat
+
 def subprocess(path,z3_timeout,out_path):
     """
     This module takes in various parameters as options to
@@ -92,6 +115,8 @@ def subprocess(path,z3_timeout,out_path):
     global results
     global oid
     import angr
+    #set that solver sat function properly to point at the one i made
+    claripy.backends.backend_z3.z3_solver_sat = my_z3_solver_sat
     #create the angr project for the oid
     proj = angr.Project(path,load_options={"auto_load_libs":False})
     #make the loggers stop talking to me
@@ -116,7 +141,7 @@ def subprocess(path,z3_timeout,out_path):
     entry_state.solver._solver.timeout = z3_timeout
     #construct the simulation manager
     #keeping track of unsat constraints
-    simgr = proj.factory.simgr(entry_state) #, save_unsat=True)
+    simgr = proj.factory.simgr(entry_state, save_unsat=True)
     #make sure we don't use all the RAM and crash the interpreter
     #leaving 30% of the RAM free
     #start w/ making a stash for states to go when memory is low
@@ -191,7 +216,7 @@ oid = sys.argv[3]
 timeout = float(sys.argv[4])
 z3_timeout = int(sys.argv[5])*1000
 #keep the results as a global for use w/ breakpoint function
-results = {"calls":[],"syscalls":[], "deadends":[], "lowmem": [],"memory limit (bytes)":psutil.virtual_memory().total-minimum_memory,"num states": 0}
+results = {"calls":[],"syscalls":[], "deadends":[], "lowmem": [], "unsat": [],"memory limit (bytes)":psutil.virtual_memory().total-minimum_memory,"num states": 0, "seconds spent in solver": 0}
 try:
     print("Starting process")
     subprocess(path,z3_timeout,out_path)
