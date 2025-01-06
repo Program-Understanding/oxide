@@ -6,7 +6,17 @@ import os
 import sys
 
 config = configparser.ConfigParser()
-config.read("config.ini")
+#check if the config file exists, else create it
+if os.path.isfile("config.ini"):
+    config.read("config.ini")
+else:
+    config['General'] = {"host": "localhost",
+                         "hostport" : '8000',
+                         "clientport" : '3000',
+                         "clientip": "localhost"}
+    config["Oxide"] = {"path": ""}
+    with open("config.ini", 'w') as configfile:
+        config.write(configfile)
 
 host = config.get("General", "host")
 clientport = config.getint("General", "clientport")
