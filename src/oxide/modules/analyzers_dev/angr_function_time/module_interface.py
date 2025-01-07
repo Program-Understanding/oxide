@@ -5,8 +5,7 @@ DESC="Time how long a function takes to run in angr"
 from oxide.core import api
 import logging
 logger = logging.getLogger(NAME)
-opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
-            "summaries": {"type":bool, "mangle":False,"default":True,"description":"Include function summaries from function summary module as well"}}
+opts_doc = {"summaries": {"type":bool, "mangle":False,"default":True,"description":"Include function summaries from function summary module as well"}}
 
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
