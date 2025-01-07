@@ -11,7 +11,7 @@ import logging
 for lib in ["angr", "claripy","cle"]:
     l = logging.getLogger(lib)
     l.setLevel(logging.CRITICAL)
-
+logger = logging.getLogger("angr_utils2")
 from oxide.core import api
 
 class angrManager(BaseManager):
@@ -36,23 +36,23 @@ class angrTherapy:
         f = api.tmp_file(f,data)
         self._proj = angr.Project(f)
 
-    def timed_underconstrained_function_run(self,function_offset: int,timeout=600):
+    def timed_underconstrained_function_run(self,function_offset: int,timeout=600)->tuple | bool:
         from time import time
         #fun_offset is like an int like 4096 or something
         angr_fun_addr = self._proj.loader.min_addr+function_offset
         if angr_fun_addr > self._proj.loader.max_addr:
-            return -1
+            return False
         fun_call_state = self._proj.factory.call_state(angr_fun_addr)
         simgr = self._proj.factory.simgr(fun_call_state)
         start_time = time()
         try:
             while simgr.active:
                 if time()-start_time > timeout:
-                    break
+                    return (time()-start_time, "timed out")
                 simgr.step(step_func=ufr_step_func)
-            if "lowmem" in simgr.stashes:
-                return (time()-start_time, False)
-            return (time()-start_time, True)
+            if "lowmem" in simgr.stashes and len(simgr.stashes["lowmem"]) > 0:
+                return (time()-start_time, "low memory")
+            return (time()-start_time, False)
         except Exception:
             return False
 
