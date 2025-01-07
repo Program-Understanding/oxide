@@ -4,6 +4,8 @@ DESC="Time how long a function takes to run in angr"
 
 from oxide.core import api
 import logging
+from angrProgress import angrProgress
+
 logger = logging.getLogger(NAME)
 opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
             "summaries": {"type":bool, "mangle":False,"default":True,"description":"Include function summaries from function summary module as well"}}
@@ -19,6 +21,7 @@ def results(oid_list, opts):
     for oid in oid_list:
         g_d = api.get_field("ghidra_disasm",oid,"functions")
         f_dict = {}
+        prog = angrProgress(len(g_d))
         if opts["summaries"]:
             function_summary = api.get_field("function_summary", oid, oid)
             function_extract = api.retrieve("function_extract", oid,{})
@@ -46,6 +49,7 @@ def results(oid_list, opts):
                             f_dict[g_d[fun]["name"]]["stopped early for"] = stopped_early
                     else:
                         f_dict[g_d[fun]["name"]]["angr seconds"] = "angr error"
+            prog.tick()
         results[oid] = f_dict
         api.store(NAME,oid,f_dict,opts)
     return results
