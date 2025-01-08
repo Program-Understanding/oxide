@@ -13,11 +13,9 @@ opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"ti
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
 
-def results(oid_list, opts):
+def process(oid, opts):
     from oxide.core.libraries.angr_utils2 import angrManager, angrTherapy,angrManagerProxy
     angrManager.register("angr_project",angrTherapy,angrManagerProxy)
-    oid_list = api.expand_oids(oid_list)
-    results ={}
     for oid in oid_list:
         g_d = api.get_field("ghidra_disasm",oid,"functions")
         f_dict = {}
