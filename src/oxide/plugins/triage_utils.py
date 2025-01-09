@@ -5,6 +5,7 @@ import pandas as pd
 import csv
 import os 
 import tlsh
+from statistics import mean
 
 from oxide.core import progress, api
 
@@ -69,24 +70,7 @@ def intersection_data(args, opts):
                                 ref_c_oid_funcs_tlsh = api.get_tags(ref_c_oid)["FUNC_TLSH"]
                                 matches += len(set(c_oid_funcs_tlsh) & set(ref_c_oid_funcs_tlsh))
                 unqiue_function_intersections[c_name][ref_c_name] = matches
-
-            # Near Matches From Unique Files
-            # if near_matches.get(ref_c_name) and near_matches[ref_c_name].get(c_name):
-            #     near_matches[c_name][ref_c_name] = near_matches[ref_c_name][c_name]
-            # else:
-            #     c_funcs_tlsh = api.get_tags(c).get("FUNC_TLSH")
-            #     c_ref_funcs_tlsh = api.get_tags(ref_c).get("FUNC_TLSH")
-            #     near_matches[c_name][ref_c_name] = 0
-            #     for c_hash in c_funcs_tlsh:
-            #         if c_hash not in total_function_intersections[c_name][ref_c_name]:
-            #             for c_ref_hash in c_ref_funcs_tlsh:
-            #                 if c_ref_hash not in total_function_intersections[c_name][ref_c_name]:
-            #                     difference = tlsh.diff(c_hash, c_ref_hash)
-            #                     if difference <= 50:
-            #                         near_matches[c_name][ref_c_name] += 1
-
-                    
-
+    
     # Convert the dictionary into a pandas DataFrame
     df_files = pd.DataFrame(file_intersections).T  # Transpose to get sub-dicts as rows
     df_total_functions = pd.DataFrame(total_function_intersections).T  # Transpose to get sub-dicts as rows
@@ -107,11 +91,6 @@ def intersection_data(args, opts):
     print(df_unique_functions)
     print("---------------------NEAR FUNCTION MATCHES FROM---------------------")
     print(df_near_matches)
-
-    df_files.to_csv("/home/nathan/Documents/file_matches.csv", index=True)
-    df_total_functions.to_csv("/home/nathan/Documents/function_matches.csv", index=True)
-    df_unique_functions.to_csv("/home/nathan/Documents/unique_matches.csv", index=True)
-    df_near_matches.to_csv("/home/nathan/Documents/near_matches.csv", index=True)
 
 def collection_disasm_stats(args, opts):
     if args:
@@ -215,10 +194,29 @@ def get_file_category(args, opts):
         print(f"COLLECTION: {api.get_colname_from_oid(collection)}")
         pprint.pprint(tags.get("CATEGORY"))
 
-exports = [collection_disasm_stats, num_files_disasm, intersection_data, get_src_types, get_file_exts, get_file_category]
+def get_disasm(args, opts):
+    collections = get_collections(args, opts)
+    for collection in collections:
+        print(f"COLLECTION: {api.get_colname_from_oid(collection)}")
+        oids = api.expand_oids(collection)
+        for oid in oids:
+            tags = api.get_tags(oid)
+            if tags.get("FILE_CATEGORY") == 'executable':
+                print(oid)
+                pprint.pprint(tags["DISASM"]['PASS'])
+
+exports = [collection_disasm_stats, num_files_disasm, intersection_data, get_src_types, get_file_exts, get_file_category, get_disasm, product_breakdown, get_selected_arch, num_products, get_executables]
 
 
-
+def split_collection(input_string):
+    # Split the string at the occurrence of "---"
+    parts = input_string.split('---', maxsplit=1)
+    
+    # Check if the delimiter was found and return both parts
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    else:
+        return parts[0], None  # Return None if the delimiter is not found
 
 ############################
 ### SUPPORTING FUNCTIONS ###

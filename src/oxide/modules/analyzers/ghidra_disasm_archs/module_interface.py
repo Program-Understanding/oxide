@@ -31,7 +31,6 @@ import logging
 from typing import Dict, Any, List
 
 from oxide.core import api
-# import ghidra_arch_lookup
 from ghidra_arch_lookup import ghidra_arch_lookup
 
 logger = logging.getLogger(NAME)
@@ -99,7 +98,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                             else:
                                 disasm["PASS"][ga] = {
                                     "FEATURES": api.get_field("tiknib_features", oid, oid, {"processor": ga}),
-                                    "SOURCE": archs[arch_guess]
+                                    "SOURCE": arch_guess
                                     }
                                 disasm["RESULT"] = "PASS"
                         except:

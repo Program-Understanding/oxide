@@ -10,6 +10,7 @@ import tlsh
 from prettytable import PrettyTable
 from threading import Event
 import multiprocessing
+import csv
 import time
 
 from oxide.core import progress, api
@@ -30,7 +31,6 @@ class FileAnalyzer:
         self.oid = oid
         self.force = force
         self.tags = self.get_or_default_tags()
-        self.collection_archs = {}
 
     def get_or_default_tags(self):
         """Retrieve existing tags or return an empty dictionary."""
@@ -55,92 +55,16 @@ class FileAnalyzer:
             meta = api.retrieve("file_meta", self.oid)
             self.tags["SIZE"] = meta["size"]
 
-    def tag_core(self):
-        if "CORE" not in self.tags or self.force == "CORE":
-            arch_matches = api.retrieve('strings_components_finder', self.oid, {"component": "core"})
-            self.tags["CORE"] = list(arch_matches.keys()) if arch_matches else None
-
-    def tag_all_archs(self):
-        oid_archs = {}
-        found_archs = api.get_field("possible_archs", self.oid, self.oid)
-
-        if "ARCH" not in self.tags or self.force == "ARCH":
-            for arch_approach in found_archs:
-                if isinstance(found_archs[arch_approach], list):
-                    for arch in found_archs[arch_approach]:
-                        if oid_archs.get(arch):
-                            oid_archs[arch].append(arch_approach)
-                        else:
-                            oid_archs[arch] = [arch_approach]
-                elif found_archs[arch_approach] is not None:
-                    arch = found_archs[arch_approach]
-                    if oid_archs.get(arch):
-                        oid_archs[arch].append(arch_approach)
-                    else:
-                        oid_archs[arch] = [arch_approach]
-        self.tags["ARCH_POSSIBLE"] = oid_archs
-                
-    def tag_arch_w_timeout(self):
-        p = multiprocessing.Process(target=self.tag_all_archs())
-        p.start()
-        p.join(TIMEOUT_SHORT)
-        if p.is_alive():
-            p.terminate()
-            p.join()
-            print(f"Timeout while processing ARCH for {self.oid}")
-            self.tags["ARCH"] = ["TIMEOUT"]
-
-    def tag_selected_arch(self):
-        if "SELECTED_ARCH" not in self.tags or self.force == "SELECTED_ARCH":
-            disasm = self.tags.get("DISASM")
-            if disasm["RESULT"] == "PASS":
-                best = {"arch": [],
-                        "functions": 0,
-                        "cfg_size": 0,
-                        "source": []
-                        }
-                for arch in disasm["PASS"]:
-                    disasm_features = disasm["PASS"][arch]["FEATURES"]
-                    disasm_source = disasm['PASS'][arch]['SOURCE']
-                    num_functions = disasm_features["num_functions"]
-                    cfg_size = disasm_features["cfg_features"]["cfg_size"]
-                    if cfg_size > best["cfg_size"]:
-                        best.update({
-                            'arch': [arch],
-                            'functions': num_functions,
-                            'cfg_size': cfg_size,
-                            'source': [disasm_source]
-                        })
-                    elif cfg_size == best["cfg_size"] and cfg_size > 0:
-                        if num_functions > best["functions"]:
-                            best.update({
-                                'arch': [arch],
-                                'functions': num_functions,
-                                'cfg_size': cfg_size,
-                                'source': [disasm_source]
-                            })
-                        elif num_functions == best["functions"]:
-                            best['arch'].append(arch)
-                            best['source'].append(disasm_source)
-            else:
-                best = None
-            self.tags["SELECTED_ARCH"] = best
-
     def tag_function_tlsh(self):
         hashes = {}
         filtered_hashes = {}
         if "FUNC_TLSH" not in self.tags or self.force == "FUNC_TLSH":
-            self.tags.pop("FUNC_HASH", None)
-            selected_arch = self.tags["SELECTED_ARCH"]["arch"][0]
-            if selected_arch == "DEFAULT":
-                hashes = api.retrieve("function_tlsh", self.oid)
-            else:
-                hashes = api.retrieve("function_tlsh", self.oid, {"processor": selected_arch})
+            self.tags.get("FUNC_HASH", None)
+            hashes = api.retrieve("function_tlsh", self.oid)
         
             for function in hashes:
                 if hashes[function].get('tlsh hash'):
                     filtered_hashes[hashes[function].get('tlsh hash')] = hashes[function]['name']
-
             self.tags["FUNC_TLSH"] = filtered_hashes
 
 class FrameworkAnalyzer:
@@ -151,9 +75,15 @@ class FrameworkAnalyzer:
         self.collection_exec, self.collection_non_exec = self.separate_oids(self.collection_oids)
 
         self.ref_collection = ref_collection
-        self.ref_collection_tags = api.get_tags(self.ref_collection)
-        self.ref_collection_oids = set(api.expand_oids(self.ref_collection))
-        self.ref_collection_exec, self.ref_collection_non_exec = self.separate_oids(self.ref_collection_oids)         
+        if self.ref_collection:
+            self.ref_collection_tags = api.get_tags(self.ref_collection)
+            self.ref_collection_oids = set(api.expand_oids(self.ref_collection))
+            self.ref_collection_exec, self.ref_collection_non_exec = self.separate_oids(self.ref_collection_oids)  
+        else:       
+            self.ref_collection_tags = []
+            self.ref_collection_oids = []
+            self.ref_collection_exec = []
+            self.ref_collection_non_exec = []
 
     def separate_oids(self, oids):
         executables, non_executables = set(), set()
@@ -170,19 +100,25 @@ class FrameworkAnalyzer:
             return len(part), f"{round((len(part) / len(total)) * 100, 2)}%"
 
     def file_matches(self, collection_oids, ref_collection_oids):
-        matches = list(collection_oids.intersection(ref_collection_oids))
-        return matches, collection_oids.difference(ref_collection_oids), ref_collection_oids.difference(collection_oids)
+        if collection_oids and ref_collection_oids:
+            matches = list(collection_oids.intersection(ref_collection_oids))
+            return matches, collection_oids.difference(ref_collection_oids), ref_collection_oids.difference(collection_oids)
+        else:
+            return [], collection_oids, ref_collection_oids
 
 
-    def _get_repeated_functions(self, functions):
-        unique_functions = set()
-        repeated_functions = set()
+    def _get_repeated_functions(self, collection_oids):
+        unique_functions = {}
+        repeated_functions = {}
         
-        for hash_value in functions:
-            if hash_value in unique_functions:
-                repeated_functions.add(hash_value)
-            else:
-                unique_functions.add(hash_value)
+        for oid in collection_oids:
+            funcs = api.get_tags(oid).get("FUNC_TLSH")
+            if funcs:
+                for func in funcs:
+                    if func in unique_functions:
+                        repeated_functions[func] = funcs[func]
+                    else:
+                        unique_functions[func] = funcs[func]
         
         return repeated_functions
 
@@ -195,12 +131,9 @@ class FrameworkAnalyzer:
             'FAILED': []
         }
 
-        # Aggregate all reference collection functions
         ref_collection_funcs = self._get_all_functions(reference_collection_oids)
 
-        # Separate collection functions into unique and repeated
-        collection_funcs = self._get_all_functions(collection_oids)
-        repeated_collection_funcs = self._get_repeated_functions(collection_funcs)
+        repeated_collection_funcs = self._get_repeated_functions(collection_oids)
 
         for oid in collection_oids:
             oid_result, ref_files = self._process_oid(oid, ref_collection_funcs, repeated_collection_funcs, reference_collection_oids)
@@ -231,7 +164,6 @@ class FrameworkAnalyzer:
     def _process_oid(self, oid, ref_collection_funcs, repeated_funcs, reference_oids):
         oid_funcs = api.get_tags(oid).get("FUNC_TLSH")
 
-
         oid_result = {
             'func_matches': {},
             'modified_funcs': {},
@@ -241,15 +173,15 @@ class FrameworkAnalyzer:
         potential_ref_files_match = []
         potential_ref_files_modified = []
 
-        if not oid_funcs:
+        if oid_funcs is None:
             return "FAILED", None
 
-        potential_ref_files_match = self._get_function_matches(oid_funcs, ref_collection_funcs, repeated_funcs, reference_oids, oid_result)
+        oid_result, unmatched_funcs, potential_ref_files_match = self._get_function_matches(oid_funcs, ref_collection_funcs, repeated_funcs, reference_oids, oid_result)
 
         if len(potential_ref_files_match) == 1:
-            oid_result, potential_ref_files_modified = self._find_modified_functions(oid_funcs, repeated_funcs, potential_ref_files_match[0], oid_result, is_single_ref=True)
+            oid_result = self._find_modified_functions(unmatched_funcs, potential_ref_files_match[0], oid_result, is_single_ref=True)
         else:
-            oid_result, potential_ref_files_modified = self._find_modified_functions(oid_funcs, repeated_funcs, reference_oids, oid_result, is_single_ref=False)
+            oid_result = self._find_modified_functions(unmatched_funcs, reference_oids, oid_result, is_single_ref=False)
 
         
         potential_ref_files = list(set(potential_ref_files_match + potential_ref_files_modified))
@@ -258,22 +190,26 @@ class FrameworkAnalyzer:
 
     def _get_function_matches(self, oid_funcs, ref_funcs, repeated_funcs, reference_oids, oid_result):
         potential_ref_files = []
+        unmatched_funcs = {}
         for func in oid_funcs:
-            if func not in repeated_funcs and func in ref_funcs:
-                for ref_oid in reference_oids:
-                    ref_oid_funcs = api.get_tags(ref_oid).get("FUNC_TLSH", [])
-                    if func in ref_oid_funcs:
-                        oid_result['func_matches'][ref_oid] = oid_result['func_matches'].get(ref_oid, 0) + 1
-                        if ref_oid not in potential_ref_files:
-                            potential_ref_files.append(ref_oid)
-        return potential_ref_files
+            if func in repeated_funcs:
+                continue
+            else:
+                if func in ref_funcs:
+                    for ref_oid in reference_oids:
+                        ref_oid_funcs = api.get_tags(ref_oid).get("FUNC_TLSH", [])
+                        if func in ref_oid_funcs:
+                            oid_result['func_matches'][ref_oid] = oid_result['func_matches'].get(ref_oid, 0) + 1
+                            if ref_oid not in potential_ref_files:
+                                potential_ref_files.append(ref_oid)
+                else:
+                    unmatched_funcs[func] = oid_funcs[func]
+        return oid_result, unmatched_funcs, potential_ref_files
 
-    def _find_modified_functions(self, oid_funcs, repeated_funcs, ref_oids, oid_result, is_single_ref):
+    def _find_modified_functions(self, oid_funcs, ref_oids, oid_result, is_single_ref):
         potential_ref_files = []
         for func in oid_funcs:
             func_name = oid_funcs[func] 
-            if func in repeated_funcs:
-                continue
 
             best_match = {
                 'score': 390,
@@ -289,15 +225,34 @@ class FrameworkAnalyzer:
                     similarity_score = tlsh.diff(func, ref_func)
                     if similarity_score < best_match['score']:
                         best_match.update({'score': similarity_score, 'file': ref_oid, 'func': ref_func_name})
-                        if ref_oid not in potential_ref_files:
-                            potential_ref_files.append(ref_oid)
 
-            if best_match['score'] < 50 or func_name == best_match['func']:
+            if best_match['score'] < 150:
                 oid_result['modified_funcs'][func_name] = best_match
             else:
                 oid_result['new_funcs'][func_name] = best_match
-        return oid_result, potential_ref_files
-
+        return oid_result
+    
+    def export_modified_files_report(self, save_path):
+        modified_files = self.report['MODIFIED_EXECUTABLES']
+        
+        # Define the columns we want in our CSV
+        modified_file_fieldnames = ["File", "Ref File", "Function Matches", "Modified Functions", "New Functions"]
+        
+        # Open a CSV file for writing
+        with open(f'{save_path}/modified_files_report.csv', 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=modified_file_fieldnames)
+            writer.writeheader()  # Write the header row
+            
+            # Iterate through each file in the modified files report
+            for file in modified_files:
+                file_result = {
+                    "File": file,
+                    "Ref File": modified_files[file]['REF_FILE_ID'],
+                    "Function Matches": modified_files[file]['REPORT']['func_matches'][modified_files[file]['REF_FILE_ID']],
+                    "Modified Functions": len(modified_files[file]['REPORT']['modified_funcs']),
+                    "New Functions": len(modified_files[file]['REPORT']['new_funcs'])
+                }
+                writer.writerow(file_result)
 
     def generate_file_report(self):
         """Generate report data for file matches."""
@@ -330,7 +285,7 @@ class FrameworkAnalyzer:
         table = PrettyTable()
         table.title = f"{api.get_colname_from_oid(self.collection)} Compared to {api.get_colname_from_oid(self.ref_collection)}"
         table.align = 'l'
-        table.field_names = ["Category", f"# of {api.get_colname_from_oid(self.collection)} Files", f"% of {api.get_colname_from_oid(self.ref_collection)} Files"]
+        table.field_names = ["Category", f"# of {api.get_colname_from_oid(self.collection)} Files", f"% of {api.get_colname_from_oid(self.collection)} Files"]
         for key, (total, percentage) in stats.items():
             table.add_row([key, total, percentage])
         print(table)
@@ -410,11 +365,20 @@ class FrameworkAnalyzer:
     def print_modified_funcs(self, report):
         table = PrettyTable()
         table.align = 'l'
-        table.title = f"MODIFIED FUNCTIONS"
+        table.title = f"MODIFIED FUNCTIONS: {len(report['modified_funcs'])} Functions"
         table.field_names = ["Function", "Reference File", "Reference Function", "Score"]
+        correct = 0
+        incorrect = 0
         for func, details in report['modified_funcs'].items():
             table.add_row([func, details['file'], details['func'], details['score']])
+            if func == details['func']:
+                correct += 1
+            else:
+                incorrect += 1
         print(table)
+        print(f"CORRECT: {correct}")
+        print(f"INCORRECT: {incorrect}")
+
 
     def print_func_matches(self, report):
         table = PrettyTable()
@@ -428,11 +392,19 @@ class FrameworkAnalyzer:
     def print_new_funcs(self, report):
         table = PrettyTable()
         table.align = 'l'
-        table.title = "NEW FUNCTIONS"
+        table.title = f"NEW FUNCTIONS: {len(report['new_funcs'])} Functions"
         table.field_names = ["Function", "Closest Match File", "Closest Match Function", "Score"]
+        correct = 0
+        incorrect = 0
         for func, details in report['new_funcs'].items():
             table.add_row([func, details['file'], details['func'], details['score']])
+            if func == details['func']:
+                correct += 1
+            else:
+                incorrect += 1
         print(table)
+        print(f"CORRECT: {correct}")
+        print(f"INCORRECT: {incorrect}")
 
     def print_table_match(self, file_id, ref_file_id):
         table = PrettyTable()
@@ -440,7 +412,7 @@ class FrameworkAnalyzer:
         table.title = f"File: {file_id} | Reference File: {ref_file_id}"
         table.field_names = ["Potential File Names", "Potential Reference File Names"]
         file_names = list(api.get_names_from_oid(file_id))
-        ref_file_names = list(api.gematchest_names_from_oid(ref_file_id))
+        ref_file_names = list(api.get_names_from_oid(ref_file_id))
 
         # Determine the maximum length to handle differing lengths of file_names and ref_file_names
         max_length = max(len(file_names), len(ref_file_names))
@@ -482,10 +454,6 @@ def file_pre_analysis(args, opts) -> None:
             analyzer.tag_extension()
             analyzer.tag_file_category()
             analyzer.tag_size()
-            analyzer.tag_core()
-
-            if analyzer.tags["FILE_CATEGORY"] == "executable":
-                analyzer.tag_arch_w_timeout()
 
             # Apply the tags to the OID
             api.apply_tags(oid, analyzer.tags)
@@ -503,14 +471,6 @@ def collection_pre_analysis(args, opts) -> None:
 
         # Initialize data structures for device attributes
         collection_src_types = {}
-        collection_arch = {
-            "ARCH_HEADER": {},
-            "ARCH_STRINGS": {},
-            "ARCH_CORE": {},
-            "ARCH_CPU_REC2": {},
-            "ARCH_POSSIBLE": []
-        }
-        device_core_strings = {}
         device_file_exts = {}
         device_file_category = {}
 
@@ -523,13 +483,6 @@ def collection_pre_analysis(args, opts) -> None:
             src_type = tags.get("SRC_TYPE")
             collection_src_types[src_type] = collection_src_types.get(src_type, 0) + 1
 
-            # Compile All Arch Guesses
-            arch_possible = tags.get("ARCH_POSSIBLE")
-            if arch_possible:
-                for arch in arch_possible:
-                    if arch not in collection_arch["ARCH_POSSIBLE"]:
-                        collection_arch['ARCH_POSSIBLE'].append(arch)
-
             # Handle File Extensions
             ext = tags.get("EXT")
             device_file_exts[ext] = device_file_exts.get(ext, 0) + 1
@@ -538,8 +491,8 @@ def collection_pre_analysis(args, opts) -> None:
             cat = tags.get("FILE_CATEGORY")
             if cat in device_file_category:
                 device_file_category[cat]["COUNT"] += 1
-                device_file_category[cat]["SRC_TYPE"].get(src_type, 0) + 1
-                device_file_category[cat]["FILE_EXT"].get(ext, 0) + 1
+                device_file_category[cat]["SRC_TYPES"].get(src_type, 0) + 1
+                device_file_category[cat]["FILE_EXTS"].get(ext, 0) + 1
             else:
                 device_file_category[cat] = {
                     "COUNT": 1,
@@ -551,9 +504,7 @@ def collection_pre_analysis(args, opts) -> None:
         collection_tags = {
             "SRC_TYPE": collection_src_types,
             "EXT": device_file_exts,
-            "CORE": device_core_strings,
-            "ARCH": collection_arch,
-            "CATEGORY": device_file_category
+            "CATEGORY": device_file_category,
         }
 
         api.apply_tags(collection, collection_tags)
@@ -563,10 +514,9 @@ def file_analysis(args, opts) -> None:
     collections = get_collections(args, opts)
 
     force = opts.get('force', None)
-
     for collection in collections:
         collection_tags = api.get_tags(collection)
-        total_exe = collection_tags['CATEGORY'].get('executable', 0)
+        total_exe = collection_tags['CATEGORY'].get('executable', 0).get('COUNT')
         oids = api.expand_oids(collection)
         exe_count = 1
         
@@ -576,14 +526,10 @@ def file_analysis(args, opts) -> None:
             analyzer.get_or_default_tags()
             if analyzer.tags.get("FILE_CATEGORY") == "executable":
                 print(f"Executable {exe_count} of {total_exe}") 
-                for arch in collection_tags.get("ARCH"):
-                    if arch not in analyzer.tags["ARCH_POSSIBLE"]:
-                        analyzer.collection_archs[arch] = collection_tags["ARCH"][arch]
                 try:
                     # Create a separate thread to handle the function call
                     future = concurrent.futures.ThreadPoolExecutor(max_workers=1).submit(
-                        tag_disasm, oid, force, analyzer.tags, analyzer.collection_archs
-                    )
+                        tag_disasm, oid, force, analyzer.tags)
                     analyzer.tags = future.result(timeout=TIMEOUT_LONG)  # Apply timeout
                 except concurrent.futures.TimeoutError:
                     future.cancel()
@@ -594,9 +540,7 @@ def file_analysis(args, opts) -> None:
                         "FAIL": {}
                     }
                 
-
-                if analyzer.tags.get("DISASM").get("RESULT") == "PASS":
-                    analyzer.tag_selected_arch()
+                if analyzer.tags.get("DISASM") == "PASS":
                     analyzer.tag_function_tlsh()
                 exe_count += 1
 
@@ -613,10 +557,8 @@ def collection_analysis(args, opts):
         oids = api.expand_oids(collection)
 
         # Initialize data structures for device attributes
-
         collection_disasm = {}
         collection_func_tlsh = {}
-        collection_selected_archs = {}
 
         for oid in oids:
             tags = api.get_tags(oid)
@@ -625,26 +567,17 @@ def collection_analysis(args, opts):
 
             if tags.get("DISASM"):
                 # Check Framework Result
-                disasm_result = tags["DISASM"].get("RESULT")
+                disasm_result = tags["DISASM"]
                 collection_disasm[disasm_result] = collection_disasm.get(disasm_result, 0) + 1
 
-                if tags.get("SELECTED_ARCH"):
-                    selected_archs = tags["SELECTED_ARCH"]["arch"]
-                    for selected_arch in selected_archs:
-                        collection_selected_archs[selected_arch] = collection_selected_archs.get(selected_arch, 0) + 1
-            
                 if tags.get("FUNC_TLSH"):
                     for function in tags['FUNC_TLSH']:
                         collection_func_tlsh[function] = tags["FUNC_TLSH"][function]
-
-
-
 
         # Aggregate device tags
         collection_tags = {
             "DISASM": collection_disasm,
             "FUNC_TLSH": collection_func_tlsh,
-            "SELECTED_ARCHS": collection_selected_archs
         }
 
         api.apply_tags(collection, collection_tags)
@@ -674,6 +607,96 @@ def framework_analysis(args, opts):
                 api.apply_tags(collection, collection_tags)
             p2.tick()
 
+def compare_collection_series(args, opts):
+    # Assume get_collections returns a list of collection IDs
+    collections = get_collections(args, opts)
+    force = opts.get('force', None)
+
+    parsed_collections = []
+    for collection in collections:
+        product, version = split_collection(api.get_colname_from_oid(collection))
+        version_tuple = tuple(map(int, version.split('.')))
+        parsed_collections.append((collection, product, version, version_tuple))
+
+    # Sort by version tuple
+    parsed_collections.sort(key=lambda x: x[3])
+
+    ref_collection = None
+
+    # Open CSV file once and write header later.
+    # We'll write the header after we have at least one 'stats' object.
+    csv_filename = f"/home/nathan/Documents/{product}_file_changes.csv"
+    fieldnames = None  # Will determine after first stats retrieval
+    csv_file = open(csv_filename, mode='w', newline='')
+    csv_writer = None
+
+    # Keep track of the reference version
+    ref_version = None
+
+    times = {}
+
+    try:
+        p = progress.Progress(len(collections))
+        for collection, product, version, version_tuple in parsed_collections:
+            start_time = time.time()
+            colname = api.get_colname_from_oid(collection)
+            collection_tags = api.get_tags(collection)
+
+            if not collection_tags.get("FRAMEWORK_DATA") or not collection_tags["FRAMEWORK_DATA"].get(ref_collection) or force == "COMPARE":
+                if not collection_tags.get("FRAMEWORK_DATA"):
+                    collection_tags["FRAMEWORK_DATA"] = {}
+                analyzer = FrameworkAnalyzer(collection, ref_collection)   
+                analyzer.generate_file_report()
+                collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.report
+                api.apply_tags(collection, collection_tags)
+            else:
+                analyzer = FrameworkAnalyzer(collection, ref_collection)
+                analyzer.report = collection_tags["FRAMEWORK_DATA"].get(ref_collection)
+
+            file_stats = {
+                'EXECUTABLE_MATCHES': len(analyzer.report["EXECUTABLE_MATCHES"]),
+                'NON_EXECUTABLE_MATCHES': len(analyzer.report['NON_EXECUTABLE_MATCHES']),
+                'MODIFIED_EXECUTABLES': len(analyzer.report['MODIFIED_EXECUTABLES']),
+                'NEW_EXECUTABLES': len(analyzer.report['NEW_EXECUTABLES']),
+                'NEW_NON_EXECUTABLES': len(analyzer.report['NEW_NON_EXECUTABLES']),
+                'FAILED_EXECUTABLES': len(analyzer.report['FAILED_EXECUTABLES'])
+            }
+
+            # Initialize CSV writer on first iteration, now including a 'ref_version' column
+            if csv_writer is None:
+                fieldnames = ['version', 'ref_version'] + list(file_stats.keys())
+                csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+                csv_writer.writeheader()
+
+            # Write the transformed stats to the CSV file
+            row_data = {
+                'version': version,
+                'ref_version': ref_version if ref_version is not None else 'None'
+            }
+            row_data.update(file_stats)
+            csv_writer.writerow(row_data)
+
+            # Update reference info for the next iteration
+            ref_version = version
+            ref_collection = collection
+
+            times[str(colname)] = time.time() - start_time
+
+            p.tick()
+
+    finally:
+        csv_file.close()
+
+    # Write the times dictionary to a CSV file
+    # Adjust the filename and path as needed
+    with open('/home/nathan/Documents/compare_times.csv', 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        # Write header
+        writer.writerow(['collection', 'time_elapsed'])
+        # Write data
+        for colname, elapsed_time in times.items():
+            writer.writerow([colname, elapsed_time])
+
 def compare_collections(args, opts):
     if len(args) < 2:
         print("ERROR: Enter two collections to compare")
@@ -681,6 +704,7 @@ def compare_collections(args, opts):
     
     force = opts.get('force', None)
     view = opts.get('view', None)
+    report = opts.get('report', None)
 
     valid, invalid = api.valid_oids(args)
     collection, ref_collection = valid[0], valid[1]
@@ -715,6 +739,9 @@ def compare_collections(args, opts):
         analyzer.print_failed_executable()
     else:
         analyzer.print_statistics(stats)
+
+    if report:
+        analyzer.export_modified_files_report(report)
     
 def get_cross_collection_analysis(args, opts):
     def process_and_print(executable_matches):
@@ -769,12 +796,14 @@ def get_collection_tags(args, opts):
         """Helper function to format and print device information."""
         print("\n----------------------------------------------")
         print(f"CID - {device}\nCOLLECTION - {name}\nTAGS -")
-        print("SELECTED_ARCHS:")
-        pp.pprint(tags.get("SELECTED_ARCHS"))
         print("SRC_TYPE")
         pp.pprint(tags.get("SRC_TYPE"))
-        print("FILe_CATEGORY")
+        print("FILE_CATEGORIES")
         pp.pprint(tags.get("CATEGORY"))
+        print("COLLECTION_SIZE")
+        pp.pprint(tags.get("SIZE"))
+        print("DISASM RESULTS:")
+        pp.pprint(tags.get("DISASM"))
         print("----------------------------------------------")
 
     collections = get_collections(args, opts)
@@ -816,28 +845,97 @@ def import_samples(args, opts):
     for sample in os.listdir(dir_path):
         sample_path = os.path.join(dir_path, sample)
         # Create the sample_name as "parent_directory-directory_name"
-        sample_name = f"{parent_directory_name}-{sample}"
+        sample_name = f"{parent_directory_name}---{sample}"
         import_sample(sample_name, sample_path)
+
+def import_dataset(args, opts):
+    dir_path = args[0]
+
+    # Check if the provided path is a valid directory
+    if not os.path.isdir(dir_path):
+        raise ShellSyntaxError("Enter a valid directory with firmware from devices")
+    
+    results = {}
+
+    def import_sample(sample_name, sample_path):
+        """Helper function to import a directory or file and create a collection."""
+        oids, new_files = (
+            api.import_directory(sample_path) if os.path.isdir(sample_path)
+            else api.import_file(sample_path)
+        )
+        result = api.create_collection(sample_name, oids, oids)
+        results[sample_name] = result
+
+    # Iterate over product directories in the given directory
+    for product in os.listdir(dir_path):
+        product_path = os.path.join(dir_path, product)
+
+        # Skip if it's not a directory
+        if not os.path.isdir(product_path):
+            continue
+
+        # Iterate over versions or samples within the product directory
+        for sample in os.listdir(product_path):
+            sample_path = os.path.join(product_path, sample)
+
+            # Create the sample_name as "product_name-version_name"
+            sample_name = f"{product}---{sample}"
+            import_sample(sample_name, sample_path)
 
 # Run pre-analysis passes
 def pre_analysis(args, opts):
     file_pre_analysis(args, opts)
     collection_pre_analysis(args, opts)
 
-# Run analysis passes
-def analysis(args, opts):
-    file_analysis(args, opts)
-    collection_analysis(args, opts)
-    framework_analysis(args, opts)
-
 def run_framework(args, opts):
-    file_pre_analysis(args, opts)
-    collection_pre_analysis(args, opts)
-    file_analysis(args, opts)
-    collection_analysis(args, opts)
-    framework_analysis(args, opts)
+    collections = get_collections(args)
 
-exports = [file_pre_analysis, file_analysis, collection_pre_analysis, collection_analysis, framework_analysis, get_file_tags, get_collection_tags, framework_analysis, get_cross_collection_analysis, compare_collections, import_samples, pre_analysis, run_framework]
+    parsed_collections = []
+    for collection in collections:
+        product, version = split_collection(api.get_colname_from_oid(collection))
+        version_tuple = tuple(map(int, version.split('.')))
+        parsed_collections.append((collection, product, version, version_tuple))
+
+    # Sort by version tuple
+    parsed_collections.sort(key=lambda x: x[3])
+
+    for collection, product, version, version_tuple in parsed_collections:
+        start_time = time.time()
+        colname = api.get_colname_from_oid(collection)
+        print(colname)
+
+        # Convert to a list since your subsequent functions expect a list
+        collection = [collection]
+
+        print("---FILE PRE-ANALYSIS---")
+        file_pre_analysis(collection, opts)
+
+        print("---COLLECTION PRE-ANALYSIS---")
+        collection_pre_analysis(collection, opts)
+
+        print("---FILE ANALYSIS---")
+        file_analysis(collection, opts)
+
+        print("---COLLECTION ANALYSIS---")
+        collection_analysis(collection, opts)
+
+
+exports = [
+    file_pre_analysis, 
+    file_analysis, 
+    collection_pre_analysis, 
+    collection_analysis, 
+    framework_analysis, 
+    get_file_tags, 
+    get_collection_tags, 
+    framework_analysis, 
+    get_cross_collection_analysis, 
+    compare_collections, 
+    compare_collection_series,
+    import_samples, 
+    import_dataset, 
+    pre_analysis, 
+    run_framework]
 
 ############################
 ### SUPPORTING FUNCTIONS ###
@@ -858,16 +956,17 @@ def get_collections(args=None, opts=None):
     # Default options to an empty dictionary if None
     opts = opts or {}
 
+    collections = []
+
     if args:
         valid, invalid = api.valid_oids(args)
-        collections = [valid]
+        collections = valid
     else:
         # Handle case when no arguments are provided
         filter_value = opts.get('filter')
         if filter_value:
             # Retrieve all collection CIDs
             all_collections = api.collection_cids()
-            collections = []
             for collection in all_collections:
                 # Get collection name and check the filter
                 collection_name = api.get_colname_from_oid(collection)
@@ -880,23 +979,29 @@ def get_collections(args=None, opts=None):
                 return []
         else:
             # Default case: retrieve all collection CIDs
-            collections = api.collection_cids()
+            for c in api.collection_cids():
+                collections.append(c)
 
     return collections
 
-def tag_disasm(oid, force, tags, collection_archs):
+def tag_disasm(oid, force, tags):
     if "DISASM" not in tags or force == "DISASM":
-        archs = []
-        archs_file = tags["ARCH_POSSIBLE"]
-        archs_collection = collection_archs["ARCH_POSSIBLE"]
-        archs = list(archs_file.keys()) + archs_collection
-        tags["DISASM"] = api.get_field("ghidra_disasm_archs", oid, oid, {"archs": archs})    
+        disasm_result = api.retrieve('ghidra_disasm', oid)
+        if disasm_result is None or disasm_result == {} or disasm_result["original_blocks"] == {}:
+            tags['DISASM'] = 'FAIL'
+        else:
+            tags['DISASM'] = 'PASS'
     return tags    
 
-
-def oid_filter(oids, filter, value):
-    oids = api.tag_filter(oids, filter, value)
-    return oids
+def split_collection(input_string):
+    # Split the string at the occurrence of "---"
+    parts = input_string.split('---', maxsplit=1)
+    
+    # Check if the delimiter was found and return both parts
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    else:
+        return parts[0], None  # Return None if the delimiter is not found
 
 def _print_file_tags(oid):
     tags = api.get_tags(oid)
