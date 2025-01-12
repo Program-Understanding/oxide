@@ -32,7 +32,7 @@ import api
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {}
+opts_doc = {"by_func": {"type":bool, "mangle":True,"default":False,"description":"Organize output by function"}}
 
 
 def documentation():
@@ -45,6 +45,22 @@ def process(oid, opts):
     if disasm is None:
         return False
 
+    if opts["by_func"]:
+        f_dict = {}
+        g_dis = api.retrieve("ghidra_disasm",oid)
+        funcs = g_dis["functions"]
+        dis = api.get_field("disassembly", oid,oid)['instructions']
+        for f in funcs:
+            if f == "meta": continue
+            name = funcs[f]["name"]
+            f_dict[name] = {}
+            for b in funcs[f]["blocks"]:
+                for i in g_dis["original_blocks"][b]["members"]:
+                    addr = i[0]
+                    if addr not in dis: continue
+                    f_dict[name][addr] = dis[addr]["mnemonic"]
+        api.store(NAME,oid,f_dict,opts)
+        return True
     opcodes = get_opcodes(disasm["instructions"])
     api.store(NAME, oid, {"opcodes": opcodes}, opts)
     return True
