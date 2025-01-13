@@ -5,6 +5,7 @@ DESC="Analyze output from angr_function_time extractor module"
 from oxide.core import api
 import logging
 import statistics
+from time import sleep
 
 logger = logging.getLogger(NAME)
 opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
@@ -42,7 +43,8 @@ def mapper(oid, opts, jobid=False):
     results["opcode_by_func"] = api.retrieve("opcodes",oid,{"by_func":True})
     if results["opcode_by_func"] is None:
         return False
-    api.store(NAME,oid,results,opts)
+    while not api.store(NAME,oid,results,opts):
+        sleep(1)
     return oid
 
 def reducer(intermediate_output, opts, jobid):
@@ -50,6 +52,7 @@ def reducer(intermediate_output, opts, jobid):
     complexity_vs_time = {}
     bins_w_time = {}
     functions_w_angr_errors = 0
+    oids_w_angr_errors = 0
     for complexity in ["simple", "moderate", "needs refactor", "complex"]:
         complexity_vs_time[complexity] = {"times":[],
                                           "instructions": [],
@@ -100,6 +103,7 @@ def reducer(intermediate_output, opts, jobid):
             opcode_by_func = api.get_field(NAME,oid,"opcode_by_func",opts)
             if time_result is None or opcode_by_func is None:
                 logger.warning(f"None result for {oid}")
+                oids_w_angr_errors += 1
                 continue
             for fun in time_result:
                 f_dict = time_result[fun]
@@ -195,7 +199,7 @@ def reducer(intermediate_output, opts, jobid):
             else:
                 filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
                                                            "times": complexity_vs_time[complexity]["times"]}
-        return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors}
+        return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors}
     else:
         return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
-            "functions with angr errors": functions_w_angr_errors}
+            "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors}
