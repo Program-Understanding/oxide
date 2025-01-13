@@ -163,8 +163,6 @@ def reducer(intermediate_output, opts, jobid):
                         mncs[opcode] = 1
                     else:
                         mncs[opcode] += 1
-                
-                
                 fun_opcodes = {}
                 for opcode in mncs:
                     if not opcode in complexity_vs_time[complexity_level]["opcodes"]:
@@ -194,7 +192,6 @@ def reducer(intermediate_output, opts, jobid):
                     df_time.append(time)
                     df_bin.append(f_bin)
                     df_complexity.append(complexity_level)
-                    fun_opcodes = {}
                     df_instructions.append(num_insns)
                     df_opcodes.append(fun_opcodes)
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
