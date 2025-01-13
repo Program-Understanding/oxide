@@ -9,7 +9,8 @@ import statistics
 logger = logging.getLogger(NAME)
 opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
             "summaries": {"type":bool, "mangle":False,"default":True,"description":"Include function summaries from function summary module as well"},
-            "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"}}
+            "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"},
+            "filter":{"type":bool,"mangle":False,"default":True,"Description":"Get rid of some of the less useful fields in the output"}}
 
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
@@ -167,5 +168,21 @@ def reducer(intermediate_output, opts, jobid):
                        "std dev": statistics.stdev(bins_w_time[bn]["operands"][op_type]),
                        "median": statistics.median(bins_w_time[bn]["operands"][op_type])
                    }
-    return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
+    if opts["filter"]:
+        filtered_bins_w_time = {}
+        for bn in bins_w_time:
+            if bins_w_time[bn] is None: continue
+            filtered_bins_w_time[bn]={}
+            for key in list(bins_w_time[bn].keys()):
+                if "stats" in key:
+                    filtered_bins_w_time[bn][key] = bins_w_time[bn][key]
+        filtered_complexity_vs_time = {}
+        for complexity in ["simple", "moderate", "needs refactor", "complex"]:
+            filtered_complexity_vs_time[complexity] = {"instruction stats": {"mean": statistics.mean(complexity_vs_time[complexity]["instructions"]),
+                                                                             "std dev": statistics.stdev(complexity_vs_time[complexity]["instructions"])},
+                                                       "time stats": {"mean": statistics.mean(complexity_vs_time[complexity]["times"]),
+                                                                      "std dev": statistics.stdev(complexity_vs_time[complexity]["times"])}}
+        return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors}
+    else:
+        return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
             "functions with angr errors": functions_w_angr_errors}
