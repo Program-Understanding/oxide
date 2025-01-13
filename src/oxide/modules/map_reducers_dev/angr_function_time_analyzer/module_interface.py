@@ -182,7 +182,9 @@ def reducer(intermediate_output, opts, jobid):
                 if "stats" in key:
                     if "opcode" in key:
                         if not "opcodes" in filtered_bins_w_time[bn]: filtered_bins_w_time[bn]["opcodes"]={}
-                        opcode = key.split(" ")[1]
+                        opcode : str = key.split(" ")[1]
+                        if opcode.startswith("j"):
+                            filtered_bins_w_time[bn]["opcodes"]["j*"] = bins_w_time[bn][key]
                         filtered_bins_w_time[bn]["opcodes"][opcode] = bins_w_time[bn][key]
                     elif "operand" in key:
                         if not "operands" in filtered_bins_w_time[bn]: filtered_bins_w_time[bn]["operands"]={}
@@ -190,6 +192,7 @@ def reducer(intermediate_output, opts, jobid):
                         filtered_bins_w_time[bn]["operands"][operand] = bins_w_time[bn][key]
                     else:
                         filtered_bins_w_time[bn][key] = bins_w_time[bn][key]
+            filtered_bins_w_time[bn]["number of functions"] = len(bins_w_time[bn]["num instructions"])
         filtered_complexity_vs_time = {}
         for complexity in ["simple", "moderate", "needs refactor", "complex"]:
             if len(complexity_vs_time[complexity]["instructions"]) > 1:
