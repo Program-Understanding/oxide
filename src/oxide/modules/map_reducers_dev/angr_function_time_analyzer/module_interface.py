@@ -11,7 +11,8 @@ logger = logging.getLogger(NAME)
 opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
             "summaries": {"type":bool, "mangle":False,"default":True,"description":"Include function summaries from function summary module as well"},
             "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"},
-            "filter":{"type":bool,"mangle":False,"default":True,"Description":"Get rid of some of the less useful fields in the output"}}
+            "filter":{"type":bool,"mangle":False,"default":True,"Description":"Get rid of some of the less useful fields in the output"},
+            "csv-path":{"type":str,"mangle":False,"default":"","Description":"Path to output to a csv file"}}
 
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
@@ -26,6 +27,23 @@ def find_bin_key(bins,time,timeout):
         if time < bn:
             return key
     return f"> {timeout}"
+
+def opcode_mapper(all_opcodes,df_opcodes,data_dict):
+    #in order of function, should append the number of occurrences
+    #of each opcode to the passed in dictionary
+    for opcode in all_opcodes:
+        data_dict[opcode] = []
+    data_dict["j*"] = []
+    for fun_opcode_dict in df_opcodes:
+        j_star = 0
+        for opcode in all_opcodes:
+            if opcode in fun_opcode_dict:
+                data_dict[opcode].append(fun_opcode_dict[opcode])
+                if opcode.startswith("j"):
+                    j_star += 1
+            else:
+                data_dict[opcode].append(0)
+        data_dict["j*"].append(j_star)
 
 def mapper(oid, opts, jobid=False):
     if api.exists(NAME,oid,opts):
@@ -53,6 +71,18 @@ def reducer(intermediate_output, opts, jobid):
     bins_w_time = {}
     functions_w_angr_errors = 0
     oids_w_angr_errors = 0
+    if opts["csv-path"]:
+        import pandas as pd
+        df_time = []
+        df_bin = []
+        df_complexity = []
+        df_instructions = []
+        df_imm = []
+        df_mem = []
+        df_reg = []
+        df_index = []
+        df_opcodes = []
+        all_opcodes = set()
     for complexity in ["simple", "moderate", "needs refactor", "complex"]:
         complexity_vs_time[complexity] = {"times":[],
                                           "instructions": [],
@@ -118,6 +148,11 @@ def reducer(intermediate_output, opts, jobid):
                 if fun not in opcode_by_func:
                     logger.error(f"Need to delete {oid} from local store")
                 opcodes = opcode_by_func[fun]
+                if opts["csv-path"]:
+                    df_time.append(time)
+                    df_bin.append(f_bin)
+                    df_complexity.append(complexity_level)
+                    fun_opcodes = {}
                 #count the occurrence of opcodes
                 mncs = {}
                 for opcode in opcodes:
@@ -135,18 +170,37 @@ def reducer(intermediate_output, opts, jobid):
                         bins_w_time[f_bin]["opcodes"][opcode] = [mncs[opcode]]
                     else:
                         bins_w_time[f_bin]["opcodes"][opcode].append(mncs[opcode])
+                    if opts["csv-path"]:
+                        if opcode in fun_opcodes:
+                            fun_opcodes[opcode] += 1
+                        else:
+                            fun_opcodes[opcode] = 1
+                        all_opcodes.add(opcode)
                 if time > 5:
                     complexity_vs_time[complexity_level]["interesting"][fun] = {"instructions": f_dict["instructions"],
                                                                                 "seconds": time,
                                                                                 "from": oid,
                                                                                 "complexity": f_dict["summary"]["complexity"]}
                 num_insns = f_dict["summary"]["num_insns"]
+                if opts["csv-path"]: 
+                    df_instructions.append(num_insns)
+                    df_opcodes.append(fun_opcodes)
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
                 bins_w_time[f_bin]["num instructions"].append(num_insns)
                 operands = f_dict["summary"]["operands"]
                 for op_type in ["imm", "reg", "mem"]:
                     complexity_vs_time[complexity_level]["operands"][op_type].append(operands[op_type])
                     bins_w_time[f_bin]["operands"][op_type].append(operands[op_type])
+                    if opts["csv-path"]:
+                        match op_type:
+                            case "imm":
+                                df_imm.append(operands[op_type])
+                            case "mem":
+                                df_mem.append(operands[op_type])
+                            case "reg":
+                                df_reg.append(operands[op_type])
+                if opts["csv-path"]:
+                    df_index.append(f"{oid}{fun}")
     #eliminate empty bins
     for bn in bins_w_time:
         if not bins_w_time[bn]["opcodes"] and not bins_w_time[bn]["num instructions"]:
@@ -173,6 +227,21 @@ def reducer(intermediate_output, opts, jobid):
                        "std dev": statistics.stdev(bins_w_time[bn]["operands"][op_type]),
                        "median": statistics.median(bins_w_time[bn]["operands"][op_type])
                    }
+    if opts["csv-path"]:
+        data_dict = {"time":df_time,
+                     "bin":df_bin,
+                     "complexity":df_complexity,
+                     "instructions":df_instructions,
+                     "imms":df_imm,
+                     "mems":df_mem,
+                     "regs":df_reg}
+        opcode_mapper(all_opcodes,df_opcodes,data_dict)
+        dataframe = pd.DataFrame(data_dict,
+                                 index=df_index)
+        import os
+        outpath = os.path.join(api.scratch_dir,opts["csv-path"])
+        with open(outpath,"w") as f:
+            dataframe.to_csv(f)
     if opts["filter"]:
         filtered_bins_w_time = {}
         for bn in bins_w_time:
@@ -183,8 +252,6 @@ def reducer(intermediate_output, opts, jobid):
                     if "opcode" in key:
                         if not "opcodes" in filtered_bins_w_time[bn]: filtered_bins_w_time[bn]["opcodes"]={}
                         opcode : str = key.split(" ")[1]
-                        if opcode.startswith("j"):
-                            filtered_bins_w_time[bn]["opcodes"]["j*"] = bins_w_time[bn][key]
                         filtered_bins_w_time[bn]["opcodes"][opcode] = bins_w_time[bn][key]
                     elif "operand" in key:
                         if not "operands" in filtered_bins_w_time[bn]: filtered_bins_w_time[bn]["operands"]={}
@@ -197,9 +264,11 @@ def reducer(intermediate_output, opts, jobid):
         for complexity in ["simple", "moderate", "needs refactor", "complex"]:
             if len(complexity_vs_time[complexity]["instructions"]) > 1:
                 filtered_complexity_vs_time[complexity] = {"instructions": {"mean": statistics.mean(complexity_vs_time[complexity]["instructions"]),
-                                                                                 "std dev": statistics.stdev(complexity_vs_time[complexity]["instructions"])},
+                                                                            "std dev": statistics.stdev(complexity_vs_time[complexity]["instructions"]),
+                                                                            "median": statistics.median(complexity_vs_time[complexity]["instructions"])},
                                                            "times": {"mean": statistics.mean(complexity_vs_time[complexity]["times"]),
-                                                                          "std dev": statistics.stdev(complexity_vs_time[complexity]["times"])}}
+                                                                     "std dev": statistics.stdev(complexity_vs_time[complexity]["times"]),
+                                                                     "median": statistics.median(complexity_vs_time[complexity]["times"])}}
             else:
                 filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
                                                            "times": complexity_vs_time[complexity]["times"]}
