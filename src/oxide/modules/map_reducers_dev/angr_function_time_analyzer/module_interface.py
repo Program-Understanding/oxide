@@ -169,19 +169,30 @@ def reducer(intermediate_output, opts, jobid):
                        "median": statistics.median(bins_w_time[bn]["operands"][op_type])
                    }
     if opts["filter"]:
-        filtered_bins_w_time = {}
+        filtered_bins_w_time = {"opcodes":{},"operands":{}}
         for bn in bins_w_time:
             if bins_w_time[bn] is None: continue
             filtered_bins_w_time[bn]={}
             for key in list(bins_w_time[bn].keys()):
                 if "stats" in key:
-                    filtered_bins_w_time[bn][key] = bins_w_time[bn][key]
+                    if "opcode" in key:
+                        opcode = key.split(" ")[1]
+                        filtered_bins_w_time[bn]["opcodes"][opcode] = bins_w_time[bn][key]
+                    elif "operand" in key:
+                        operand = key.split(" ")[2]
+                        filtered_bins_w_time[bn]["operands"][operand] = bins_w_time[bn][key]
+                    else:
+                        filtered_bins_w_time[bn][key] = bins_w_time[bn][key]
         filtered_complexity_vs_time = {}
         for complexity in ["simple", "moderate", "needs refactor", "complex"]:
-            filtered_complexity_vs_time[complexity] = {"instruction stats": {"mean": statistics.mean(complexity_vs_time[complexity]["instructions"]),
-                                                                             "std dev": statistics.stdev(complexity_vs_time[complexity]["instructions"])},
-                                                       "time stats": {"mean": statistics.mean(complexity_vs_time[complexity]["times"]),
-                                                                      "std dev": statistics.stdev(complexity_vs_time[complexity]["times"])}}
+            if len(filtered_complexity_vs_time[complexity]) > 1:
+                filtered_complexity_vs_time[complexity] = {"instruction stats": {"mean": statistics.mean(complexity_vs_time[complexity]["instructions"]),
+                                                                                 "std dev": statistics.stdev(complexity_vs_time[complexity]["instructions"])},
+                                                           "time stats": {"mean": statistics.mean(complexity_vs_time[complexity]["times"]),
+                                                                          "std dev": statistics.stdev(complexity_vs_time[complexity]["times"])}}
+            else:
+                filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
+                                                           "times": complexity_vs_time[complexity]["times"]}
         return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors}
     else:
         return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
