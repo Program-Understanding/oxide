@@ -8,11 +8,8 @@ logger = logging.getLogger(NAME)
 from core import api
 import numpy
 import sympy
-import time
 
-opts_doc={"timeout": {"type": int, "mangle": False, "default": 600, "description": "Time in seconds for angr before it times out, default is 5 minutes"},
-          "use_angr": {"type": bool, "mangle": True, "default": False, "description": "Try to see how long angr will take on functions"},
-          "with_disasm": {"type": bool, "mangle": True, "default": False, "description": "Include the disassembly for each function from ghidra/angr"}}
+opts_doc={}
 
 def documentation():
     return {"description":DESC,
@@ -21,18 +18,6 @@ def documentation():
             "set": False,
             "atomic":True
             }
-
-import angr
-
-def k_step_func(simmgr):
-    global start_time
-    global timeout
-    if time.time() - start_time > timeout: #checking timeout limit
-        simmgr.move(from_stash="active", to_stash="deadend")
-    return simmgr
-
-start_time = None
-timeout = None
 
 def calc_func_apc(adj_matrix,n):
     """given an adjacency matrix and the size of it,
@@ -130,20 +115,10 @@ def results(oid_list, opts):
     the estimated path complexity, and
     the results from the acfg module for the function.
     Results are returned on function by function basis.
-    
-    Can optionally return the time angr took to run the
-    program starting from each function via symbolic execution.
-    angr's timeout can be set by passing in a timeout option.
-    Can also optionally include the disassembly from ghidra
-    and angr (if use_angr is set).
     """
-    global start_time
-    global timeout
     oid_list = api.expand_oids(oid_list)
     results = {}
     for oid in oid_list:
-        #acfg retrieve
-        acfg_out = api.retrieve("acfg",oid)
         results[oid] = {}
         #temp code just to keep track of the filename
         data = api.get_field(api.source(oid), oid, "data", {})
@@ -202,65 +177,9 @@ def results(oid_list, opts):
                         adj_matrix[i,j] = 1
                     j += 1
                 i+=1
-            
             #last element must be 1 to get determinant
             adj_matrix[-1,-1] = 1
             logger.debug(f"function {fun} adj_matrix = {adj_matrix}")
             results[oid][fun]['adjacency matrix'] = adj_matrix
             results[oid][fun]['apc'] = f"Big O({calc_func_apc(adj_matrix,n)})"
-            #check if we should get the function's disassembly as well
-            if opts['with_disasm']:
-                ghidra_disasm = {}
-                for block in partially_ordered_blocks:
-                    ghidra_disasm[block] = fun_blocks[block]['members']
-                results[oid][fun]['ghidra disasm'] = ghidra_disasm
-            #now we process angr
-            if opts['use_angr']:
-                logger.warning("TODO: The angr parts of this module should be brought out into a separate script to stop angr from eating all RAM. Until then, the user should consider closely monitoring RAM and restarting Oxide when RAM is fully used...")
-                #set the timeout option for our step function
-                timeout = opts['timeout']
-                #find out how long it'll take angr to symbolically execute this
-                #make an angr project and get the CFG
-                proj = angr.Project(f_name,load_options={"auto_load_libs":False})
-                #silence the logger
-                angr_logger = logging.getLogger("angr")
-                angr_logger.setLevel(50)
-                cfg = proj.analyses.CFGFast()
-                #simply walk through all possible code paths
-                fun_addr = proj.loader.min_addr + funs[fun]['start']
-                state = proj.factory.blank_state(addr=fun_addr)
-                simgr = proj.factory.simulation_manager(state)
-                #step until we have no more active states
-                start_time = time.time()
-                while len(simgr.active):
-                    simgr.step(step_func=k_step_func)
-                results[oid][fun]['seconds angr took'] = time.time() - start_time
-                results[oid][fun]['states angr made'] = sum([len(simgr.stashes[stash]) for stash in simgr.stashes])
-                if fun_addr in cfg.kb.functions:
-                    #check if we should include the angr disassembly of the function
-                    if opts['with_disasm']:
-                        angr_func_blocks = {}
-                        for block in cfg.kb.functions[fun_addr].blocks:
-                            angr_func_blocks[block.addr-proj.loader.min_addr]=[]
-                            for instruction in block.disassembly.insns:
-                                angr_func_blocks[block.addr-proj.loader.min_addr].append((instruction.address-proj.loader.min_addr, f"{instruction.mnemonic} {instruction.op_str}"))
-                        results[oid][fun]['angr disasm'] = angr_func_blocks
-                    #include the cyclomatic complexity from angr
-                    results[oid][fun]["angr's reported cyclomatic complexity"] = cfg.kb.functions[fun_addr].cyclomatic_complexity
-                    #build an adjacency matrix using angr
-                    #map from angr addr to index in p_o_b
-                    #to use in the adj_matrix
-                    map_to_pob = {}
-                    for i in range(len(partially_ordered_blocks)):
-                        map_to_pob[partially_ordered_blocks[i]+proj.loader.min_addr]=i
-                    angr_adj_matrix = sympy.zeros(n,n)
-                    for node, dest in proj.kb.functions[fun_addr].transition_graph.edges:
-                        if node.addr in map_to_pob and dest.addr in map_to_pob:
-                            angr_adj_matrix[map_to_pob[node.addr],map_to_pob[dest.addr]] = 1
-                    angr_adj_matrix[-1,-1] = 1
-                    results[oid][fun]["angr's adj matrix"] = angr_adj_matrix
-                    results[oid][fun]["apc with angr's adj matrix"] = calc_func_apc(angr_adj_matrix,n)
-            #get output from Nathan's acfg module
-            results[oid][fun]["acfg"] = acfg_out[oid][function_start]
-        api.store(NAME,oid,results,opts)
     return results
