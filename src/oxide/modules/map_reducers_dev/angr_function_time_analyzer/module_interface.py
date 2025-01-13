@@ -158,6 +158,7 @@ def reducer(intermediate_output, opts, jobid):
             bins_w_time[bn]["instructions stats"] = {"mean instructions":statistics.mean(bins_w_time[bn]["num instructions"]),
                                                      "std dev":statistics.stdev(bins_w_time[bn]["num instructions"]),
                                                      "median": statistics.median(bins_w_time[bn]["num instructions"])}
+        bins_w_time[bn]["number of functions"] = len(bins_w_time[bn]["num instructions"])
         for opcode in bins_w_time[bn]["opcodes"]:
             if len(bins_w_time[bn]["opcodes"][opcode]) > 1:
                 bins_w_time[bn][f"opcode {opcode} stats"] = {
