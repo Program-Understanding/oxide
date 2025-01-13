@@ -12,7 +12,8 @@ opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"ti
             "summaries": {"type":bool, "mangle":False,"default":True,"description":"Include function summaries from function summary module as well"},
             "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"},
             "filter":{"type":bool,"mangle":False,"default":True,"Description":"Get rid of some of the less useful fields in the output"},
-            "csv-path":{"type":str,"mangle":False,"default":"","Description":"Path to output to a csv file"}}
+            "csv-path":{"type":str,"mangle":False,"default":"","Description":"Path to output to a csv file"},
+            "allow-missing-ret":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results that don't have a ret instruction"}}
 
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
@@ -34,16 +35,21 @@ def opcode_mapper(all_opcodes,df_opcodes,data_dict):
     for opcode in all_opcodes:
         data_dict[opcode] = []
     data_dict["j*"] = []
+    data_dict["mov*"] = []
     for fun_opcode_dict in df_opcodes:
         j_star = 0
+        mov_star = 0
         for opcode in all_opcodes:
             if opcode in fun_opcode_dict:
                 data_dict[opcode].append(fun_opcode_dict[opcode])
                 if opcode.startswith("j"):
                     j_star += 1
+                if opcode.startswith("mov"):
+                    mov_star += 1
             else:
                 data_dict[opcode].append(0)
         data_dict["j*"].append(j_star)
+        data_dict["mov*"].append(mov_star)
 
 def mapper(oid, opts, jobid=False):
     if api.exists(NAME,oid,opts):
@@ -71,6 +77,7 @@ def reducer(intermediate_output, opts, jobid):
     bins_w_time = {}
     functions_w_angr_errors = 0
     oids_w_angr_errors = 0
+    functions_w_no_ret = 0
     if opts["csv-path"]:
         import pandas as pd
         df_time = []
@@ -148,11 +155,6 @@ def reducer(intermediate_output, opts, jobid):
                 if fun not in opcode_by_func:
                     logger.error(f"Need to delete {oid} from local store")
                 opcodes = opcode_by_func[fun]
-                if opts["csv-path"]:
-                    df_time.append(time)
-                    df_bin.append(f_bin)
-                    df_complexity.append(complexity_level)
-                    fun_opcodes = {}
                 #count the occurrence of opcodes
                 mncs = {}
                 for opcode in opcodes:
@@ -161,6 +163,9 @@ def reducer(intermediate_output, opts, jobid):
                         mncs[opcode] = 1
                     else:
                         mncs[opcode] += 1
+                
+                
+                fun_opcodes = {}
                 for opcode in mncs:
                     if not opcode in complexity_vs_time[complexity_level]["opcodes"]:
                         complexity_vs_time[complexity_level]["opcodes"][opcode] = [mncs[opcode]]
@@ -170,19 +175,26 @@ def reducer(intermediate_output, opts, jobid):
                         bins_w_time[f_bin]["opcodes"][opcode] = [mncs[opcode]]
                     else:
                         bins_w_time[f_bin]["opcodes"][opcode].append(mncs[opcode])
+                    if opcode in fun_opcodes:
+                        fun_opcodes[opcode] += 1
+                    else:
+                        fun_opcodes[opcode] = 1
                     if opts["csv-path"]:
-                        if opcode in fun_opcodes:
-                            fun_opcodes[opcode] += 1
-                        else:
-                            fun_opcodes[opcode] = 1
                         all_opcodes.add(opcode)
+                if not opts["allow-missing-ret"] and not "ret" in fun_opcodes:
+                    functions_w_no_ret += 1
+                    continue
                 if time > 5:
                     complexity_vs_time[complexity_level]["interesting"][fun] = {"instructions": f_dict["instructions"],
                                                                                 "seconds": time,
                                                                                 "from": oid,
                                                                                 "complexity": f_dict["summary"]["complexity"]}
                 num_insns = f_dict["summary"]["num_insns"]
-                if opts["csv-path"]: 
+                if opts["csv-path"]:
+                    df_time.append(time)
+                    df_bin.append(f_bin)
+                    df_complexity.append(complexity_level)
+                    fun_opcodes = {}
                     df_instructions.append(num_insns)
                     df_opcodes.append(fun_opcodes)
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
@@ -272,7 +284,8 @@ def reducer(intermediate_output, opts, jobid):
             else:
                 filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
                                                            "times": complexity_vs_time[complexity]["times"]}
-        return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors}
+        return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret}
     else:
         return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
-            "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors}
+                "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors,\
+                "functions without ret instruction":functions_w_no_ret}
