@@ -17,6 +17,9 @@ def process(oid, opts):
     from oxide.core.libraries.angr_utils2 import angrManager, angrTherapy,angrManagerProxy
     angrManager.register("angr_project",angrTherapy,angrManagerProxy)
     g_d = api.get_field("ghidra_disasm",oid,"functions")
+    if not g_d:
+        logger.error(f"Error with ghidra disassembly for {oid}!")
+        return False
     f_dict = {}
     prog = angrProgress(len(g_d))
     if opts["summaries"]:
