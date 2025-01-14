@@ -12,6 +12,8 @@ def output_data(outpath, dataframe,binkeys):
     movs_by_bin = []
     cmovs_by_bin = []
     xors_by_bin = []
+    #track instructions per bin
+    instructions = []
     #imms, mems, regs per bin
     imms = []
     mems = []
@@ -28,6 +30,8 @@ def output_data(outpath, dataframe,binkeys):
             movs_by_bin.append(dataframe.loc[dataframe["bin"] == bn, "mov*"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             cmovs_by_bin.append(dataframe.loc[dataframe["bin"] == bn, "cmov*"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             xors_by_bin.append(dataframe.loc[dataframe["bin"] == bn, "*xor*"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            #instructions
+            instructions.append(dataframe.loc[dataframe["bin"] == bn, "instructions"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #imms, mems, regs per bin
             imms.append(dataframe.loc[dataframe["bin"] == bn, "imms"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             mems.append(dataframe.loc[dataframe["bin"] == bn, "mems"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
@@ -42,6 +46,7 @@ def output_data(outpath, dataframe,binkeys):
             movs_by_bin.append(0)
             xors_by_bin.append(0)
             cmovs_by_bin.append(0)
+            instructions.append(0)
             imms.append(0)
             mems.append(0)
             regs.append(0)
@@ -49,6 +54,7 @@ def output_data(outpath, dataframe,binkeys):
             mod.append(0)
             needs_ref.append(0)
             cmplx.append(0)
+    #matched j*/mov*/cmov*/*xor*
     df = pd.DataFrame({"j*" :jmps_by_bin,
                        "mov*":movs_by_bin,
                        "cmov*":cmovs_by_bin,
@@ -60,6 +66,16 @@ def output_data(outpath, dataframe,binkeys):
     plt.xlabel("Time range")
     plt.tight_layout()
     plt.savefig(outpath / "jmps_movs_cmovs_xors_by_bin.png",dpi=1000)
+    plt.clf()
+    #instructions
+    df = pd.DataFrame({"instructions" :instructions},index=binkeys)
+    df.plot.bar(rot=0)
+    plt.xticks(rotation=45)
+    plt.title("Average instructions per function by bin")
+    plt.ylabel("Average instructions per function")
+    plt.xlabel("Time range")
+    plt.tight_layout()
+    plt.savefig(outpath / "instructions_by_bin.png",dpi=1000)
     plt.clf()
     #imms, mems, regs per bin        
     df = pd.DataFrame({"imms": imms,
