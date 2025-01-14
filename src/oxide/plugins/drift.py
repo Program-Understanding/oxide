@@ -16,7 +16,7 @@ import time
 from oxide.core import progress, api
 
 
-print("DRIFT")
+print("Triage Framework Plugin")
 info = """
         """
 print(info)
@@ -67,7 +67,7 @@ class FileAnalyzer:
                     filtered_hashes[hashes[function].get('tlsh hash')] = hashes[function]['name']
             self.tags["FUNC_TLSH"] = filtered_hashes
 
-class CollectionComparator:
+class FrameworkAnalyzer:
     def __init__(self, collection, ref_collection) -> None:
         self.collection = collection
         self.collection_tags = api.get_tags(self.collection)
@@ -304,13 +304,19 @@ class CollectionComparator:
                 table.add_row([name])
             print(table)
 
-    def print_modified_executables(self):
+    def print_modified_executables(self, file):
         print("\n================== MODIFIED EXECUTABLES ==================")
-        self.print_category_w_ref(self.report['MODIFIED_EXECUTABLES'])
+        if file:
+            self.print_category_w_ref({file: self.report['MODIFIED_EXECUTABLES'][file]})
+        else:
+            self.print_category_w_ref(self.report['MODIFIED_EXECUTABLES'])
 
-    def print_new_executables(self):
+    def print_new_executables(self, file):
         print("\n================== NEW EXECUTABLES ==================")
-        self.print_category(self.report['NEW_EXECUTABLES'])
+        if file:
+            self.print_category_w_ref({file: self.report['NEW_EXECUTABLES'][file]})
+        else:
+            self.print_category_w_ref(self.report['NEW_EXECUTABLES'])
 
     def print_new_non_executables(self):
         print("\n================== NEW NON-EXECUTABLES ==================")
@@ -438,37 +444,70 @@ class CollectionComparator:
         print(table)
 
     def print_compare_functions(self, file_oid, function):
-        if 'modified_funcs' in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']:
-            for mod_func in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs']:
-                if function == mod_func:
-                    print(self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function])
-                    ref_file_oid = self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]['file']
-                    ref_function = self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]['func']
+        if 'modified_funcs' not in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']:
+            return
 
-                    function_tlsh = api.retrieve('function_tlsh', file_oid, {'replace_addrs': True})
-                    for func in function_tlsh:
-                        if function_tlsh[func]['name'] == function:
-                            print(f"FUNCTION STRING: \n{function_tlsh[func]['fun_string']}")
+        for mod_func in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs']:
+            if function == mod_func:
+                for i in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]:
+                    print(f"{i}: {self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function][i]}")
 
-                    function_tlsh = api.retrieve('function_tlsh', file_oid, {'replace_addrs': False})
-                    for func in function_tlsh:
-                        if function_tlsh[func]['name'] == function:
-                            print("FUNCTION INSTRUCTIONS:")
-                            for i in function_tlsh[func]['fun_instructions']:
-                                print(i)
-                    
-                    function_tlsh = api.retrieve('function_tlsh', ref_file_oid, {'replace_addrs': True})
-                    for func in function_tlsh:
-                        if function_tlsh[func]['name'] == ref_function:
-                            print(f"REF FUNCTION STRING: \n{function_tlsh[func]['fun_string']}")
+                ref_file_oid = self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]['file']
+                ref_function = self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]['func']
 
-                    function_tlsh = api.retrieve('function_tlsh', ref_file_oid, {'replace_addrs': False})
-                    for func in function_tlsh:
-                        if function_tlsh[func]['name'] == ref_function:
-                            print("REF FUNCTION INSTRUCTIONS")
-                            for i in function_tlsh[func]['fun_instructions']:
-                                print(i)
+                # ---------------------------
+                # Retrieve data for THIS function
+                # ---------------------------
+                func_string = ""
+                func_instructions = []
 
+                ref_func_string = ""
+                ref_func_instructions = []
+
+                # Retrieve function string
+                function_tlsh = api.retrieve('function_tlsh', file_oid, {'replace_addrs': True})
+                for func_id in function_tlsh:
+                    if function_tlsh[func_id]['name'] == function:
+                        func_string = function_tlsh[func_id]['fun_string']
+                        break  # Found the function, stop searching
+
+                # Retrieve function instructions
+                function_tlsh = api.retrieve('function_tlsh', file_oid, {'replace_addrs': False})
+                for func_id in function_tlsh:
+                    if function_tlsh[func_id]['name'] == function:
+                        func_instructions = function_tlsh[func_id]['fun_instructions']
+                        break
+
+                # Retrieve reference function string
+                function_tlsh = api.retrieve('function_tlsh', ref_file_oid, {'replace_addrs': True})
+                for func_id in function_tlsh:
+                    if function_tlsh[func_id]['name'] == ref_function:
+                        ref_func_string = function_tlsh[func_id]['fun_string']
+                        break
+
+                # Retrieve reference function instructions
+                function_tlsh = api.retrieve('function_tlsh', ref_file_oid, {'replace_addrs': False})
+                for func_id in function_tlsh:
+                    if function_tlsh[func_id]['name'] == ref_function:
+                        ref_func_instructions = function_tlsh[func_id]['fun_instructions']
+                        break
+
+                # ---------------------------
+                # Print a comparison table
+                # ---------------------------
+                table = PrettyTable()
+                table.align = "l"
+                table.field_names = [
+                    f"{file_oid} - {function}",
+                    f"{ref_file_oid} - {ref_function}"
+                ]
+
+                table.add_row([
+                    "\n".join(func_instructions),
+                    "\n".join(ref_func_instructions)
+                ])
+
+                print(table)
 
 def file_pre_analysis(args, opts) -> None:
     collections = get_collections(args, opts)
@@ -616,8 +655,7 @@ def collection_analysis(args, opts):
         api.apply_tags(collection, collection_tags)
         p.tick()
 
-
-def framework_analysis(args, opts):
+def compare_all_collections(args, opts):
     collections = get_collections(args, opts)
 
     force = opts.get('force', None)
@@ -630,7 +668,7 @@ def framework_analysis(args, opts):
         for ref_collection in ref_collections:  
             collection_tags = api.get_tags(collection)
             if not (collection_tags.get("FRAMEWORK_DATA") and collection_tags["FRAMEWORK_DATA"].get(ref_collection)) or force == "COMPARE":
-                analyzer = CollectionComparator(collection, ref_collection)   
+                analyzer = FrameworkAnalyzer(collection, ref_collection)   
                 analyzer.generate_file_report()
                 if collection_tags.get("FRAMEWORK_DATA"):
                     collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.report
@@ -639,96 +677,6 @@ def framework_analysis(args, opts):
                     collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.report
                 api.apply_tags(collection, collection_tags)
             p2.tick()
-
-def compare_collection_series(args, opts):
-    # Assume get_collections returns a list of collection IDs
-    collections = get_collections(args, opts)
-    force = opts.get('force', None)
-
-    parsed_collections = []
-    for collection in collections:
-        product, version = split_collection(api.get_colname_from_oid(collection))
-        version_tuple = tuple(map(int, version.split('.')))
-        parsed_collections.append((collection, product, version, version_tuple))
-
-    # Sort by version tuple
-    parsed_collections.sort(key=lambda x: x[3])
-
-    ref_collection = None
-
-    # Open CSV file once and write header later.
-    # We'll write the header after we have at least one 'stats' object.
-    csv_filename = f"/home/nathan/Documents/{product}_file_changes.csv"
-    fieldnames = None  # Will determine after first stats retrieval
-    csv_file = open(csv_filename, mode='w', newline='')
-    csv_writer = None
-
-    # Keep track of the reference version
-    ref_version = None
-
-    times = {}
-
-    try:
-        p = progress.Progress(len(collections))
-        for collection, product, version, version_tuple in parsed_collections:
-            start_time = time.time()
-            colname = api.get_colname_from_oid(collection)
-            collection_tags = api.get_tags(collection)
-
-            if not collection_tags.get("FRAMEWORK_DATA") or not collection_tags["FRAMEWORK_DATA"].get(ref_collection) or force == "COMPARE":
-                if not collection_tags.get("FRAMEWORK_DATA"):
-                    collection_tags["FRAMEWORK_DATA"] = {}
-                analyzer = CollectionComparator(collection, ref_collection)   
-                analyzer.generate_file_report()
-                collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.report
-                api.apply_tags(collection, collection_tags)
-            else:
-                analyzer = CollectionComparator(collection, ref_collection)
-                analyzer.report = collection_tags["FRAMEWORK_DATA"].get(ref_collection)
-
-            file_stats = {
-                'EXECUTABLE_MATCHES': len(analyzer.report["EXECUTABLE_MATCHES"]),
-                'NON_EXECUTABLE_MATCHES': len(analyzer.report['NON_EXECUTABLE_MATCHES']),
-                'MODIFIED_EXECUTABLES': len(analyzer.report['MODIFIED_EXECUTABLES']),
-                'NEW_EXECUTABLES': len(analyzer.report['NEW_EXECUTABLES']),
-                'NEW_NON_EXECUTABLES': len(analyzer.report['NEW_NON_EXECUTABLES']),
-                'FAILED_EXECUTABLES': len(analyzer.report['FAILED_EXECUTABLES'])
-            }
-
-            # Initialize CSV writer on first iteration, now including a 'ref_version' column
-            if csv_writer is None:
-                fieldnames = ['version', 'ref_version'] + list(file_stats.keys())
-                csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-                csv_writer.writeheader()
-
-            # Write the transformed stats to the CSV file
-            row_data = {
-                'version': version,
-                'ref_version': ref_version if ref_version is not None else 'None'
-            }
-            row_data.update(file_stats)
-            csv_writer.writerow(row_data)
-
-            # Update reference info for the next iteration
-            ref_version = version
-            ref_collection = collection
-
-            times[str(colname)] = time.time() - start_time
-
-            p.tick()
-
-    finally:
-        csv_file.close()
-
-    # Write the times dictionary to a CSV file
-    # Adjust the filename and path as needed
-    with open('/home/nathan/Documents/compare_times.csv', 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        # Write header
-        writer.writerow(['collection', 'time_elapsed'])
-        # Write data
-        for colname, elapsed_time in times.items():
-            writer.writerow([colname, elapsed_time])
 
 def compare_collections(args, opts):
     if len(args) < 2:
@@ -754,12 +702,12 @@ def compare_collections(args, opts):
     if not collection_tags.get("FRAMEWORK_DATA") or not collection_tags["FRAMEWORK_DATA"].get(ref_collection) or force == "COMPARE":
         if not collection_tags.get("FRAMEWORK_DATA"):
             collection_tags["FRAMEWORK_DATA"] = {}
-        analyzer = CollectionComparator(collection, ref_collection)   
+        analyzer = FrameworkAnalyzer(collection, ref_collection)   
         analyzer.generate_file_report()
         collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.report
         api.apply_tags(collection, collection_tags)
     else:
-        analyzer = CollectionComparator(collection, ref_collection)
+        analyzer = FrameworkAnalyzer(collection, ref_collection)
         analyzer.report = collection_tags["FRAMEWORK_DATA"].get(ref_collection)
 
     # Calculate statistics
@@ -768,11 +716,11 @@ def compare_collections(args, opts):
         analyzer.print_statistics(stats)
     elif view == "new":
         analyzer.print_statistics(stats)
-        analyzer.print_new_executables()
+        analyzer.print_new_executables(file)
         analyzer.print_new_non_executables()
     elif view == "modified":
         analyzer.print_statistics(stats)
-        analyzer.print_modified_executables()
+        analyzer.print_modified_executables(file)
     elif view == "failed":
         analyzer.print_statistics(stats)
         analyzer.print_failed_executable()
@@ -784,54 +732,6 @@ def compare_collections(args, opts):
 
     if report:
         analyzer.export_modified_files_report(report)
-    
-def get_cross_collection_analysis(args, opts):
-    def process_and_print(executable_matches):
-        """Print the executable_matches dictionary as a table using PrettyTable, sorted alphabetically."""
-        # Get sorted row headers (collections)
-        row_headers = sorted(executable_matches.keys())
-
-        # Get sorted column headers (reference collections)
-        column_headers = sorted(set(
-            ref_col for matches in executable_matches.values() for ref_col in matches.keys()
-        ))
-
-        # Initialize PrettyTable
-        table = PrettyTable()
-        table.field_names = ["Collection"] + column_headers
-
-        # Populate the table with rows
-        for collection in row_headers:
-            row = [collection]  # Start with the collection name
-            row.extend(executable_matches[collection].get(col, 0) for col in column_headers)  # Fill columns in sorted order
-            table.add_row(row)
-
-        # Set alignment to left for better readability
-        table.align = "l"
-
-        # Print the table
-        print(table)
-
-    # Determine mode and retrieve collections
-    collections = [api.valid_oids(args)[0]] if args else api.collection_cids()
-
-    ref_collections = collections
-
-    # Gather data for each collection
-    executable_matches = {}
-    for collection in collections:
-        col_name = api.get_colname_from_oid(collection)
-        executable_matches[col_name] = {}
-
-        for ref_collection in ref_collections:
-            ref_col_name = api.get_colname_from_oid(ref_collection)
-            tags = api.get_tags(collection)
-            data = tags['FRAMEWORK_DATA'][ref_collection]
-            executable_matches[col_name][ref_col_name] = len(data.get('EXECUTABLE_MATCHES', []))
-
-    # Create and print each DataFrame with titles
-    process_and_print(executable_matches)
-
 
 def get_collection_tags(args, opts):
     def print_collection_info(device, name, tags):
@@ -865,7 +765,7 @@ def get_file_tags(args, opts):
         for oid in oids:
             _print_file_tags(oid)
 
-def import_samples(args, opts):
+def import_product(args, opts):
     dir_path = args[0]
 
     # Check if the provided path is a valid directory
@@ -924,67 +824,25 @@ def import_dataset(args, opts):
             sample_name = f"{product}---{sample}"
             import_sample(sample_name, sample_path)
 
-# Run pre-analysis passes
-def pre_analysis(args, opts):
-    file_pre_analysis(args, opts)
-    collection_pre_analysis(args, opts)
-
-def run_all(args, opts):
+def analyze_collections(args, opts):
     file_pre_analysis(args, opts)
     collection_pre_analysis(args, opts)
     file_analysis(args, opts)
     collection_analysis(args, opts)
-
-def run_framework(args, opts):
-    collections = get_collections(args)
-
-    parsed_collections = []
-    for collection in collections:
-        product, version = split_collection(api.get_colname_from_oid(collection))
-        version_tuple = tuple(map(int, version.split('.')))
-        parsed_collections.append((collection, product, version, version_tuple))
-
-    # Sort by version tuple
-    parsed_collections.sort(key=lambda x: x[3])
-
-    for collection, product, version, version_tuple in parsed_collections:
-        start_time = time.time()
-        colname = api.get_colname_from_oid(collection)
-        print(colname)
-
-        # Convert to a list since your subsequent functions expect a list
-        collection = [collection]
-
-        print("---FILE PRE-ANALYSIS---")
-        file_pre_analysis(collection, opts)
-
-        print("---COLLECTION PRE-ANALYSIS---")
-        collection_pre_analysis(collection, opts)
-
-        print("---FILE ANALYSIS---")
-        file_analysis(collection, opts)
-
-        print("---COLLECTION ANALYSIS---")
-        collection_analysis(collection, opts)
-
 
 exports = [
     file_pre_analysis, 
     file_analysis, 
     collection_pre_analysis, 
     collection_analysis, 
-    framework_analysis, 
+    compare_all_collections, 
     get_file_tags, 
     get_collection_tags, 
-    framework_analysis, 
-    get_cross_collection_analysis, 
+    compare_all_collections, 
     compare_collections, 
-    compare_collection_series,
-    import_samples, 
+    import_product, 
     import_dataset, 
-    pre_analysis, 
-    run_framework,
-    run_all]
+    analyze_collections]
 
 ############################
 ### SUPPORTING FUNCTIONS ###
