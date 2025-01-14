@@ -16,7 +16,7 @@ import time
 from oxide.core import progress, api
 
 
-print("Triage Framework Plugin")
+print("DRIFT")
 info = """
         """
 print(info)
@@ -67,7 +67,7 @@ class FileAnalyzer:
                     filtered_hashes[hashes[function].get('tlsh hash')] = hashes[function]['name']
             self.tags["FUNC_TLSH"] = filtered_hashes
 
-class FrameworkAnalyzer:
+class CollectionComparator:
     def __init__(self, collection, ref_collection) -> None:
         self.collection = collection
         self.collection_tags = api.get_tags(self.collection)
@@ -304,19 +304,13 @@ class FrameworkAnalyzer:
                 table.add_row([name])
             print(table)
 
-    def print_modified_executables(self, file):
+    def print_modified_executables(self):
         print("\n================== MODIFIED EXECUTABLES ==================")
-        if file:
-            self.print_category_w_ref({file: self.report['MODIFIED_EXECUTABLES'][file]})
-        else:
-            self.print_category_w_ref(self.report['MODIFIED_EXECUTABLES'])
+        self.print_category_w_ref(self.report['MODIFIED_EXECUTABLES'])
 
-    def print_new_executables(self, file):
+    def print_new_executables(self):
         print("\n================== NEW EXECUTABLES ==================")
-        if file:
-            self.print_category_w_ref({file: self.report['NEW_EXECUTABLES'][file]})
-        else:
-            self.print_category_w_ref(self.report['NEW_EXECUTABLES'])
+        self.print_category(self.report['NEW_EXECUTABLES'])
 
     def print_new_non_executables(self):
         print("\n================== NEW NON-EXECUTABLES ==================")
@@ -444,70 +438,37 @@ class FrameworkAnalyzer:
         print(table)
 
     def print_compare_functions(self, file_oid, function):
-        if 'modified_funcs' not in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']:
-            return
+        if 'modified_funcs' in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']:
+            for mod_func in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs']:
+                if function == mod_func:
+                    print(self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function])
+                    ref_file_oid = self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]['file']
+                    ref_function = self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]['func']
 
-        for mod_func in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs']:
-            if function == mod_func:
-                for i in self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]:
-                    print(f"{i}: {self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function][i]}")
+                    function_tlsh = api.retrieve('function_tlsh', file_oid, {'replace_addrs': True})
+                    for func in function_tlsh:
+                        if function_tlsh[func]['name'] == function:
+                            print(f"FUNCTION STRING: \n{function_tlsh[func]['fun_string']}")
 
-                ref_file_oid = self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]['file']
-                ref_function = self.report['MODIFIED_EXECUTABLES'][file_oid]['REPORT']['modified_funcs'][function]['func']
+                    function_tlsh = api.retrieve('function_tlsh', file_oid, {'replace_addrs': False})
+                    for func in function_tlsh:
+                        if function_tlsh[func]['name'] == function:
+                            print("FUNCTION INSTRUCTIONS:")
+                            for i in function_tlsh[func]['fun_instructions']:
+                                print(i)
+                    
+                    function_tlsh = api.retrieve('function_tlsh', ref_file_oid, {'replace_addrs': True})
+                    for func in function_tlsh:
+                        if function_tlsh[func]['name'] == ref_function:
+                            print(f"REF FUNCTION STRING: \n{function_tlsh[func]['fun_string']}")
 
-                # ---------------------------
-                # Retrieve data for THIS function
-                # ---------------------------
-                func_string = ""
-                func_instructions = []
+                    function_tlsh = api.retrieve('function_tlsh', ref_file_oid, {'replace_addrs': False})
+                    for func in function_tlsh:
+                        if function_tlsh[func]['name'] == ref_function:
+                            print("REF FUNCTION INSTRUCTIONS")
+                            for i in function_tlsh[func]['fun_instructions']:
+                                print(i)
 
-                ref_func_string = ""
-                ref_func_instructions = []
-
-                # Retrieve function string
-                function_tlsh = api.retrieve('function_tlsh', file_oid, {'replace_addrs': True})
-                for func_id in function_tlsh:
-                    if function_tlsh[func_id]['name'] == function:
-                        func_string = function_tlsh[func_id]['fun_string']
-                        break  # Found the function, stop searching
-
-                # Retrieve function instructions
-                function_tlsh = api.retrieve('function_tlsh', file_oid, {'replace_addrs': False})
-                for func_id in function_tlsh:
-                    if function_tlsh[func_id]['name'] == function:
-                        func_instructions = function_tlsh[func_id]['fun_instructions']
-                        break
-
-                # Retrieve reference function string
-                function_tlsh = api.retrieve('function_tlsh', ref_file_oid, {'replace_addrs': True})
-                for func_id in function_tlsh:
-                    if function_tlsh[func_id]['name'] == ref_function:
-                        ref_func_string = function_tlsh[func_id]['fun_string']
-                        break
-
-                # Retrieve reference function instructions
-                function_tlsh = api.retrieve('function_tlsh', ref_file_oid, {'replace_addrs': False})
-                for func_id in function_tlsh:
-                    if function_tlsh[func_id]['name'] == ref_function:
-                        ref_func_instructions = function_tlsh[func_id]['fun_instructions']
-                        break
-
-                # ---------------------------
-                # Print a comparison table
-                # ---------------------------
-                table = PrettyTable()
-                table.align = "l"
-                table.field_names = [
-                    f"{file_oid} - {function}",
-                    f"{ref_file_oid} - {ref_function}"
-                ]
-
-                table.add_row([
-                    "\n".join(func_instructions),
-                    "\n".join(ref_func_instructions)
-                ])
-
-                print(table)
 
 def file_pre_analysis(args, opts) -> None:
     collections = get_collections(args, opts)
@@ -669,7 +630,7 @@ def framework_analysis(args, opts):
         for ref_collection in ref_collections:  
             collection_tags = api.get_tags(collection)
             if not (collection_tags.get("FRAMEWORK_DATA") and collection_tags["FRAMEWORK_DATA"].get(ref_collection)) or force == "COMPARE":
-                analyzer = FrameworkAnalyzer(collection, ref_collection)   
+                analyzer = CollectionComparator(collection, ref_collection)   
                 analyzer.generate_file_report()
                 if collection_tags.get("FRAMEWORK_DATA"):
                     collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.report
@@ -717,12 +678,12 @@ def compare_collection_series(args, opts):
             if not collection_tags.get("FRAMEWORK_DATA") or not collection_tags["FRAMEWORK_DATA"].get(ref_collection) or force == "COMPARE":
                 if not collection_tags.get("FRAMEWORK_DATA"):
                     collection_tags["FRAMEWORK_DATA"] = {}
-                analyzer = FrameworkAnalyzer(collection, ref_collection)   
+                analyzer = CollectionComparator(collection, ref_collection)   
                 analyzer.generate_file_report()
                 collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.report
                 api.apply_tags(collection, collection_tags)
             else:
-                analyzer = FrameworkAnalyzer(collection, ref_collection)
+                analyzer = CollectionComparator(collection, ref_collection)
                 analyzer.report = collection_tags["FRAMEWORK_DATA"].get(ref_collection)
 
             file_stats = {
@@ -793,12 +754,12 @@ def compare_collections(args, opts):
     if not collection_tags.get("FRAMEWORK_DATA") or not collection_tags["FRAMEWORK_DATA"].get(ref_collection) or force == "COMPARE":
         if not collection_tags.get("FRAMEWORK_DATA"):
             collection_tags["FRAMEWORK_DATA"] = {}
-        analyzer = FrameworkAnalyzer(collection, ref_collection)   
+        analyzer = CollectionComparator(collection, ref_collection)   
         analyzer.generate_file_report()
         collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.report
         api.apply_tags(collection, collection_tags)
     else:
-        analyzer = FrameworkAnalyzer(collection, ref_collection)
+        analyzer = CollectionComparator(collection, ref_collection)
         analyzer.report = collection_tags["FRAMEWORK_DATA"].get(ref_collection)
 
     # Calculate statistics
@@ -807,11 +768,11 @@ def compare_collections(args, opts):
         analyzer.print_statistics(stats)
     elif view == "new":
         analyzer.print_statistics(stats)
-        analyzer.print_new_executables(file)
+        analyzer.print_new_executables()
         analyzer.print_new_non_executables()
     elif view == "modified":
         analyzer.print_statistics(stats)
-        analyzer.print_modified_executables(file)
+        analyzer.print_modified_executables()
     elif view == "failed":
         analyzer.print_statistics(stats)
         analyzer.print_failed_executable()
