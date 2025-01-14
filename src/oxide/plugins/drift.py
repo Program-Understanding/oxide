@@ -8,17 +8,62 @@ import os
 import shutil
 import tlsh
 from prettytable import PrettyTable
-from threading import Event
-import multiprocessing
 import csv
-import time
 
 from oxide.core import progress, api
 
-
-print("Triage Framework Plugin")
 info = """
-        """
+=============================
+DRIFT Plugin
+=============================
+
+This plugin provides a series of commands that perform analyze and compare 
+collections (and the files within them) in the Oxide framework.
+
+COMMANDS:
+--------------------------------------------------------------------------------
+compare_collections
+--------------------------------------------------------------------------------
+- Compares two collections.
+- Generates or retrieves a FRAMEWORK_DATA report detailing stats, new files,
+  modified files, and failed files.
+- Common Usage:
+    - compare_collections &collection &ref_collection
+    - compare_collections &collection &ref_collection --view=modified
+    - compare_collections &collection &ref_collection file --view=modified
+    - compare_collections &collection &ref_collection file --function=function_name
+- Notable Options:
+    - force: "COMPARE" re-runs the comparison if data already exists
+    - view: "stats", "new", "modified", "failed"
+    - function: Allows drilling down to a specific function comparison
+
+--------------------------------------------------------------------------------
+import_product
+--------------------------------------------------------------------------------
+- Imports a directory structure (e.g., firmware images) for a single product. 
+  Each subdirectory/file is imported as its own collection named 
+  "parent_directory---sample_name".
+- Common Usage:
+    - import_product "/path/to/product_directory"
+
+--------------------------------------------------------------------------------
+import_dataset
+--------------------------------------------------------------------------------
+- Similar to import_product, but designed for multiple products. Each product 
+  directory can have multiple versions/subdirectories.
+- Common Usage:
+    - import_dataset "/path/to/dataset_root"
+
+--------------------------------------------------------------------------------
+analyze_collections
+--------------------------------------------------------------------------------
+- Performs the pre-processing and analysis pass for the given collections.
+- Common Usage:
+    - analyze_collections
+    - analyze_collections &collection
+- Notable Options:
+    - force: Re-analyzes or re-tags as specified.
+"""
 print(info)
 
 pp = pprint.PrettyPrinter()
