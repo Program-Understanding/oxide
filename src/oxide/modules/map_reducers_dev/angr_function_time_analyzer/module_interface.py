@@ -7,13 +7,14 @@ import logging
 import statistics
 from time import sleep
 import numpy
+from output_assistant import output_data
 
 logger = logging.getLogger(NAME)
 opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
             "summaries": {"type":bool, "mangle":False,"default":True,"description":"Include function summaries from function summary module as well"},
             "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"},
             "filter":{"type":bool,"mangle":False,"default":True,"Description":"Get rid of some of the less useful fields in the output"},
-            "csv-path":{"type":str,"mangle":False,"default":"","Description":"Path to output to a csv file"},
+            "data-path":{"type":str,"mangle":False,"default":"","Description":"Path toa directory to output a csv file and some graphs to"},
             "allow-missing-ret":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results that don't have a ret instruction"}}
 
 def documentation():
@@ -79,7 +80,7 @@ def reducer(intermediate_output, opts, jobid):
     functions_w_angr_errors = 0
     oids_w_angr_errors = 0
     functions_w_no_ret = 0
-    if opts["csv-path"]:
+    if opts["data-path"]:
         import pandas as pd
         df_time = []
         df_bin = []
@@ -102,7 +103,7 @@ def reducer(intermediate_output, opts, jobid):
                                           "interesting":{}}
 
     #binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
-    binkeys = [round(i,4) for i in numpy.logspace(numpy.log10(0.001),numpy.log10(600),num=opts["bins"])]
+    binkeys = [round(i,4) for i in numpy.logspace(numpy.log10(0.001),numpy.log10(600),num=opts["bins"]-1)]
     binkeys[-1] = opts["timeout"]
     print(f"binkeys = {binkeys}, len = {len(binkeys)}")
     for i in range(len(binkeys)):
@@ -181,7 +182,7 @@ def reducer(intermediate_output, opts, jobid):
                         fun_opcodes[opcode] += 1
                     else:
                         fun_opcodes[opcode] = 1
-                    if opts["csv-path"]:
+                    if opts["data-path"]:
                         all_opcodes.add(opcode)
                 if not opts["allow-missing-ret"] and not "ret" in fun_opcodes:
                     functions_w_no_ret += 1
@@ -192,7 +193,7 @@ def reducer(intermediate_output, opts, jobid):
                                                                                 "from": oid,
                                                                                 "complexity": f_dict["summary"]["complexity"]}
                 num_insns = f_dict["summary"]["num_insns"]
-                if opts["csv-path"]:
+                if opts["data-path"]:
                     df_time.append(time)
                     df_bin.append(f_bin)
                     df_complexity.append(complexity_level)
@@ -204,7 +205,7 @@ def reducer(intermediate_output, opts, jobid):
                 for op_type in ["imm", "reg", "mem"]:
                     complexity_vs_time[complexity_level]["operands"][op_type].append(operands[op_type])
                     bins_w_time[f_bin]["operands"][op_type].append(operands[op_type])
-                    if opts["csv-path"]:
+                    if opts["data-path"]:
                         match op_type:
                             case "imm":
                                 df_imm.append(operands[op_type])
@@ -212,7 +213,7 @@ def reducer(intermediate_output, opts, jobid):
                                 df_mem.append(operands[op_type])
                             case "reg":
                                 df_reg.append(operands[op_type])
-                if opts["csv-path"]:
+                if opts["data-path"]:
                     df_index.append(f"{oid}{fun}")
     #eliminate empty bins
     for bn in bins_w_time:
@@ -240,7 +241,7 @@ def reducer(intermediate_output, opts, jobid):
                        "std dev": statistics.stdev(bins_w_time[bn]["operands"][op_type]),
                        "median": statistics.median(bins_w_time[bn]["operands"][op_type])
                    }
-    if opts["csv-path"]:
+    if opts["data-path"]:
         data_dict = {"time":df_time,
                      "bin":df_bin,
                      "complexity":df_complexity,
@@ -251,10 +252,10 @@ def reducer(intermediate_output, opts, jobid):
         opcode_mapper(all_opcodes,df_opcodes,data_dict)
         dataframe = pd.DataFrame(data_dict,
                                  index=df_index)
-        import os
-        outpath = os.path.join(api.scratch_dir,opts["csv-path"])
-        with open(outpath,"w") as f:
-            dataframe.to_csv(f)
+        from pathlib import Path
+        outpath = Path(opts["data-path"])
+        output_data(outpath,dataframe,list(bins_w_time.keys()))
+        logger.info(f"Data saved to {outpath} directory")
     if opts["filter"]:
         filtered_bins_w_time = {}
         for bn in bins_w_time:
