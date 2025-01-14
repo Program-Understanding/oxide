@@ -38,9 +38,13 @@ def opcode_mapper(all_opcodes,df_opcodes,data_dict):
         data_dict[opcode] = []
     data_dict["j*"] = []
     data_dict["mov*"] = []
+    data_dict["*xor*"] = []
+    data_dict["cmov*"] = []
     for fun_opcode_dict in df_opcodes:
         j_star = 0
         mov_star = 0
+        xor_star = 0
+        cmov_star = 0
         for opcode in all_opcodes:
             if opcode in fun_opcode_dict:
                 data_dict[opcode].append(fun_opcode_dict[opcode])
@@ -48,10 +52,16 @@ def opcode_mapper(all_opcodes,df_opcodes,data_dict):
                     j_star += 1
                 if opcode.startswith("mov"):
                     mov_star += 1
+                if "xor" in opcode:
+                    xor_star += 1
+                if opcode.startswith("cmov"):
+                    cmov_star += 1
             else:
                 data_dict[opcode].append(0)
         data_dict["j*"].append(j_star)
         data_dict["mov*"].append(mov_star)
+        data_dict["*xor*"].append(xor_star)
+        data_dict["cmov*"].append(cmov_star)
 
 def mapper(oid, opts, jobid=False):
     if api.exists(NAME,oid,opts):
@@ -105,7 +115,6 @@ def reducer(intermediate_output, opts, jobid):
     #binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
     binkeys = [round(i,4) for i in numpy.logspace(numpy.log10(0.001),numpy.log10(600),num=opts["bins"]-1)]
     binkeys[-1] = opts["timeout"]
-    print(f"binkeys = {binkeys}, len = {len(binkeys)}")
     for i in range(len(binkeys)):
         bn = binkeys[i]
         if i == 0:
@@ -125,7 +134,6 @@ def reducer(intermediate_output, opts, jobid):
                             },
                             "num instructions": []
                             }
-    print(f"bins_w_time keys {list(bins_w_time.keys())}")
     bins_w_time[f"> {opts['timeout']}"] = {"opcodes": {},
                                            "operands": {
                                                "imm":[],
@@ -184,9 +192,10 @@ def reducer(intermediate_output, opts, jobid):
                         fun_opcodes[opcode] = 1
                     if opts["data-path"]:
                         all_opcodes.add(opcode)
-                if not opts["allow-missing-ret"] and not "ret" in fun_opcodes:
+                if not "ret" in fun_opcodes:
                     functions_w_no_ret += 1
-                    continue
+                    if not opts["allow-missing-ret"]:
+                        continue
                 if time > 5:
                     complexity_vs_time[complexity_level]["interesting"][fun] = {"instructions": f_dict["instructions"],
                                                                                 "seconds": time,
@@ -254,8 +263,10 @@ def reducer(intermediate_output, opts, jobid):
                                  index=df_index)
         from pathlib import Path
         outpath = Path(opts["data-path"])
-        output_data(outpath,dataframe,list(bins_w_time.keys()))
-        logger.info(f"Data saved to {outpath} directory")
+        if not output_data(outpath,dataframe,list(bins_w_time.keys())):
+            logger.error(f"Unable to save data to {outpath}!")
+        else:
+            logger.info(f"Data saved to {outpath} directory")
     if opts["filter"]:
         filtered_bins_w_time = {}
         for bn in bins_w_time:
@@ -286,8 +297,17 @@ def reducer(intermediate_output, opts, jobid):
             else:
                 filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
                                                            "times": complexity_vs_time[complexity]["times"]}
-        return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret}
+        if opts["data-path"]:
+            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe}
+        else:
+            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret}
     else:
-        return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
+        if opts["data-path"]:
+            return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
+                "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors,\
+                    "functions without ret instruction":functions_w_no_ret,\
+                    "dataframe":dataframe}
+        else:
+            return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
                 "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors,\
                 "functions without ret instruction":functions_w_no_ret}
