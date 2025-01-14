@@ -9,6 +9,7 @@ set ghidra_disasm to False for emu_angr_disasm."
 import logging
 from oxide.core import api
 import tlsh
+import re
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
@@ -16,6 +17,7 @@ opts_doc = {"disasm": {"type": str, "mangle": False, "default": "ghidra_disasm",
             "output_fun_name": {"type": bool, "mangle": False, "default": False, "description": "whether to output function names or their offsets"}, 
             "output_vaddr": {"type": bool, "mangle": False, "default": False,"description":"whether to output function vaddr or function offset"}, 
             "by_opcode": {"type": bool, "mangle": False, "default":False,"description":"generate TLSH hash by opcode/mnemonic instead of entire instruction"},
+            "replace_addrs": {"type": bool, "mangle": True, "default":False,"description":"abstract away exact address values"},
             "processor": {"type": str, "mangle": True, "default": "none"}
             }
 
@@ -51,6 +53,9 @@ def process(oid, opts):
         fun_string = ""
         fun_instr_count = 0
 
+        abstracted_pointer_values = {}
+        instructions = []
+
         blocks = funs[f]['blocks']
         fun_info = {
             'name': funs[f]['name'],
@@ -65,7 +70,7 @@ def process(oid, opts):
                 if insn_offset not in insns.keys():
                     logger.error("Basic Block member not found: %s", insn_offset)
                     continue
-                opcode = insn_text.split()
+                opcode = re.split(r'[,\s]+', insn_text)
                 if opts["by_opcode"] and opcode:
                     opcode = opcode[0]
                     # try to add destination register to opcode for more context and to avoid TNULL
@@ -76,11 +81,22 @@ def process(oid, opts):
                     fun_string += opcode
                 else:
                     for sub_str in opcode:
-                        fun_string += sub_str
+                        addr_val, len_val = address_value(sub_str)
+                        if opts["replace_addrs"] and addr_val:
+                            # Replace or reuse abstracted value for the address
+                            if sub_str not in abstracted_pointer_values:
+                                unique_index = len(abstracted_pointer_values)
+                                abstracted_pointer_values[sub_str] = f"0x{unique_index:0{len_val - 2}X}"
+                            fun_string += abstracted_pointer_values[sub_str]
+                        else:
+                            fun_string += sub_str
+                instructions.append(insn_text)
         if fun_instr_count > 5 and tlsh.hash(fun_string.encode()) != "TNULL":  # Eliminate functions that are just jumping to external
             fun_info["tlsh hash"] = tlsh.hash(fun_string.encode())
         else:
             fun_info["tlsh hash"] = None
+        fun_info['fun_string'] = fun_string
+        fun_info['fun_instructions'] = instructions
 
         fun_dict[f] = fun_info
 
@@ -88,3 +104,10 @@ def process(oid, opts):
     api.store(NAME, oid, fun_dict, opts)
 
     return True
+
+def address_value(value):
+    address_pattern = r'0x[0-9a-fA-F]{4,}'
+    match = re.search(address_pattern, value)
+    if match:
+        return True, len(match.group(0))  # Return True and the length of the matched value
+    return False, 0  # Return False and a length of 0 if no match
