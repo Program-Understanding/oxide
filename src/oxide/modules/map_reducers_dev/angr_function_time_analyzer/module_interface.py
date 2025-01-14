@@ -6,6 +6,7 @@ from oxide.core import api
 import logging
 import statistics
 from time import sleep
+import numpy
 
 logger = logging.getLogger(NAME)
 opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
@@ -100,8 +101,10 @@ def reducer(intermediate_output, opts, jobid):
                                           "opcodes": {},
                                           "interesting":{}}
 
-    time_bin_size = opts["timeout"] / opts["bins"]
-    binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
+    #binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
+    binkeys = [round(i,4) for i in numpy.logspace(numpy.log10(0.001),numpy.log10(600),num=opts["bins"])]
+    binkeys[-1] = opts["timeout"]
+    print(f"binkeys = {binkeys}, len = {len(binkeys)}")
     for i in range(len(binkeys)):
         bn = binkeys[i]
         if i == 0:
@@ -121,6 +124,7 @@ def reducer(intermediate_output, opts, jobid):
                             },
                             "num instructions": []
                             }
+    print(f"bins_w_time keys {list(bins_w_time.keys())}")
     bins_w_time[f"> {opts['timeout']}"] = {"opcodes": {},
                                            "operands": {
                                                "imm":[],
