@@ -573,8 +573,11 @@ def dump_arm64_operands(insn) -> dict:
             if i.vas != capstone.arm64.ARM64_VAS_INVALID:
                 operands['operand_%d' % c]['vector_arrangement'] = i.vas
 
-            if i.vess != capstone.arm64.ARM64_VESS_INVALID:
-                operands['operand_%d' % c]['vector_elem_size'] = i.vess
+            # NOTE: Removed in Capstone v5 for redundancy with VAS.
+            # if you are using Capstone v4 renable this code.
+            # For further explanation look at Capstone issue #1456
+            # if i.vess != capstone.arm64.ARM64_VESS_INVALID:
+            #     operands['operand_%d' % c]['vector_elem_size'] = i.vess
 
             if i.vector_index != -1:
                 operands['operand_%d' % c]['vector_index'] = i.vector_index
