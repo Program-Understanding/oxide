@@ -154,7 +154,7 @@ def process(oid, opts):
         #or if we only have 1 basic block
         #we don't want to say for sure
         if not fun_blocks:
-            results[fun_name] = "no blocks from ghidra"
+            results[fun_name] = {degree: False, "adjacency matrix": None}
             continue
         adj_matrix = sympy.zeros(n,n)
         #fill in the adjacency matrix
