@@ -77,7 +77,7 @@ def mapper(oid, opts, jobid=False):
     if results["time_result"] is None:
         return False
     results["opcode_by_func"] = api.retrieve("opcodes",oid,{"by_func":True})
-    results["path complexity"] = api.retrieve("path complexity",oid,opts)
+    results["path_complexity"] = api.retrieve("path_complexity",oid,opts)
     if results["opcode_by_func"] is None:
         return False
     while not api.store(NAME,oid,results,opts):
@@ -175,6 +175,7 @@ def reducer(intermediate_output, opts, jobid):
                 f_dict = time_result[fun]
                 if "error" in f_dict["angr seconds"]:
                     functions_w_angr_errors += 1
+                    logger.info(f"Function has error in angr seconds and degree {degrees[fun]['degree']}")
                     continue
                 time = float(f_dict["angr seconds"].split(" ")[0])                
                 f_bin = find_bin_key(binkeys,time,opts["timeout"])
@@ -227,7 +228,12 @@ def reducer(intermediate_output, opts, jobid):
                     df_complexity.append(complexity_level)
                     df_instructions.append(num_insns)
                     df_opcodes.append(fun_opcodes)
-                    df_degree.append(degrees[fun]["degree"])
+                    if type(degrees[fun]["degree"]) is bool:
+                        df_degree.append("False")
+                    elif degrees[fun]["degree"] is None:
+                        df_degree.append("None")
+                    else:
+                        df_degree.append(degrees[fun]["degree"])
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
                 bins_w_time[f_bin]["num instructions"].append(num_insns)
                 operands = f_dict["summary"]["operands"]

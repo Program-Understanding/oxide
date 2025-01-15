@@ -25,7 +25,10 @@ def output_data(outpath, dataframe,binkeys):
     needs_ref = []
     cmplx = []
     #degree
-    different_degrees = dataframe[["degree"]].unique()
+    different_degrees = list(dataframe.degree.unique())
+    if "False" in different_degrees:
+        different_degrees = [i for i in different_degrees if type(i) is not str] + ["False"]
+    print(f"different degrees: {different_degrees}")
     degree = {}
     for deg in different_degrees:
         degree[deg] = []
@@ -53,7 +56,7 @@ def output_data(outpath, dataframe,binkeys):
             needs_ref.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["complexity"]=="needs refactor")].index))
             cmplx.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["complexity"]=="moderate")].index))
             for deg in different_degrees:
-                degree[deg].append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["degree"]=="deg")]))
+                degree[deg].append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["degree"]==deg)]))
         else:
             jmps_by_bin.append(0)
             movs_by_bin.append(0)
@@ -123,14 +126,17 @@ def output_data(outpath, dataframe,binkeys):
     plt.savefig(outpath / "cyclomatic_complexity_by_bin.png",dpi=1000)
     plt.clf()
     #degree plot
-    df = pd.DataFrame(degree,index = binkeys)
-    df.plot.bar(rot=0)
-    plt.xticks(rotation=45)
-    plt.title("Path complexity degree of functions per bin")
-    plt.ylabel("Occurrence of degree")
-    plt.xlabel("Time range")
-    plt.yscale('log')
-    plt.tight_layout()
-    plt.savefig(outpath / "path_complexity_by_bin.png",dpi=1000)
-    plt.clf()
+    if len(different_degrees):
+        df = pd.DataFrame(degree,index = binkeys)
+        print(f"dataframe: {df}")
+        print(f"degree: {degree}")
+        df.plot.bar(rot=0)
+        plt.xticks(rotation=45)
+        plt.title("Path complexity degree of functions per bin")
+        plt.ylabel("Occurrence of degree")
+        plt.xlabel("Time range")
+        plt.yscale('log')
+        plt.tight_layout()
+        plt.savefig(outpath / "path_complexity_by_bin.png",dpi=1000)
+        plt.clf()
     return True

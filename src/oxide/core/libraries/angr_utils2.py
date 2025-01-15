@@ -56,9 +56,18 @@ class angrTherapy:
         except Exception:
             return False
 
+    def loop_analyzer(self):
+        try:
+            analysis = self._proj.analyses.LoopAnalysis()
+        except Exception as e:
+            analysis = dir(self._proj.analyses)
+            return analysis
+
 class angrManagerProxy(BaseProxy):
-    _exposed_ = ("timed_underconstrained_function_run",)
+    _exposed_ = ("timed_underconstrained_function_run","loop_analyzer")
     def timed_underconstrained_function_run(self, function_offset: int,timeout=600):
         return self._callmethod("timed_underconstrained_function_run",(function_offset,timeout))
+    def loop_analyzer(self):
+        return self._callmethod("loop_analyzer")
 
 angrManager.register("angr_project",angrTherapy)

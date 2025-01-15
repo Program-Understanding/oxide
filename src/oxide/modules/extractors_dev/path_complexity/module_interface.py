@@ -8,7 +8,7 @@ logger = logging.getLogger(NAME)
 from core import api
 import sympy
 import numpy
-from concurrent.futures import ThreadPoolExecutor
+from stopit import ThreadingTimeout
 
 opts_doc={}
 
@@ -100,23 +100,31 @@ def calc_func_apc(adj_matrix,n):
         for factor in solution:
             sol_matrix[i].append(factor.replace(z,val))
         i+=1
-
     #solve the system of linear equations of Ax=b with solution matrix as A and the transposed base cases as b
     coeffs = numpy.linalg.lstsq(numpy.array(sol_matrix,dtype='complex'),numpy.array(base_cases,dtype='complex').transpose(),rcond=None)[0].transpose()
     logger.debug(f"coeffs: {coeffs}")
     bounded_solution_terms = coeffs.dot(simplified_solution)
     logger.debug(f"bound solution terms {bounded_solution_terms}")
-    ordered_terms = bounded_solution_terms.as_ordered_terms()
-    logger.debug(f"big o: {ordered_terms}")
-    if type(bounded_solution_terms) is sympy.polys.polytools.Poly:
-        logger.info(f"degree: {sympy.degree(bounded_solution_terms)}")
-        degree = sympy.degree(bounded_solution_terms)
-        if type(degree) is sympy.core.numbers.NegativeInfinity:
-            return 0
-        else:
-            return degree
+    #ordered_terms = bounded_solution_terms.as_ordered_terms()
+    try:
+        logger.debug(f"big o: {bounded_solution_terms}, degree: {sympy.polys.polytools.degree(bounded_solution_terms)}")
+        degree = sympy.polys.polytools.degree(bounded_solution_terms)
+    except sympy.SympifyError as e:
+        logger.debug(f"sympify error {e},type{type(bounded_solution_terms)}")
+        logger.debug(f"error attributes {dir(e)}")
+        degree = False
+    except Exception as e:
+        logger.info(f"other error {e}")
+        logger.info(f"error attributes {dir(e)}")
+        degree = False
+    # if type(bounded_solution_terms) is sympy.polys.polytools.Poly or type(bounded_solution_terms) is type(sympy.core.add.Add):
+    #     logger.info(f"degree: {sympy.degree(bounded_solution_terms)}")
+    #     logger.info(f"bounded_solution_terms {bounded_solution_terms}")
+    #     degree = sympy.degree(bounded_solution_terms)
+    if type(degree) is sympy.core.numbers.NegativeInfinity:
+        return False, bounded_solution_terms
     else:
-        return 0
+        return degree, bounded_solution_terms
 
 def process(oid, opts):
     """
@@ -154,7 +162,7 @@ def process(oid, opts):
         #or if we only have 1 basic block
         #we don't want to say for sure
         if not fun_blocks:
-            results[fun_name] = {degree: False, "adjacency matrix": None}
+            results[fun_name] = {"degree": False, "adjacency matrix": None, "solution terms": None}
             continue
         adj_matrix = sympy.zeros(n,n)
         #fill in the adjacency matrix
@@ -194,13 +202,11 @@ def process(oid, opts):
         adj_matrix[-1,-1] = 1
         logger.debug(f"function {fun} adj_matrix = {adj_matrix}")
         results[fun_name]['adjacency matrix'] = adj_matrix
-        try:
-            with ThreadPoolExecutor(max_workers=1) as e:
-                out = e.submit(calc_func_apc,adj_matrix,n)
-                degree = out.result(timeout=10)
-        except:
-            degree = False
+        with ThreadingTimeout(seconds=10):
+            degree, solution_terms = calc_func_apc(adj_matrix,n)
         results[fun_name]['degree'] = degree
+        results[fun_name]['solution terms'] = solution_terms
     while not api.store(NAME,oid,results,opts):
         sleep(1)
+        logger.info(f"trying to store to api")
     return results
