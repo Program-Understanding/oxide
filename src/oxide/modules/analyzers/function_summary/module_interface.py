@@ -82,8 +82,12 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
             f_dict[funs[f]['name']] = {'offset':f,
                 'signature':funs[f]['signature']}
             f_dict[funs[f]['name']]["num_insns"] = num_insns
-            f_dict[funs[f]['name']]["complexity"] = complexity[f]["complexity"]
-            f_dict[funs[f]['name']]["complexity_desc"] = complexity[f]["desc"]
+            if f in complexity:
+                f_dict[funs[f]['name']]["complexity"] = complexity[f]["complexity"]
+                f_dict[funs[f]['name']]["complexity_desc"] = complexity[f]["desc"]
+            else:
+                f_dict[funs[f]['name']]["complexity"] = None
+                f_dict[funs[f]['name']]["complexity_desc"] = None
             f_dict[funs[f]['name']]["operands"] = operands
             
 

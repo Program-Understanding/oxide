@@ -27,7 +27,9 @@ def output_data(outpath, dataframe,binkeys):
     #degree
     different_degrees = list(dataframe.degree.unique())
     if "False" in different_degrees:
-        different_degrees = [i for i in different_degrees if type(i) is not str] + ["False"]
+        different_degrees = [i for i in different_degrees if type(i) is not str]
+        different_degrees.sort()
+        different_degrees += ["False"]
     print(f"different degrees: {different_degrees}")
     degree = {}
     for deg in different_degrees:

@@ -228,12 +228,16 @@ def reducer(intermediate_output, opts, jobid):
                     df_complexity.append(complexity_level)
                     df_instructions.append(num_insns)
                     df_opcodes.append(fun_opcodes)
-                    if type(degrees[fun]["degree"]) is bool:
-                        df_degree.append("False")
-                    elif degrees[fun]["degree"] is None:
-                        df_degree.append("None")
-                    else:
-                        df_degree.append(degrees[fun]["degree"])
+                    try:
+                        if type(degrees[fun]["degree"]) is bool:
+                            df_degree.append("False")
+                        elif degrees[fun]["degree"] is None:
+                            df_degree.append("None")
+                        else:
+                            df_degree.append(degrees[fun]["degree"])
+                    except KeyError as e:
+                        logger.error(f"Key error {e} with cached results from path complexity for oid {oid}")
+                        return False
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
                 bins_w_time[f_bin]["num instructions"].append(num_insns)
                 operands = f_dict["summary"]["operands"]
