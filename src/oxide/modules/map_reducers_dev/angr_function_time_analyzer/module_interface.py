@@ -77,6 +77,7 @@ def mapper(oid, opts, jobid=False):
     if results["time_result"] is None:
         return False
     results["opcode_by_func"] = api.retrieve("opcodes",oid,{"by_func":True})
+    results["path complexity"] = api.retrieve("path complexity",oid,opts)
     if results["opcode_by_func"] is None:
         return False
     while not api.store(NAME,oid,results,opts):
@@ -101,6 +102,7 @@ def reducer(intermediate_output, opts, jobid):
         df_reg = []
         df_index = []
         df_opcodes = []
+        df_degree = []
         all_opcodes = set()
     for complexity in ["simple", "moderate", "needs refactor", "complex"]:
         complexity_vs_time[complexity] = {"times":[],
@@ -164,6 +166,7 @@ def reducer(intermediate_output, opts, jobid):
         if oid:
             time_result = api.get_field(NAME,oid,"time_result",opts)
             opcode_by_func = api.get_field(NAME,oid,"opcode_by_func",opts)
+            degrees = api.get_field(NAME,oid,"path_complexity",opts)
             if time_result is None or opcode_by_func is None:
                 logger.warning(f"None result for {oid}")
                 oids_w_angr_errors += 1
@@ -224,6 +227,7 @@ def reducer(intermediate_output, opts, jobid):
                     df_complexity.append(complexity_level)
                     df_instructions.append(num_insns)
                     df_opcodes.append(fun_opcodes)
+                    df_degree.append(degrees[fun]["degree"])
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
                 bins_w_time[f_bin]["num instructions"].append(num_insns)
                 operands = f_dict["summary"]["operands"]
@@ -273,7 +277,8 @@ def reducer(intermediate_output, opts, jobid):
                      "instructions":df_instructions,
                      "imms":df_imm,
                      "mems":df_mem,
-                     "regs":df_reg}
+                     "regs":df_reg,
+                     "degree": df_degree}
         opcode_mapper(all_opcodes,df_opcodes,data_dict)
         dataframe = pd.DataFrame(data_dict,
                                  index=df_index)

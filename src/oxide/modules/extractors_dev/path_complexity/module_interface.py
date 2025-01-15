@@ -9,7 +9,6 @@ from core import api
 import sympy
 import numpy
 from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import get_context
 
 opts_doc={}
 
@@ -29,7 +28,7 @@ def calc_func_apc(adj_matrix,n):
     I = sympy.eye(n) #identity matrix
     z = sympy.symbols('z') #our symbolic variable 'z'
     z_T = z*adj_matrix
-    I_z_T = sympy.Matrix(I-adj_matrix*z)
+    I_z_T = sympy.Matrix(I-z_T)
     qz = sympy.expand(-1*I_z_T.det())
     logger.debug(f"denominator: {qz}")
     pz = (I[:n-1,1:]-(z*adj_matrix[:n-1,1:])).det()
@@ -126,6 +125,7 @@ def process(oid, opts):
     the results from the acfg module for the function.
     Results are returned on function by function basis.
     """
+    from time import sleep
     results = {}
     #temp code just to keep track of the filename
     data = api.get_field(api.source(oid), oid, "data", {})
@@ -134,7 +134,11 @@ def process(oid, opts):
     logger.debug(f_name)        
     #use ghidra to get the adjacency matrix
     original_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
+    if not original_blocks:
+        return False
     funs = api.get_field("ghidra_disasm", oid, "functions")
+    if not funs:
+        return False
     for fun in funs:
         fun_name = funs[fun]["name"]
         if fun_name == "_start": continue
@@ -150,7 +154,7 @@ def process(oid, opts):
         #or if we only have 1 basic block
         #we don't want to say for sure
         if not fun_blocks:
-            results[fun] = "no blocks from ghidra"
+            results[fun_name] = "no blocks from ghidra"
             continue
         adj_matrix = sympy.zeros(n,n)
         #fill in the adjacency matrix
@@ -197,5 +201,6 @@ def process(oid, opts):
         except:
             degree = False
         results[fun_name]['degree'] = degree
-    api.store(NAME,oid,results,opts)
+    while not api.store(NAME,oid,results,opts):
+        sleep(1)
     return results

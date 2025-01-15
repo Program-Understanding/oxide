@@ -24,6 +24,11 @@ def output_data(outpath, dataframe,binkeys):
     mod = []
     needs_ref = []
     cmplx = []
+    #degree
+    different_degrees = dataframe[["degree"]].unique()
+    degree = {}
+    for deg in different_degrees:
+        degree[deg] = []
     for bn in binkeys:
         if len(dataframe.loc[dataframe["bin"] == bn].index) > 0:
             #jumps/movs/cmovs/xors per bin
@@ -47,6 +52,8 @@ def output_data(outpath, dataframe,binkeys):
             mod.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["complexity"]=="moderate")].index))
             needs_ref.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["complexity"]=="needs refactor")].index))
             cmplx.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["complexity"]=="moderate")].index))
+            for deg in different_degrees:
+                degree[deg].append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["degree"]=="deg")]))
         else:
             jmps_by_bin.append(0)
             movs_by_bin.append(0)
@@ -61,6 +68,8 @@ def output_data(outpath, dataframe,binkeys):
             mod.append(0)
             needs_ref.append(0)
             cmplx.append(0)
+            for deg in different_degrees:
+                degree[deg].append(0)
     #matched j*/mov*/cmov*/*xor*
     df = pd.DataFrame({"j*" :jmps_by_bin,
                        "mov*":movs_by_bin,
@@ -112,5 +121,16 @@ def output_data(outpath, dataframe,binkeys):
     plt.yscale('log')
     plt.tight_layout()
     plt.savefig(outpath / "cyclomatic_complexity_by_bin.png",dpi=1000)
+    plt.clf()
+    #degree plot
+    df = pd.DataFrame(degree,index = binkeys)
+    df.plot.bar(rot=0)
+    plt.xticks(rotation=45)
+    plt.title("Path complexity degree of functions per bin")
+    plt.ylabel("Occurrence of degree")
+    plt.xlabel("Time range")
+    plt.yscale('log')
+    plt.tight_layout()
+    plt.savefig(outpath / "path_complexity_by_bin.png",dpi=1000)
     plt.clf()
     return True
