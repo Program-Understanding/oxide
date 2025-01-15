@@ -107,7 +107,12 @@ def calc_func_apc(adj_matrix,n):
     logger.debug(f"bound solution terms {bounded_solution_terms}")
     ordered_terms = bounded_solution_terms.as_ordered_terms()
     logger.debug(f"big o: {ordered_terms}")
-    return bounded_solution_terms
+    logger.info(f"degree: {sympy.degree(bounded_solution_terms)}")
+    logger.info(type(sympy.poly))
+    if type(bounded_solution_terms) is sympy.polys.polytools.Poly:
+        return sympy.LT(bounded_solution_terms)
+    else:
+        return bounded_solution_terms
 
 def results(oid_list, opts):
     """

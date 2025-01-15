@@ -113,7 +113,7 @@ def reducer(intermediate_output, opts, jobid):
                                           "interesting":{}}
 
     #binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
-    binkeys = [round(i,4) for i in numpy.logspace(numpy.log10(0.001),numpy.log10(600),num=opts["bins"]-1)]
+    binkeys = [round(i,1) for i in numpy.logspace(numpy.log10(0.1),numpy.log10(600),num=opts["bins"]-1)]
     binkeys[-1] = opts["timeout"]
     for i in range(len(binkeys)):
         bn = binkeys[i]
