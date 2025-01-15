@@ -6,8 +6,10 @@ import logging
 logger = logging.getLogger(NAME)
 
 from core import api
-import numpy
 import sympy
+import numpy
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import get_context
 
 opts_doc={}
 
@@ -28,7 +30,7 @@ def calc_func_apc(adj_matrix,n):
     z = sympy.symbols('z') #our symbolic variable 'z'
     z_T = z*adj_matrix
     I_z_T = sympy.Matrix(I-adj_matrix*z)
-    qz = sympy.expand(-I_z_T.det())
+    qz = sympy.expand(-1*I_z_T.det())
     logger.debug(f"denominator: {qz}")
     pz = (I[:n-1,1:]-(z*adj_matrix[:n-1,1:])).det()
     logger.debug(f"g(z) = {pz}/{qz}")
@@ -107,84 +109,93 @@ def calc_func_apc(adj_matrix,n):
     logger.debug(f"bound solution terms {bounded_solution_terms}")
     ordered_terms = bounded_solution_terms.as_ordered_terms()
     logger.debug(f"big o: {ordered_terms}")
-    logger.info(f"degree: {sympy.degree(bounded_solution_terms)}")
-    logger.info(type(sympy.poly))
     if type(bounded_solution_terms) is sympy.polys.polytools.Poly:
-        return sympy.LT(bounded_solution_terms)
+        logger.info(f"degree: {sympy.degree(bounded_solution_terms)}")
+        degree = sympy.degree(bounded_solution_terms)
+        if type(degree) is sympy.core.numbers.NegativeInfinity:
+            return 0
+        else:
+            return degree
     else:
-        return bounded_solution_terms
+        return 0
 
-def results(oid_list, opts):
+def process(oid, opts):
     """
     This will return the adjacency matrix and
     the estimated path complexity, and
     the results from the acfg module for the function.
     Results are returned on function by function basis.
     """
-    oid_list = api.expand_oids(oid_list)
     results = {}
-    for oid in oid_list:
-        results[oid] = {}
-        #temp code just to keep track of the filename
-        data = api.get_field(api.source(oid), oid, "data", {})
-        f_name = api.get_field("file_meta", oid, "names").pop()
-        f_name = api.tmp_file(f_name, data)
-        logger.debug(f_name)        
-        #use ghidra to get the adjacency matrix
-        original_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
-        funs = api.retrieve("function_extract",oid)
-        for fun in funs:
-            results[oid][fun] = {'offset':funs[fun]['start']}
-            #go through every function to make function-level adjacency graph to
-            #calculate the apc
-            fun_blocks = {}
-            for block in original_blocks.keys():
-                if block in funs[fun]['blocks']:
-                    fun_blocks[block] = original_blocks[block]
-            n = len(funs[fun]['blocks'])
-            #if we don't have any basic block members
-            #or if we only have 1 basic block
-            #we don't want to say for sure
-            if not fun_blocks:
-                results[oid][fun] = "no blocks from ghidra"
-                continue
-            adj_matrix = sympy.zeros(n,n)
-            #fill in the adjacency matrix
-            #first identify the function start
-            function_start=funs[fun]['start']
-            function_end=funs[fun]['start']
-            for block in fun_blocks:
-                for bblock_id, bblock_dict in fun_blocks.items():
-                    #obviously we shouldn't see if the basic block calls itself, that's ok
-                    if bblock_id == block:
-                        continue
-                    #if another basic block in the function calls this one, this one can't be
-                    #the first basic block in the function
-                    if block in bblock_dict['dests']:
-                        continue
-                    function_end=bblock_id
-            #fill in the adj_matrix with the ending block at the end
-            #and the starting block at the origin
-            #to put starting block at origin and fill in the matrix in an order,
-            #we'll partially order the blocks to have function start at the start
-            partially_ordered_blocks = [function_start]
-            for block in fun_blocks:
-                if block == function_end or block == function_start:
+    #temp code just to keep track of the filename
+    data = api.get_field(api.source(oid), oid, "data", {})
+    f_name = api.get_field("file_meta", oid, "names").pop()
+    f_name = api.tmp_file(f_name, data)
+    logger.debug(f_name)        
+    #use ghidra to get the adjacency matrix
+    original_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
+    funs = api.get_field("ghidra_disasm", oid, "functions")
+    for fun in funs:
+        fun_name = funs[fun]["name"]
+        if fun_name == "_start": continue
+        results[fun_name] = {}
+        #go through every function to make function-level adjacency graph to
+        #calculate the apc
+        fun_blocks = {}
+        for block in original_blocks.keys():
+            if block in funs[fun]['blocks']:
+                fun_blocks[block] = original_blocks[block]
+        n = len(funs[fun]['blocks'])
+        #if we don't have any basic block members
+        #or if we only have 1 basic block
+        #we don't want to say for sure
+        if not fun_blocks:
+            results[fun] = "no blocks from ghidra"
+            continue
+        adj_matrix = sympy.zeros(n,n)
+        #fill in the adjacency matrix
+        #first identify the function start
+        function_start=fun
+        function_end=fun
+        for block in fun_blocks:
+            for bblock_id, bblock_dict in fun_blocks.items():
+                #obviously we shouldn't see if the basic block calls itself, that's ok
+                if bblock_id == block:
                     continue
-                partially_ordered_blocks.append(block)
-            if function_start != function_end:
-                partially_ordered_blocks.append(function_end)
-            i = 0
-            for block in partially_ordered_blocks:
-                j = 0
-                for dblock in partially_ordered_blocks:
-                    if dblock in fun_blocks[block]['dests']:
-                        adj_matrix[i,j] = 1
-                    j += 1
-                i+=1
-            #last element must be 1 to get determinant
-            adj_matrix[-1,-1] = 1
-            logger.debug(f"function {fun} adj_matrix = {adj_matrix}")
-            results[oid][fun]['adjacency matrix'] = adj_matrix
-            results[oid][fun]['apc'] = f"Big O({calc_func_apc(adj_matrix,n)})"
+                #if another basic block in the function calls this one, this one can't be
+                #the first basic block in the function
+                if block in bblock_dict['dests']:
+                    continue
+                function_end=bblock_id
+        #fill in the adj_matrix with the ending block at the end
+        #and the starting block at the origin
+        #to put starting block at origin and fill in the matrix in an order,
+        #we'll partially order the blocks to have function start at the start
+        partially_ordered_blocks = [function_start]
+        for block in fun_blocks:
+            if block == function_end or block == function_start:
+                continue
+            partially_ordered_blocks.append(block)
+        if function_start != function_end:
+            partially_ordered_blocks.append(function_end)
+        i = 0
+        for block in partially_ordered_blocks:
+            j = 0
+            for dblock in partially_ordered_blocks:
+                if dblock in fun_blocks[block]['dests']:
+                    adj_matrix[i,j] = 1
+                j += 1
+            i+=1
+        #last element must be 1 to get determinant
+        adj_matrix[-1,-1] = 1
+        logger.debug(f"function {fun} adj_matrix = {adj_matrix}")
+        results[fun_name]['adjacency matrix'] = adj_matrix
+        try:
+            with ThreadPoolExecutor(max_workers=1) as e:
+                out = e.submit(calc_func_apc,adj_matrix,n)
+                degree = out.result(timeout=10)
+        except:
+            degree = False
+        results[fun_name]['degree'] = degree
+    api.store(NAME,oid,results,opts)
     return results

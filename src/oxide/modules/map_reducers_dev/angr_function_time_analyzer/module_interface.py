@@ -147,6 +147,19 @@ def reducer(intermediate_output, opts, jobid):
                                            },
                                            "num instructions": []
                                            }
+    bins_w_time["low memory"] = {"opcodes": {},
+                                           "operands": {
+                                               "imm":[],
+                                               "mem":[],
+                                               "reg":[]},
+                                           "complexity": {
+                                               "simple": 0,
+                                               "moderate": 0,
+                                               "needs refactor": 0,
+                                               "complex": 0
+                                           },
+                                           "num instructions": []
+                                           }
     for oid in intermediate_output:
         if oid:
             time_result = api.get_field(NAME,oid,"time_result",opts)
@@ -160,8 +173,11 @@ def reducer(intermediate_output, opts, jobid):
                 if "error" in f_dict["angr seconds"]:
                     functions_w_angr_errors += 1
                     continue
-                time = float(f_dict["angr seconds"].split(" ")[0])
+                time = float(f_dict["angr seconds"].split(" ")[0])                
                 f_bin = find_bin_key(binkeys,time,opts["timeout"])
+                if "stopped early for" in f_dict and f_dict["stopped early for"] != "timed out":
+                    functions_w_angr_errors += 1
+                    f_bin = "low memory"
                 complexity_level = f_dict["summary"]["complexity_desc"]
                 complexity_vs_time[complexity_level]["times"].append(time)
                 bins_w_time[f_bin]["complexity"][complexity_level] += 1
