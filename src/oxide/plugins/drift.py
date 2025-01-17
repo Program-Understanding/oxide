@@ -25,7 +25,7 @@ COMMANDS:
 compare_collections
 --------------------------------------------------------------------------------
 - Compares two collections.
-- Generates or retrieves a FRAMEWORK_DATA report detailing stats, new files,
+- Generates or retrieves a FRAMEWORK_DATA report detailing stats, unmatched files,
   modified files, and failed files.
 - Common Usage:
     - compare_collections &collection &ref_collection
@@ -34,7 +34,7 @@ compare_collections
     - compare_collections &collection &ref_collection file --function=function_name
 - Notable Options:
     - force: "COMPARE" re-runs the comparison if data already exists
-    - view: "stats", "new", "modified", "failed"
+    - view: "stats", "unmatched", "modified", "failed"
     - function: Allows drilling down to a specific function comparison
 
 --------------------------------------------------------------------------------
@@ -105,7 +105,7 @@ class FileAnalyzer:
         filtered_hashes = {}
         if "FUNC_TLSH" not in self.tags or self.force == "FUNC_TLSH":
             self.tags.get("FUNC_HASH", None)
-            hashes = api.retrieve("function_tlsh", self.oid, {"replace_addrs": True})
+            hashes = api.retrieve("function_tlsh", self.oid, {"replace_addrs": False})
         
             for function in hashes:
                 if hashes[function].get('tlsh hash'):
@@ -171,7 +171,7 @@ class FrameworkAnalyzer:
     # Searches for files where all of the functions are found in the ref collection
     def sort_files(self, collection_oids, reference_collection_oids):
         results = {
-            'NEW_EXECUTABLES': {},
+            'UNMATCHED_EXECUTABLES': {},
             'MODIFIED_EXECUTABLES': {},
             'FAILED': []
         }
@@ -194,7 +194,10 @@ class FrameworkAnalyzer:
                 }
             # New File
             else:
-                results['NEW_EXECUTABLES'][oid] = oid_result
+                results['UNMATCHED_EXECUTABLES'][oid] = {
+                    'REPORT': oid_result,
+                    'REF_FILE_ID': None
+                }
 
         return results
 
@@ -212,7 +215,7 @@ class FrameworkAnalyzer:
         oid_result = {
             'func_matches': {},
             'modified_funcs': {},
-            'new_funcs': {}
+            'unmatched_funcs': {}
         }
         potential_ref_files = []
         potential_ref_files_match = []
@@ -274,7 +277,7 @@ class FrameworkAnalyzer:
             if best_match['score'] < 150:
                 oid_result['modified_funcs'][func_name] = best_match
             else:
-                oid_result['new_funcs'][func_name] = best_match
+                oid_result['unmatched_funcs'][func_name] = best_match
         return oid_result
     
     def export_modified_files_report(self, save_path):
@@ -295,7 +298,7 @@ class FrameworkAnalyzer:
                     "Ref File": modified_files[file]['REF_FILE_ID'],
                     "Function Matches": modified_files[file]['REPORT']['func_matches'][modified_files[file]['REF_FILE_ID']],
                     "Modified Functions": len(modified_files[file]['REPORT']['modified_funcs']),
-                    "New Functions": len(modified_files[file]['REPORT']['new_funcs'])
+                    "New Functions": len(modified_files[file]['REPORT']['unmatched_funcs'])
                 }
                 writer.writerow(file_result)
 
@@ -308,8 +311,8 @@ class FrameworkAnalyzer:
             'EXECUTABLE_MATCHES': matched_execs,
             'NON_EXECUTABLE_MATCHES': matched_non_execs,
             'MODIFIED_EXECUTABLES': sorted_files['MODIFIED_EXECUTABLES'],
-            'NEW_EXECUTABLES': sorted_files['NEW_EXECUTABLES'],
-            'NEW_NON_EXECUTABLES': uniq_col_non_execs,
+            'UNMATCHED_EXECUTABLES': sorted_files['UNMATCHED_EXECUTABLES'],
+            'UNMATCHED_NON_EXECUTABLES': uniq_col_non_execs,
             'FAILED_EXECUTABLES': sorted_files['FAILED']
         }
 
@@ -320,8 +323,8 @@ class FrameworkAnalyzer:
             'MATCHED EXECUTABLES': self.calculate_stats(self.report["EXECUTABLE_MATCHES"], self.collection_oids),
             'MATCHED NON-EXECUTABLE': self.calculate_stats(self.report['NON_EXECUTABLE_MATCHES'], self.collection_oids),
             'MODIFIED EXECUTABLES': self.calculate_stats(self.report['MODIFIED_EXECUTABLES'], self.collection_oids),
-            'NEW EXECUTABLES': self.calculate_stats(self.report['NEW_EXECUTABLES'], self.collection_oids),
-            'NEW NON-EXECUTABLES': self.calculate_stats(self.report['NEW_NON_EXECUTABLES'], self.collection_oids),
+            'UNMATCHED EXECUTABLES': self.calculate_stats(self.report['UNMATCHED_EXECUTABLES'], self.collection_oids),
+            'UNMATCHED NON-EXECUTABLES': self.calculate_stats(self.report['UNMATCHED_NON_EXECUTABLES'], self.collection_oids),
             'FAILED EXECUTABLES': self.calculate_stats(self.report['FAILED_EXECUTABLES'], self.collection_oids)
         }
 
@@ -356,19 +359,19 @@ class FrameworkAnalyzer:
         else:
             self.print_category_w_ref(self.report['MODIFIED_EXECUTABLES'])
 
-    def print_new_executables(self, file):
-        print("\n================== NEW EXECUTABLES ==================")
+    def print_unmatched_executables(self, file):
+        print("\n================== UNMATCHED EXECUTABLES ==================")
         if file:
-            self.print_category_w_ref({file: self.report['NEW_EXECUTABLES'][file]})
+            self.print_category_w_ref({file: self.report['UNMATCHED_EXECUTABLES'][file]})
         else:
-            self.print_category_w_ref(self.report['NEW_EXECUTABLES'])
+            self.print_category_w_ref(self.report['UNMATCHED_EXECUTABLES'])
 
-    def print_new_non_executables(self):
-        print("\n================== NEW NON-EXECUTABLES ==================")
-        for file in self.report['NEW_NON_EXECUTABLES']:
+    def print_unmatched_non_executables(self):
+        print("\n================== UNMATCHED NON-EXECUTABLES ==================")
+        for file in self.report['UNMATCHED_NON_EXECUTABLES']:
             # Create a new table for each file
             table = PrettyTable()
-            table.title = f"NEW NON-EXECUTABLES - File ID: {file}"
+            table.title = f"UNMATCHED NON-EXECUTABLES - File ID: {file}"
             table.field_names = ["Potential File Names"]
             
             # Call the API and handle if it returns a set
@@ -389,15 +392,16 @@ class FrameworkAnalyzer:
             if 'modified_funcs' in report and len(report['modified_funcs']) > 0:
                 self.print_modified_funcs(report)
             
-            # Print new_funcs table
-            if 'new_funcs' in report and len(report['new_funcs']) > 0:
-                self.print_new_funcs(report)
+            # Print unmatched_funcs table
+            if 'unmatched_funcs' in report and len(report['unmatched_funcs']) > 0:
+                self.print_unmatched_funcs(report)
             print("\n")
 
     def print_category_w_ref(self, files_report):
         for file_id, data in files_report.items():
             ref_file_id = data['REF_FILE_ID']
-            self.print_table_match(file_id, ref_file_id)
+            if ref_file_id:
+                self.print_table_match(file_id, ref_file_id)
             
             report = data['REPORT']
             # Print func_matches table
@@ -408,9 +412,9 @@ class FrameworkAnalyzer:
             if 'modified_funcs' in report and len(report['modified_funcs']) > 0:
                 self.print_modified_funcs(report)
             
-            # Print new_funcs table
-            if 'new_funcs' in report and len(report['new_funcs']) > 0:
-                self.print_new_funcs(report)
+            # Print unmatched_funcs table
+            if 'unmatched_funcs' in report and len(report['unmatched_funcs']) > 0:
+                self.print_unmatched_funcs(report)
             print("\n")
 
     def print_modified_funcs(self, report):
@@ -440,14 +444,14 @@ class FrameworkAnalyzer:
             table.add_row([func, matches])
         print(table)
 
-    def print_new_funcs(self, report):
+    def print_unmatched_funcs(self, report):
         table = PrettyTable()
         table.align = 'l'
-        table.title = f"NEW FUNCTIONS: {len(report['new_funcs'])} Functions"
+        table.title = f"UNMATCHED FUNCTIONS: {len(report['unmatched_funcs'])} Functions"
         table.field_names = ["Function", "Closest Match File", "Closest Match Function", "Score"]
         correct = 0
         incorrect = 0
-        for func, details in report['new_funcs'].items():
+        for func, details in report['unmatched_funcs'].items():
             table.add_row([func, details['file'], details['func'], details['score']])
             if func == details['func']:
                 correct += 1
@@ -759,10 +763,10 @@ def compare_collections(args, opts):
     stats = analyzer.calculate_statistics()
     if view == "stats":
         analyzer.print_statistics(stats)
-    elif view == "new":
+    elif view == "unmatched":
         analyzer.print_statistics(stats)
-        analyzer.print_new_executables(file)
-        analyzer.print_new_non_executables()
+        analyzer.print_unmatched_executables(file)
+        analyzer.print_unmatched_non_executables()
     elif view == "modified":
         analyzer.print_statistics(stats)
         analyzer.print_modified_executables(file)
@@ -819,7 +823,7 @@ def import_product(args, opts):
 
     def import_sample(sample_name, sample_path):
         """Helper function to import a directory or file and create a collection."""
-        oids, new_files = (
+        oids, unmatched_files = (
             api.import_directory(sample_path) if os.path.isdir(sample_path)
             else api.import_file(sample_path)
         )
@@ -846,7 +850,7 @@ def import_dataset(args, opts):
 
     def import_sample(sample_name, sample_path):
         """Helper function to import a directory or file and create a collection."""
-        oids, new_files = (
+        oids, unmatched_files = (
             api.import_directory(sample_path) if os.path.isdir(sample_path)
             else api.import_file(sample_path)
         )
