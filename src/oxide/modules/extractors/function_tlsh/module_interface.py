@@ -44,7 +44,7 @@ def process(oid, opts):
     insns = api.get_field(opts["disasm"], oid, "instructions", {"processor": processor})
 
     range = sorted(insns.keys())
-    logger.info("Instruction range: %d - %d", range[0], range[-1])
+    # logger.info("Instruction range: %d - %d", range[0], range[-1])
 
     for f in funs:
         if f == 'meta':
@@ -55,6 +55,7 @@ def process(oid, opts):
 
         abstracted_pointer_values = {}
         instructions = []
+        modified_instructions = []
 
         blocks = funs[f]['blocks']
         fun_info = {
@@ -71,12 +72,13 @@ def process(oid, opts):
                     logger.error("Basic Block member not found: %s", insn_offset)
                     continue
                 opcode = re.split(r'[,\s]+', insn_text)
+                modified_insn_text = insn_text  # Start with the original instruction text
                 if opts["by_opcode"] and opcode:
                     opcode = opcode[0]
-                    # try to add destination register to opcode for more context and to avoid TNULL
+                    # Try to add destination register to opcode for more context and to avoid TNULL
                     if len(insn_text) > 3 and len(insn_text.split(' ')) > 2 and len(insn_text.split(' ')[2]) > 3:
                         target_dest = insn_text.split(' ')[2].split(",")
-                        if len(target_dest[0]) == 3 and target_dest[0][-2] == 'a' and target_dest[0][-1] == 'x': #target is *ax
+                        if len(target_dest[0]) == 3 and target_dest[0][-2] == 'a' and target_dest[0][-1] == 'x':  # target is *ax
                             opcode += target_dest[0]
                     fun_string += opcode
                 else:
@@ -87,17 +89,21 @@ def process(oid, opts):
                             if sub_str not in abstracted_pointer_values:
                                 unique_index = len(abstracted_pointer_values)
                                 abstracted_pointer_values[sub_str] = f"0x{unique_index:0{len_val - 2}X}"
-                            fun_string += abstracted_pointer_values[sub_str]
+                            replacement = abstracted_pointer_values[sub_str]
+                            fun_string += replacement
+                            # Replace in the modified instruction text
+                            modified_insn_text = modified_insn_text.replace(sub_str, replacement)
                         else:
                             fun_string += sub_str
                 instructions.append(insn_text)
+                modified_instructions.append(modified_insn_text)  # Add the modified instruction to the list
         if fun_instr_count > 5 and tlsh.hash(fun_string.encode()) != "TNULL":  # Eliminate functions that are just jumping to external
             fun_info["tlsh hash"] = tlsh.hash(fun_string.encode())
         else:
             fun_info["tlsh hash"] = None
         fun_info['fun_string'] = fun_string
         fun_info['fun_instructions'] = instructions
-
+        fun_info['modified_fun_instructions'] = modified_instructions  # Add modified instructions
         fun_dict[f] = fun_info
 
     logger.debug("Storing")
@@ -106,7 +112,7 @@ def process(oid, opts):
     return True
 
 def address_value(value):
-    address_pattern = r'0x[0-9a-fA-F]{4,}'
+    address_pattern = r'0x[0-9a-fA-F]{3,}'
     match = re.search(address_pattern, value)
     if match:
         return True, len(match.group(0))  # Return True and the length of the matched value
