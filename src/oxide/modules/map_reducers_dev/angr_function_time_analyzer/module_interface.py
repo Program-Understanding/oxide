@@ -78,7 +78,7 @@ def mapper(oid, opts, jobid=False):
         return False
     results["opcode_by_func"] = api.retrieve("opcodes",oid,{"by_func":True})
     results["path_complexity"] = api.retrieve("path_complexity",oid,opts)
-    if results["opcode_by_func"] is None:
+    if results["opcode_by_func"] or results["path_complexity"] is None:
         return False
     while not api.store(NAME,oid,results,opts):
         sleep(1)
