@@ -27,13 +27,14 @@ def call_mapping(functions, basic_blocks):
     for function_addr, function_data in functions.items():
         call_mapping[function_addr] = {'calls_to': {}, 'calls_from': {}}
         for block_addr in function_data['blocks']:
-            for instruction_offset, instruction in basic_blocks[block_addr]['members']:
-                if instruction[:4] == 'call':
-                    for offset in basic_blocks[block_addr]['dests']:
-                        if offset in function_addresses:
-                            called_file_offset = offset
-                    if called_file_offset != None:
-                        call_mapping[function_addr]['calls_to'][called_file_offset] = functions[called_file_offset]['vaddr']
+            if basic_blocks.get(block_addr):
+                for instruction_offset, instruction in basic_blocks[block_addr]['members']:
+                    if instruction[:4] == 'call':
+                        for offset in basic_blocks[block_addr]['dests']:
+                            if offset in function_addresses:
+                                called_file_offset = offset
+                        if called_file_offset != None:
+                            call_mapping[function_addr]['calls_to'][called_file_offset] = functions[called_file_offset]['vaddr']
 
     #using the calls_to to map out a calls_from
     for calling_function_addr, calls in call_mapping.items():

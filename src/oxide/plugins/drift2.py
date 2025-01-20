@@ -8,8 +8,10 @@ import os
 import shutil
 import tlsh
 from prettytable import PrettyTable
+from tabulate import tabulate
 import csv
 from difflib import Differ, unified_diff, ndiff, SequenceMatcher
+import pandas as pd
 
 from oxide.core import progress, api
 
@@ -305,7 +307,7 @@ class CollectionComparator:
 
             # Update the results based on match score
             if is_single_ref:
-                if best_match.match_score > 0:
+                if best_match.match_score > 0.5:
                     oid_result['modified_funcs'][func_name] = best_match
                 else:
                     oid_result['unmatched_funcs'][func_name] = best_match
@@ -401,17 +403,13 @@ class CollectionComparator:
 
     def print_unmatched_non_executables(self):
         print("\n================== UNMATCHED NON-EXECUTABLES ==================")
+        
         for file in self.report['UNMATCHED_NON_EXECUTABLES']:
-            # Create a new table for each file
-            table = PrettyTable()
-            table.title = f"UNMATCHED NON-EXECUTABLES - File ID: {file}"
-            table.field_names = ["Potential File Names"]
-            
-            # Call the API and handle if it returns a set
             names = api.get_names_from_oid(file)
-            for name in names:
-                table.add_row([name])
-            print(table)
+            df = pd.DataFrame(names, columns=["Potential File Names"])
+        
+            print(f"\nNon-Executable: {file}")
+            print(tabulate(df, headers="keys", tablefmt="psql", showindex=False))
 
     def print_category(self, files_report):
         for file_id, report in files_report.items():
@@ -443,7 +441,7 @@ class CollectionComparator:
             
             # Print modified_funcs table
             if 'modified_funcs' in report and len(report['modified_funcs']) > 0:
-                self.print_modified_funcs_table(report)
+                # self.print_modified_funcs_table(report)
                 self.print_modified_funcs_features(report)
             
             # Print unmatched_funcs table
@@ -465,79 +463,98 @@ class CollectionComparator:
             else:
                 incorrect += 1
         print(table)
-    
+
     def print_modified_funcs_features(self, report):
-        file_result = {}
+        columns = [
+            "Function",
+            "Ref Function",
+            "Score",
+            "BBs +/-",
+            "Instr +",
+            "Instr -",
+            "Instr Mod",
+            "Func Calls +",
+            "Func Calls -"
+        ]
+
+        # Collect data rows from the report
+        rows = []
         for func, func_report in report['modified_funcs'].items():
-            func_results = []
-            func_found = False
-            if func_report.cf_larger:
-                func_results.append(f"\t- {func_report.cf_larger} Basic Blocks Added")
-                func_found = True
-            if func_report.cf_smaller:
-                func_results.append(f"\t- {func_report.cf_smaller} Basic Blocks Removed")
-                func_found = True
-            if func_report.added_instr:
-                func_results.append(f"\t- {func_report.added_instr} Instructions Added")
-                func_found = True
-            if func_report.removed_instr:
-                func_results.append(f"\t- {func_report.removed_instr} Instructions Removed")
-                func_found = True
-            if func_report.modified_isntr:
-                func_results.append(f"\t- {func_report.modified_isntr} Instructions Modified")
-                func_found = True
-            if func_report.op_code_changes:
-                func_results.append(f"\t- Op Code Changes")
-                func_found = True
-            
-            if func_found:
-                file_result[func_report.func] = func_results
-        
-        if len(file_result) > 1:
-            print("FUNCTION MODIFICATIONS FOUND")
-        for func in file_result:
-            print(func)
-            for feature in file_result[func]:
-                print(f"\t{feature}")
+            basic_blocks       = func_report.basic_blocks       or 0
+            instr_added        = func_report.added_instr        or 0
+            instr_removed      = func_report.removed_instr      or 0
+            instr_modified     = func_report.modified_isntr     or 0
+            func_calls_added   = func_report.added_func_call    or 0
+            func_calls_removed = func_report.removed_func_call  or 0
+
+            rows.append([
+                func,
+                func_report.ref_func,
+                func_report.match_score,
+                basic_blocks,
+                instr_added,
+                instr_removed,
+                instr_modified,
+                func_calls_added,
+                func_calls_removed
+            ])
+
+        # Create DataFrame
+        df = pd.DataFrame(rows, columns=columns)
+
+        # Add a "Total" column with the sum of the relevant numeric columns
+        numeric_cols = [
+            "BBs +/-",
+            "Instr +",
+            "Instr -",
+            "Instr Mod",
+            "Func Calls +",
+            "Func Calls -"
+        ]
+        df["Total"] = df[numeric_cols].sum(axis=1)
+
+        # Sort by the "Total" column (descending)
+        df.sort_values(by="Total", ascending=False, inplace=True)
+
+        # Remove the "Total" column before printing
+        df.drop(columns="Total", inplace=True)
+
+        # Print as a table without the index
+        print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
     def print_func_matches(self, report):
-        table = PrettyTable()
-        table.align = 'l'
-        table.title = "EXACT FUNCTION MATCHES"
-        table.field_names = ["Reference File", "# of Exact Function Matches"]
-        for func, matches in report['func_matches'].items():
-            table.add_row([func, matches])
-        print(table)
+        total_matches = sum(report['func_matches'].values())
+        print(f"Exact Function Matches: {total_matches}")
 
     def print_unmatched_funcs(self, report):
-        table = PrettyTable()
-        table.align = 'l'
-        table.title = f"Unmatched FUNCTIONS: {len(report['unmatched_funcs'])} Functions"
-        table.field_names = ["Function", "Closest Match File", "Closest Match Function", "Score"]
+        # Print a heading similar to PrettyTable's title
+        num_unmatched = len(report['unmatched_funcs'])
+        print(f"{num_unmatched} Unmatched Functions:")
+
+        # Prepare column names and data rows
+        columns = ["Function", "Closest Match File", "Closest Match Function", "Score"]
+        rows = []
         for func, details in report['unmatched_funcs'].items():
-            table.add_row([func, details.ref_file, details.ref_func, details.match_score])
-        print(table)
+            rows.append([func, details.ref_file, details.ref_func, details.match_score])
+
+        # Build the DataFrame
+        df = pd.DataFrame(rows, columns=columns)
+        df.sort_values(by="Score", ascending=False, inplace=True)
+        print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
     def print_table_match(self, file_id, ref_file_id):
-        table = PrettyTable()
-        table.align = 'l'
-        table.title = f"File: {file_id} | Reference File: {ref_file_id}"
-        table.field_names = ["Potential File Names", "Potential Reference File Names"]
         file_names = list(api.get_names_from_oid(file_id))
         ref_file_names = list(api.get_names_from_oid(ref_file_id))
 
-        # Determine the maximum length to handle differing lengths of file_names and ref_file_names
-        max_length = max(len(file_names), len(ref_file_names))
+        # Join all file names with a comma + space
+        file_names_str = ", ".join(file_names) if file_names else ""
+        ref_file_names_str = ", ".join(ref_file_names) if ref_file_names else ""
 
-        # Pad the shorter list with empty strings to avoid index errors during iteration
-        file_names += [""] * (max_length - len(file_names))
-        ref_file_names += [""] * (max_length - len(ref_file_names))
-
-        # Populate the table
-        for file_name, ref_file_name in zip(file_names, ref_file_names):
-            table.add_row([file_name, ref_file_name])
-
-        print(table)
+        # Print in the requested format
+        print(f"File: {file_id}")
+        print(f"File Names: {file_names_str}")
+        print(f"Ref File: {ref_file_id}")
+        print(f"Ref File Names: {ref_file_names_str}")
 
     def print_table(self, file_id):
         table = PrettyTable()
@@ -565,21 +582,26 @@ class FunctionComparator:
         self.file = file
         self.func = func
         self.func_insts = self._retrieve_function_instructions(self.file, self.func)
+        self.num_func_bb = None
+        self.num_func_calls = None
 
         self.ref_file = ref_file
         self.ref_func = ref_func
         self.ref_func_insts = self._retrieve_function_instructions(self.ref_file, self.ref_func)
+        self.num_ref_func_bb = None
+        self.num_ref_func_calls = None
 
         self.seq_matcher = SequenceMatcher(None, self.func_insts, self.ref_func_insts)
 
         self.match_score = round(self.seq_matcher.ratio(), 2)
 
-        self.cf_larger = False
-        self.cf_smaller = False
-        self.added_instr = False
-        self.removed_instr = False
-        self.modified_isntr = False
-        self.op_code_changes = False
+        self.basic_blocks = None
+        self.added_instr = None
+        self.removed_instr = None
+        self.modified_isntr = None
+        self.added_func_call = None
+        self.removed_func_call = None
+        self.op_code_changes = None
     
     def _retrieve_function_instructions(self, file, func):
         """
@@ -593,21 +615,27 @@ class FunctionComparator:
     
     def _diff_features(self):
         # Control Flow
-        self.func_bb = self._get_bb(self.file, self.func)
-        self.ref_func_bb = self._get_bb(self.ref_file, self.ref_func)
+        self.num_func_bb, self.num_func_calls = self._get_bb(self.file, self.func)
+        self.num_ref_func_bb, self.num_ref_func_calls = self._get_bb(self.ref_file, self.ref_func)
 
-        if self.func_bb > self.ref_func_bb:
-            self.cf_larger = self.func_bb - self.ref_func_bb
-        elif self.func_bb < self.ref_func_bb:
-            self.cf_smaller = self.ref_func_bb - self.func_bb
+        if self.num_func_bb - self.num_ref_func_bb != 0:
+            self.basic_blocks = self.num_func_bb - self.num_ref_func_bb
+
+        if self.num_func_calls > self.num_ref_func_calls:
+            self.added_func_call = self.num_func_calls - self.num_ref_func_calls
+        elif self.num_func_calls < self.num_ref_func_calls:
+            self.removed_func_call = self.num_ref_func_calls - self.num_func_calls
 
         self.added_instr, self.removed_instr, self.modified_isntr, = self._instruction_changes()
 
     def _get_bb(self, file, func):
         file_disasm = api.retrieve('ghidra_disasm', file)
-        for disasm_funcs in file_disasm['functions']:
-            if file_disasm['functions'][disasm_funcs]['name'] == func:
-                return len(file_disasm['functions'][disasm_funcs]['blocks'])
+        for func_addr in file_disasm['functions']:
+            if file_disasm['functions'][func_addr]['name'] == func:
+                call_mappings = api.get_field("call_mapping", file, func_addr)
+                function_calls = len(call_mappings['calls_to'])
+                num_bb = len(file_disasm['functions'][func_addr]['blocks'])
+                return function_calls, num_bb
         return None
     
     def _instruction_changes(self):
@@ -632,15 +660,18 @@ class FunctionComparator:
                 lines_added += 1
             elif line.startswith("@@"):
                 if lines_added == lines_removed:
-                    total_lines_modified = lines_added
+                    total_lines_modified += lines_added
                 else:
-                    total_lines_added = lines_added
-                    total_lines_removed = lines_removed
+                    total_lines_added += lines_added
+                    total_lines_removed += lines_removed
                 lines_added = 0
                 lines_removed = 0
                 continue
             else:
                 continue
+
+            if lines_added == lines_removed:
+                total_lines_modified += lines_added
 
         return total_lines_added, total_lines_removed, total_lines_modified
 
