@@ -338,6 +338,7 @@ def process(oid, opts):
         for f in fun_filenames:
             outstring += f'"{f}" '
         print(outstring.strip())
+        return False
     subproc_out = subproc_out.split("\n")
     #we'll trim the junk before the function name off the output
     trim_len=len(str(oid)+"_.")
