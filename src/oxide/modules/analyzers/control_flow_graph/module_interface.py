@@ -115,8 +115,8 @@ def generate_cfg(oid: str, opts: dict):
             cfg["block_calls"][dest]["called_by"].append(block_addr)
 
     # Extract functions, basic blocks, and disassembly
-    names = api.get_field("file_meta", oid, "names")
-    logger.debug("process(%s)", names)
+    # names = api.get_field("file_meta", oid, "names")
+    # logger.debug("process(%s)", names)
 
     funs = api.retrieve("function_extract", oid)
     if not funs:

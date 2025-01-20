@@ -24,16 +24,11 @@ def output_data(outpath, dataframe,binkeys):
     mod = []
     needs_ref = []
     cmplx = []
-    #degree
-    different_degrees = list(dataframe.degree.unique())
-    if "False" in different_degrees:
-        different_degrees = [i for i in different_degrees if type(i) is not str]
-        different_degrees.sort()
-        different_degrees += ["False"]
-    print(f"different degrees: {different_degrees}")
-    degree = {}
-    for deg in different_degrees:
-        degree[deg] = []
+    #O
+    different_O = list(dataframe.O.unique())
+    big_o = {}
+    for O in different_O:
+        big_o[O] = []
     for bn in binkeys:
         if len(dataframe.loc[dataframe["bin"] == bn].index) > 0:
             #jumps/movs/cmovs/xors per bin
@@ -57,8 +52,8 @@ def output_data(outpath, dataframe,binkeys):
             mod.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["complexity"]=="moderate")].index))
             needs_ref.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["complexity"]=="needs refactor")].index))
             cmplx.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["complexity"]=="moderate")].index))
-            for deg in different_degrees:
-                degree[deg].append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["degree"]==deg)]))
+            for O in different_O:
+                big_o[O].append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["O"]==O)]))
         else:
             jmps_by_bin.append(0)
             movs_by_bin.append(0)
@@ -73,8 +68,8 @@ def output_data(outpath, dataframe,binkeys):
             mod.append(0)
             needs_ref.append(0)
             cmplx.append(0)
-            for deg in different_degrees:
-                degree[deg].append(0)
+            for O in different_O:
+                big_o[O].append(0)
     #matched j*/mov*/cmov*/*xor*
     df = pd.DataFrame({"j*" :jmps_by_bin,
                        "mov*":movs_by_bin,
@@ -128,14 +123,13 @@ def output_data(outpath, dataframe,binkeys):
     plt.savefig(outpath / "cyclomatic_complexity_by_bin.png",dpi=1000)
     plt.clf()
     #degree plot
-    if len(different_degrees):
-        df = pd.DataFrame(degree,index = binkeys)
-        print(f"dataframe: {df}")
-        print(f"degree: {degree}")
+    if len(different_O):
+        df = pd.DataFrame(big_o,index = binkeys)
+        print(f"apc dataframe:\n{df}")
         df.plot.bar(rot=0)
         plt.xticks(rotation=45)
-        plt.title("Path complexity degree of functions per bin")
-        plt.ylabel("Occurrence of degree")
+        plt.title("Big O of functions per bin")
+        plt.ylabel("Occurrence of Complexity")
         plt.xlabel("Time range")
         plt.yscale('log')
         plt.tight_layout()

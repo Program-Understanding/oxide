@@ -102,7 +102,7 @@ def reducer(intermediate_output, opts, jobid):
         df_reg = []
         df_index = []
         df_opcodes = []
-        df_degree = []
+        df_O = []
         all_opcodes = set()
     for complexity in ["simple", "moderate", "needs refactor", "complex"]:
         complexity_vs_time[complexity] = {"times":[],
@@ -166,7 +166,7 @@ def reducer(intermediate_output, opts, jobid):
         if oid:
             time_result = api.get_field(NAME,oid,"time_result",opts)
             opcode_by_func = api.get_field(NAME,oid,"opcode_by_func",opts)
-            degrees = api.get_field(NAME,oid,"path_complexity",opts)
+            complexitys = api.get_field(NAME,oid,"path_complexity",opts)
             if time_result is None or opcode_by_func is None:
                 logger.warning(f"None result for {oid}")
                 oids_w_angr_errors += 1
@@ -175,7 +175,7 @@ def reducer(intermediate_output, opts, jobid):
                 f_dict = time_result[fun]
                 if "error" in f_dict["angr seconds"]:
                     functions_w_angr_errors += 1
-                    logger.info(f"Function has error in angr seconds and degree {degrees[fun]['degree']}")
+                    logger.info(f"Function has error in angr seconds and complexity {complexitys[fun]['O']}")
                     continue
                 time = float(f_dict["angr seconds"].split(" ")[0])                
                 f_bin = find_bin_key(binkeys,time,opts["timeout"])
@@ -228,16 +228,7 @@ def reducer(intermediate_output, opts, jobid):
                     df_complexity.append(complexity_level)
                     df_instructions.append(num_insns)
                     df_opcodes.append(fun_opcodes)
-                    try:
-                        if type(degrees[fun]["degree"]) is bool:
-                            df_degree.append("False")
-                        elif degrees[fun]["degree"] is None:
-                            df_degree.append("None")
-                        else:
-                            df_degree.append(degrees[fun]["degree"])
-                    except KeyError as e:
-                        logger.error(f"Key error {e} with cached results from path complexity for oid {oid}")
-                        return False
+                    df_O.append(complexitys[fun]["O"])
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
                 bins_w_time[f_bin]["num instructions"].append(num_insns)
                 operands = f_dict["summary"]["operands"]
@@ -288,7 +279,7 @@ def reducer(intermediate_output, opts, jobid):
                      "imms":df_imm,
                      "mems":df_mem,
                      "regs":df_reg,
-                     "degree": df_degree}
+                     "O": df_O}
         opcode_mapper(all_opcodes,df_opcodes,data_dict)
         dataframe = pd.DataFrame(data_dict,
                                  index=df_index)
