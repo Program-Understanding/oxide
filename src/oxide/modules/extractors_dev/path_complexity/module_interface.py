@@ -346,19 +346,14 @@ def process(oid, opts):
         line = line.split("|")
         fun_name = line[0][trim_len:]
         if len(line) < 2 or fun_name not in results: continue
-        if len(line) < 3:
-            results[fun_name] = {"O":None,
-                                 "apc":line[1]}
-        else:
-            results[fun_name] = {"O":line[1],
-                                 "apc": line[2]}
+        results[fun_name] = {"O":line[1]}
             
     #clean up the created files
-    for f_fname in fun_filenames:
-        try:
-            os.remove(f_fname)
-        except:
-            pass
+    # for f_fname in fun_filenames:
+    #     try:
+    #         os.remove(f_fname)
+    #     except:
+    #         pass
     while not api.store(NAME,oid,results,opts):
         sleep(1)
         logger.info(f"trying to store to api")

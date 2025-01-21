@@ -25,7 +25,22 @@ def output_data(outpath, dataframe,binkeys):
     needs_ref = []
     cmplx = []
     #O
-    different_O = list(dataframe.O.unique())
+    unsorted_different_O = list(dataframe.O.unique())
+    different_O = []
+    has_timeout = False
+    has_error = False
+    for O in unsorted_different_O:
+        if "Timeout" in O:
+            has_timeout=True
+            continue
+        if "Error" in O:
+            has_error=True
+            continue
+        different_O.append(O)
+    if has_timeout:
+        different_O.append("Timeout")
+    if has_error:
+        different_O.append("Error")
     big_o = {}
     for O in different_O:
         big_o[O] = []

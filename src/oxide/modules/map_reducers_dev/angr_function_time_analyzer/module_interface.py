@@ -75,10 +75,12 @@ def mapper(oid, opts, jobid=False):
     results={}
     results["time_result"] = api.retrieve("angr_function_time",oid,opts)
     if results["time_result"] is None:
+        logger.error(f"couldn't get time result for {oid}")
         return False
     results["opcode_by_func"] = api.retrieve("opcodes",oid,{"by_func":True})
     results["path_complexity"] = api.retrieve("path_complexity",oid,opts)
-    if results["opcode_by_func"] or results["path_complexity"] is None:
+    if results["opcode_by_func"] is None or results["path_complexity"] is None:
+        logger.error(f"couldn't get either path complexity or opcode by func for {oid}")
         return False
     while not api.store(NAME,oid,results,opts):
         sleep(1)
