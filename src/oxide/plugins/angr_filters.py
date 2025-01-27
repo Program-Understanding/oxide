@@ -38,6 +38,7 @@ def sample_by_time(args, opts):
     t = 600
     results_dict = args[0]
 
+    nargs = len(args[0])
     if "n" in opts:
         try:
             n = int(opts["n"])
