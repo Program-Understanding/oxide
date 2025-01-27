@@ -173,6 +173,8 @@ def process(oid, opts):
         blocks = {}
         i = 0
         for block in funs[fun]["blocks"]:
+            if block == 5040:
+                pass
             label = ""
             dest_blocks = original_blocks[block]["dests"][:]
             bdests = []
@@ -219,16 +221,26 @@ def process(oid, opts):
         for block in blocks:
             dests = blocks[block]["dest_blocks"][:]
             for dest in dests:
+                break_time = False
+                #check other blocks
                 for o_block in blocks:
-                    if blocks[o_block]["offset"] == dest and o_block in funs:
+                    if blocks[o_block]["offset"] == dest:
                         blocks[block]["label"] += f"CALLS {funs[o_block]['name']}"
-                        blocks[block]["dest_blocks"].remove(o_block)
-                    elif blocks[o_block]["offset"] == dest:
-                        for f in funs:
-                            if o_block in funs[f]["blocks"]:
-                                blocks[block]["label"] += f"CALLS {funs[f]['name']}"
-                                blocks[block]["dest_blocks"].remove(o_block)
-                                break
+                        blocks[block]["dest_blocks"].remove(dest)
+                        break_time = True
+                        break
+                if break_time:
+                    break
+                for fun in funs:
+                    fun_blocks = funs[fun]["blocks"]
+                    if dest in fun_blocks:
+                        blocks[block]["label"] += f"CALLS {funs[dest]['name']}"
+                        blocks[block]["dest_blocks"].remove(dest)
+                        break_time = True
+                        break
+                if break_time:
+                    break
+                #if we still can't resolve, we can set the destination 
         #set the last block to be the destinations
         i-=1
         if i >0:
@@ -354,7 +366,7 @@ def process(oid, opts):
     #         os.remove(f_fname)
     #     except:
     #         pass
-    while not api.store(NAME,oid,results,opts):
-        sleep(1)
-        logger.info(f"trying to store to api")
+    # while not api.store(NAME,oid,results,opts):
+    #     sleep(1)
+    #     logger.info(f"trying to store to api")
     return results
