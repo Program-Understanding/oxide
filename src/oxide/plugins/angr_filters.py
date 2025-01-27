@@ -30,6 +30,8 @@ def sample_by_time(args, opts):
     """
     Use this to filter a number of results from the angr function based upon which had
     high times. pass --n for number of OIDs, and --t for minimum time threshold.
+    The results are the oids with their path and the names of functions which go over
+    the threshold
 
     Usage: run angr_function_time &<collection> | sample_by_time --n=<int> --t=<int> | show
     """
@@ -49,19 +51,19 @@ def sample_by_time(args, opts):
 
     for oid in results_dict:
         f_dict = results_dict[oid]
-        print(f_dict)
         # f_dict[g_d[fun]["name"]]["angr seconds"] = f"{ftime} seconds"
         for fun in f_dict:
             angr_seconds = float(f_dict[fun]["angr seconds"].split(" ")[0])
             if angr_seconds >= t:
                 if not oid in results:
-                    results[oid] = []
-                results[oid].append(fun)
+                    results[oid] = {f"functions >= {t}": []}
+                results[oid][f"functions >= {t}"].append(fun)
         if oid in results:
             n-=1
             if n <= 0:
                 break
-
+    for oid in results:
+        results[oid]["path"] = api.get_field("original_path",oid,oid)
     return results
 
 exports = [count_all,sample_by_time]
