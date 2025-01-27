@@ -173,8 +173,6 @@ def process(oid, opts):
         blocks = {}
         i = 0
         for block in funs[fun]["blocks"]:
-            if block == 5040:
-                pass
             label = ""
             dest_blocks = original_blocks[block]["dests"][:]
             bdests = []
