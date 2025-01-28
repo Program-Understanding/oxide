@@ -112,8 +112,8 @@ def process(oid, opts):
     return True
 
 def address_value(value):
-    address_pattern = r'0x[0-9a-fA-F]{3,}'
+    address_pattern = r'0x[0-9a-fA-F]{4,}'
     match = re.search(address_pattern, value)
     if match:
-        return True, len(match.group(0))  # Return True and the length of the matched value
+        return True, len(match.group())  # Return True and the length of the matched value
     return False, 0  # Return False and a length of 0 if no match

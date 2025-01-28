@@ -36,7 +36,7 @@ from ghidra_arch_lookup import ghidra_arch_lookup
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"archs": {"type": str, "mangle": True, "default": "none"}}
+opts_doc = {"arch_family": {"type": str, "mangle": True, "default": "none"}}
 
 
 def documentation() -> Dict[str, Any]:
@@ -56,7 +56,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     """
     logger.debug("process()")
 
-    archs = opts.get("archs", [])
+    arch_family = opts.get("arch_family", None)
 
     oid_list = api.expand_oids(oid_list)
     results = {}
@@ -83,27 +83,24 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         except:
             disasm["FAIL"].append("DEFAULT")
 
-        # Check FILE ARCHs
-        for arch_guess in archs:
-            arch_guess = arch_guess.upper()
-            if arch_guess in ghidra_arch_lookup:
-                ghidra_archs = list(ghidra_arch_lookup[arch_guess].keys())
-
-                for ga in ghidra_archs:
-                    if ga not in proccessor_attempts:
-                        try:
-                            disasm_result = api.retrieve('ghidra_disasm', oid, {"processor": ga})
-                            if disasm_result is None or disasm_result["original_blocks"] == {}:
-                                disasm["FAIL"].append(ga)
-                            else:
-                                disasm["PASS"][ga] = {
-                                    "FEATURES": api.get_field("tiknib_features", oid, oid, {"processor": ga}),
-                                    "SOURCE": arch_guess
-                                    }
-                                disasm["RESULT"] = "PASS"
-                        except:
+        if arch_family in ghidra_arch_lookup:
+            ghidra_archs = list(ghidra_arch_lookup[arch_family].keys())
+            for ga in ghidra_archs:
+                print(f"ATTEMPT: {ga}")
+                if ga not in proccessor_attempts:
+                    try:
+                        disasm_result = api.retrieve('ghidra_disasm', oid, {"processor": ga})
+                        if disasm_result is None or disasm_result["original_blocks"] == {}:
                             disasm["FAIL"].append(ga)
+                        else:
+                            disasm["PASS"][ga] = {
+                                "FEATURES": api.get_field("tiknib_features", oid, oid, {"processor": ga}),
+                                "SOURCE": arch_family
+                                }
+                            disasm["RESULT"] = "PASS"
+                    except:
+                        disasm["FAIL"].append(ga)
 
-                        proccessor_attempts.append(ga)
+                    proccessor_attempts.append(ga)
         results[oid] = disasm
     return results
