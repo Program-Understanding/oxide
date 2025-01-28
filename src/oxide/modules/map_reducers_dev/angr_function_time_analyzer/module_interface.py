@@ -7,7 +7,7 @@ import logging
 import statistics
 from time import sleep
 import numpy
-from output_assistant import output_data
+from output_assistant import output_data, analyze_dataframe
 
 logger = logging.getLogger(NAME)
 opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
@@ -15,7 +15,8 @@ opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"ti
             "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"},
             "filter":{"type":bool,"mangle":False,"default":True,"Description":"Get rid of some of the less useful fields in the output"},
             "data-path":{"type":str,"mangle":False,"default":"","Description":"Path toa directory to output a csv file and some graphs to"},
-            "allow-missing-ret":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results that don't have a ret instruction"}}
+            "allow-missing-ret":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results that don't have a ret instruction"},
+            "allow-low-memory":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results which ran into memory issues within angr"}}
 
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
@@ -75,10 +76,16 @@ def mapper(oid, opts, jobid=False):
     results={}
     results["time_result"] = api.retrieve("angr_function_time",oid,opts)
     if results["time_result"] is None:
+        logger.error(f"couldn't get time result for {oid}")
         return False
+    for fun in results["time_result"]:
+        if results["time_result"][fun]["summary"]["complexity_desc"] is None:
+            logger.error(f"complexity description for {fun} in {oid} is none")
+            return False
     results["opcode_by_func"] = api.retrieve("opcodes",oid,{"by_func":True})
     results["path_complexity"] = api.retrieve("path_complexity",oid,opts)
-    if results["opcode_by_func"] is None:
+    if results["opcode_by_func"] is None or results["path_complexity"] is None:
+        logger.error(f"couldn't get either path complexity or opcode by func for {oid}")
         return False
     while not api.store(NAME,oid,results,opts):
         sleep(1)
@@ -91,18 +98,24 @@ def reducer(intermediate_output, opts, jobid):
     functions_w_angr_errors = 0
     oids_w_angr_errors = 0
     functions_w_no_ret = 0
+    functions_w_none_complexity = 0
+    total_functions = 0
+    functions_analyzed = 0
+    functions_w_memory_issues = 0
     if opts["data-path"]:
         import pandas as pd
         df_time = []
         df_bin = []
-        df_complexity = []
+        df_cyclo_complexity_level = []
+        df_cyclo_complexity_int = []
         df_instructions = []
         df_imm = []
         df_mem = []
         df_reg = []
         df_index = []
         df_opcodes = []
-        df_degree = []
+        df_O = []
+        df_O_degree = []
         all_opcodes = set()
     for complexity in ["simple", "moderate", "needs refactor", "complex"]:
         complexity_vs_time[complexity] = {"times":[],
@@ -115,7 +128,7 @@ def reducer(intermediate_output, opts, jobid):
                                           "interesting":{}}
 
     #binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
-    binkeys = [round(i,1) for i in numpy.logspace(numpy.log10(0.1),numpy.log10(600),num=opts["bins"]-1)]
+    binkeys = [round(i,1) for i in numpy.logspace(numpy.log10(0.3),numpy.log10(600),num=opts["bins"]-1)]
     binkeys[-1] = opts["timeout"]
     for i in range(len(binkeys)):
         bn = binkeys[i]
@@ -149,44 +162,41 @@ def reducer(intermediate_output, opts, jobid):
                                            },
                                            "num instructions": []
                                            }
-    bins_w_time["low memory"] = {"opcodes": {},
-                                           "operands": {
-                                               "imm":[],
-                                               "mem":[],
-                                               "reg":[]},
-                                           "complexity": {
-                                               "simple": 0,
-                                               "moderate": 0,
-                                               "needs refactor": 0,
-                                               "complex": 0
-                                           },
-                                           "num instructions": []
-                                           }
+    if opts["allow-low-memory"]:
+        bins_w_time["low memory"] = {"opcodes": {},
+                                     "operands": {
+                                         "imm":[],
+                                         "mem":[],
+                                         "reg":[]},
+                                     "complexity": {
+                                         "simple": 0,
+                                         "moderate": 0,
+                                         "needs refactor": 0,
+                                         "complex": 0
+                                     },
+                                     "num instructions": []
+                                     }
     for oid in intermediate_output:
         if oid:
             time_result = api.get_field(NAME,oid,"time_result",opts)
             opcode_by_func = api.get_field(NAME,oid,"opcode_by_func",opts)
-            degrees = api.get_field(NAME,oid,"path_complexity",opts)
+            complexitys = api.get_field(NAME,oid,"path_complexity",opts)
             if time_result is None or opcode_by_func is None:
                 logger.warning(f"None result for {oid}")
                 oids_w_angr_errors += 1
                 continue
             for fun in time_result:
+                total_functions += 1
                 f_dict = time_result[fun]
                 if "error" in f_dict["angr seconds"]:
                     functions_w_angr_errors += 1
-                    logger.info(f"Function has error in angr seconds and degree {degrees[fun]['degree']}")
+                    logger.info(f"Function has error in angr seconds and complexity {complexitys[fun]['O']}")
                     continue
-                time = float(f_dict["angr seconds"].split(" ")[0])                
-                f_bin = find_bin_key(binkeys,time,opts["timeout"])
-                if "stopped early for" in f_dict and f_dict["stopped early for"] != "timed out":
-                    functions_w_angr_errors += 1
-                    f_bin = "low memory"
-                complexity_level = f_dict["summary"]["complexity_desc"]
-                complexity_vs_time[complexity_level]["times"].append(time)
-                bins_w_time[f_bin]["complexity"][complexity_level] += 1
-                if fun not in opcode_by_func:
-                    logger.error(f"Need to delete {oid} from local store")
+                if f_dict["summary"]["complexity_desc"] is None:
+                    logger.error(f"complexity desc is none for {oid} function {fun}")
+                    functions_w_none_complexity += 1
+                    continue
+                #need to assess whether we have a ret in the function or if we should skip it
                 opcodes = opcode_by_func[fun]
                 #count the occurrence of opcodes
                 mncs = {}
@@ -198,6 +208,35 @@ def reducer(intermediate_output, opts, jobid):
                         mncs[opcode] += 1
                 fun_opcodes = {}
                 for opcode in mncs:
+                    if opcode in fun_opcodes:
+                        fun_opcodes[opcode] += 1
+                    else:
+                        fun_opcodes[opcode] = 1
+                #after we've tracked the opcodes of this function, we can check
+                #if it has a ret or not
+                if not "ret" in fun_opcodes:
+                    functions_w_no_ret += 1
+                    if not opts["allow-missing-ret"]:
+                        continue
+                #add the unique opcodes to our list of all opcodes
+                if opts["data-path"]:
+                    for opcode in mncs:
+                        all_opcodes.add(opcode)
+                time = float(f_dict["angr seconds"].split(" ")[0])
+                f_bin = find_bin_key(binkeys,time,opts["timeout"])
+                if "stopped early for" in f_dict and f_dict["stopped early for"] != "timed out":
+                    functions_w_memory_issues += 1
+                    if not opts["allow-low-memory"]:
+                        continue
+                    f_bin = "low memory"
+                complexity_level = f_dict["summary"]["complexity_desc"]
+                cyclomatic_complexity = f_dict["summary"]["complexity"]
+                complexity_vs_time[complexity_level]["times"].append(time)
+                bins_w_time[f_bin]["complexity"][complexity_level] += 1
+                if fun not in opcode_by_func:
+                    logger.error(f"Need to delete {oid} from local store")
+
+                for opcode in mncs:
                     if not opcode in complexity_vs_time[complexity_level]["opcodes"]:
                         complexity_vs_time[complexity_level]["opcodes"][opcode] = [mncs[opcode]]
                     else:
@@ -206,16 +245,6 @@ def reducer(intermediate_output, opts, jobid):
                         bins_w_time[f_bin]["opcodes"][opcode] = [mncs[opcode]]
                     else:
                         bins_w_time[f_bin]["opcodes"][opcode].append(mncs[opcode])
-                    if opcode in fun_opcodes:
-                        fun_opcodes[opcode] += 1
-                    else:
-                        fun_opcodes[opcode] = 1
-                    if opts["data-path"]:
-                        all_opcodes.add(opcode)
-                if not "ret" in fun_opcodes:
-                    functions_w_no_ret += 1
-                    if not opts["allow-missing-ret"]:
-                        continue
                 if time > 5:
                     complexity_vs_time[complexity_level]["interesting"][fun] = {"instructions": f_dict["instructions"],
                                                                                 "seconds": time,
@@ -225,19 +254,25 @@ def reducer(intermediate_output, opts, jobid):
                 if opts["data-path"]:
                     df_time.append(time)
                     df_bin.append(f_bin)
-                    df_complexity.append(complexity_level)
+                    df_cyclo_complexity_level.append(complexity_level)
+                    df_cyclo_complexity_int.append(cyclomatic_complexity)
                     df_instructions.append(num_insns)
                     df_opcodes.append(fun_opcodes)
-                    try:
-                        if type(degrees[fun]["degree"]) is bool:
-                            df_degree.append("False")
-                        elif degrees[fun]["degree"] is None:
-                            df_degree.append("None")
-                        else:
-                            df_degree.append(degrees[fun]["degree"])
-                    except KeyError as e:
-                        logger.error(f"Key error {e} with cached results from path complexity for oid {oid}")
-                        return False
+                    big_o = complexitys[fun]["O"]
+                    if "n**" in big_o:
+                        big_o_degree = int(big_o[5:].strip(")"))
+                        big_o = "O(n**x)"
+                    elif "O(0" in big_o:
+                        big_o = "Error"
+                        big_o_degree = None
+                    elif "O(1" in big_o:
+                        big_o_degree = 0
+                    elif "O(n)" in big_o:
+                        big_o_degree = 1
+                    else:
+                        big_o_degree = None
+                    df_O.append(big_o)
+                    df_O_degree.append(big_o_degree)
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
                 bins_w_time[f_bin]["num instructions"].append(num_insns)
                 operands = f_dict["summary"]["operands"]
@@ -254,6 +289,7 @@ def reducer(intermediate_output, opts, jobid):
                                 df_reg.append(operands[op_type])
                 if opts["data-path"]:
                     df_index.append(f"{oid}{fun}")
+                functions_analyzed+=1
     #eliminate empty bins
     for bn in bins_w_time:
         if not bins_w_time[bn]["opcodes"] and not bins_w_time[bn]["num instructions"]:
@@ -283,12 +319,15 @@ def reducer(intermediate_output, opts, jobid):
     if opts["data-path"]:
         data_dict = {"time":df_time,
                      "bin":df_bin,
-                     "complexity":df_complexity,
+                     "cyclomatic complexity": df_cyclo_complexity_int,
+                     "cyclomatic complexity level":df_cyclo_complexity_level,
+                     "Big O": df_O,
+                     "Big O degree": df_O_degree,
                      "instructions":df_instructions,
                      "imms":df_imm,
                      "mems":df_mem,
-                     "regs":df_reg,
-                     "degree": df_degree}
+                     "regs":df_reg
+                     }
         opcode_mapper(all_opcodes,df_opcodes,data_dict)
         dataframe = pd.DataFrame(data_dict,
                                  index=df_index)
@@ -298,6 +337,8 @@ def reducer(intermediate_output, opts, jobid):
             logger.error(f"Unable to save data to {outpath}!")
         else:
             logger.info(f"Data saved to {outpath} directory")
+            analyze_dataframe(outpath,dataframe,list(all_opcodes))
+            logger.info(f"Analysis saved to {outpath} directory")
     if opts["filter"]:
         filtered_bins_w_time = {}
         for bn in bins_w_time:
@@ -329,16 +370,16 @@ def reducer(intermediate_output, opts, jobid):
                 filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
                                                            "times": complexity_vs_time[complexity]["times"]}
         if opts["data-path"]:
-            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe}
+            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed":functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}
         else:
-            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret}
+            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}
     else:
         if opts["data-path"]:
             return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
                 "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors,\
                     "functions without ret instruction":functions_w_no_ret,\
-                    "dataframe":dataframe}
+                    "dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}
         else:
             return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
                 "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors,\
-                "functions without ret instruction":functions_w_no_ret}
+                    "functions without ret instruction":functions_w_no_ret, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}

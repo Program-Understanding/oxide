@@ -9,6 +9,7 @@ from core import api
 import sympy
 import numpy
 from stopit import ThreadingTimeout
+import subprocess, sys, os
 
 opts_doc={}
 
@@ -133,13 +134,15 @@ def process(oid, opts):
     the results from the acfg module for the function.
     Results are returned on function by function basis.
     """
-    from time import sleep
     results = {}
+    from time import sleep
+    fun_names = []
+    fun_filenames = []
     #temp code just to keep track of the filename
-    data = api.get_field(api.source(oid), oid, "data", {})
-    f_name = api.get_field("file_meta", oid, "names").pop()
-    f_name = api.tmp_file(f_name, data)
-    logger.debug(f_name)        
+    # data = api.get_field(api.source(oid), oid, "data", {})
+    # f_name = api.get_field("file_meta", oid, "names").pop()
+    # f_name = api.tmp_file(f_name, data)
+    # logger.debug(f_name)        
     #use ghidra to get the adjacency matrix
     original_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
     if not original_blocks:
@@ -149,64 +152,219 @@ def process(oid, opts):
         return False
     for fun in funs:
         fun_name = funs[fun]["name"]
+        fun_names.append(fun_names)
         if fun_name == "_start": continue
-        results[fun_name] = {}
+        results[fun_name] = None
+        #fallback_end_node_candidates = []
         #go through every function to make function-level adjacency graph to
         #calculate the apc
-        fun_blocks = {}
-        for block in original_blocks.keys():
-            if block in funs[fun]['blocks']:
-                fun_blocks[block] = original_blocks[block]
-        n = len(funs[fun]['blocks'])
+        # fun_blocks = {}
+        # for block in original_blocks.keys():
+        #     if block in funs[fun]['blocks']:
+        #         fun_blocks[block] = original_blocks[block]
+        # n = len(funs[fun]['blocks'])
         #if we don't have any basic block members
         #or if we only have 1 basic block
         #we don't want to say for sure
-        if not fun_blocks:
-            results[fun_name] = {"degree": False, "adjacency matrix": None, "solution terms": None}
-            continue
-        adj_matrix = sympy.zeros(n,n)
-        #fill in the adjacency matrix
-        #first identify the function start
-        function_start=fun
-        function_end=fun
-        for block in fun_blocks:
-            for bblock_id, bblock_dict in fun_blocks.items():
-                #obviously we shouldn't see if the basic block calls itself, that's ok
-                if bblock_id == block:
-                    continue
-                #if another basic block in the function calls this one, this one can't be
-                #the first basic block in the function
-                if block in bblock_dict['dests']:
-                    continue
-                function_end=bblock_id
-        #fill in the adj_matrix with the ending block at the end
-        #and the starting block at the origin
-        #to put starting block at origin and fill in the matrix in an order,
-        #we'll partially order the blocks to have function start at the start
-        partially_ordered_blocks = [function_start]
-        for block in fun_blocks:
-            if block == function_end or block == function_start:
-                continue
-            partially_ordered_blocks.append(block)
-        if function_start != function_end:
-            partially_ordered_blocks.append(function_end)
+        # if not fun_blocks:
+        #     results[fun_name] = {"degree": False} #, "adjacency matrix": None, "solution terms": None}
+        #     continue
+        #this'll map out each of the blocks
+        blocks = {}
         i = 0
-        for block in partially_ordered_blocks:
-            j = 0
-            for dblock in partially_ordered_blocks:
-                if dblock in fun_blocks[block]['dests']:
-                    adj_matrix[i,j] = 1
-                j += 1
+        for block in funs[fun]["blocks"]:
+            label = ""
+            dest_blocks = original_blocks[block]["dests"][:]
+            bdests = []
+            if block == fun:
+                label += "START "
+            for b in original_blocks[block]["dests"]:
+                if b in funs and b != fun and b in funs and b in dest_blocks:
+                    label += f"CALLS {funs[b]['name']}"
+                    dest_blocks.remove(b)
+                elif b in funs and b != fun and b in dest_blocks:
+                    #need to find the function name of the block being called
+                    for f in funs:
+                        if b in funs[f]["blocks"]:
+                            label += f"CALLS {funs[f]['name']}"
+                            dest_blocks.remove(b)
+                            break
+            #go through other blocks in the blocks dict, and
+            #check if this block is in their destinations,
+            #then add the index to that blocks destination
+            for j in blocks:
+                if j == i:
+                    continue
+                for dest in blocks[j]["dest_blocks"][:]:
+                    if dest == block:
+                        blocks[j]["dests"].append(i)
+                        blocks[j]["dest_blocks"].remove(dest)
+                if blocks[j]["offset"] in dest_blocks:                        
+                    dest_blocks.remove(blocks[j]["offset"])
+                    bdests.append(j)
+            #make sure that we reference our own block if its in our dests
+            for b in dest_blocks[:]:
+                if b == block:
+                    dest_blocks.remove(b)
+                    bdests.append(i)
+            # #check if this block has any previously used blocks in its destination
+            # if not label and not dest_blocks and not bdests:
+            #     fallback_end_node_candidates.append(i)
+            blocks[i] = {"label": label,
+                         "dest_blocks": dest_blocks,
+                         "dests": bdests,
+                         "offset": block}
             i+=1
-        #last element must be 1 to get determinant
-        adj_matrix[-1,-1] = 1
-        logger.debug(f"function {fun} adj_matrix = {adj_matrix}")
-        results[fun_name]['adjacency matrix'] = adj_matrix
-        with ThreadingTimeout(seconds=10):
-            degree, solution_terms = calc_func_apc(adj_matrix,n)
-        results[fun_name]['degree'] = degree
-        results[fun_name]['solution terms'] = solution_terms
-    while not api.store(NAME,oid,results,opts):
-        sleep(1)
-        logger.info(f"trying to store to api")
+        #comb through again just to double check we got all the dest_blocks cleared out
+        for block in blocks:
+            dests = blocks[block]["dest_blocks"][:]
+            for dest in dests:
+                break_time = False
+                #check other blocks
+                for o_block in blocks:
+                    if blocks[o_block]["offset"] == dest:
+                        blocks[block]["label"] += f"CALLS {funs[o_block]['name']}"
+                        blocks[block]["dest_blocks"].remove(dest)
+                        break_time = True
+                        break
+                if break_time:
+                    break
+                for fun in funs:
+                    fun_blocks = funs[fun]["blocks"]
+                    if dest in fun_blocks:
+                        blocks[block]["label"] += f"CALLS {funs[dest]['name']}"
+                        blocks[block]["dest_blocks"].remove(dest)
+                        break_time = True
+                        break
+                if break_time:
+                    break
+                #if we still can't resolve, we can set the destination 
+        #set the last block to be the destinations
+        i-=1
+        if i >0:
+            blocks[i]["label"] = "EXIT " + blocks[i]["label"]
+        #make sure we handle the case that the cfg look too small or something
+        if len(blocks) < 2:
+            blocks = {0: {"label": "START",
+                          "dests": [1]},
+                      1: {"label": "",
+                          "dests": [2]},
+                      2: {"label": "EXIT",
+                          "dests": []}}
+        simplified_blocks = {}
+        for block in blocks:
+            if "dest_blocks" in blocks[block] and blocks[block]["dest_blocks"] != []:
+                logger.warning(f"Unfinished business with {blocks[block]}, oid {oid}")
+                simplified_blocks[block] = {"label": blocks[block]["label"].strip(),
+                                            "dests": blocks[block]["dests"],
+                                            "dest_blocks": blocks[block]["dest_blocks"]}
+                if "offset" in blocks[block]:
+                    simplified_blocks[block]["offset"] = blocks[block]["offset"]
+                continue
+            simplified_blocks[block] = {"label": blocks[block]["label"].strip(),
+                                        "dests": blocks[block]["dests"]}
+            if "offset" in blocks[block]:
+                simplified_blocks[block]["offset"] = blocks[block]["offset"]
+        #results[fun_name] = simplified_blocks
+
+        # WIP to redefine the end node if i need to
+        # #need to go and check that we don't have an exit that's also a call
+        # if "CALL" in simplified_blocks[list(simplified_blocks.keys())[-1]]["label"]:
+        #     for block in fallback_end_node_candidates:
+        #         block = simplified_blocks[block]["offset"]
+        #         if original_blocks[block]
+        #conver to file
+        digraph = "digraph {\n"
+        for block in simplified_blocks:            
+            digraph += f"{block}"
+            if simplified_blocks[block]["label"] != "":
+                digraph += f' [label="{simplified_blocks[block]["label"]}"]'
+            digraph+=";\n"
+        for block in simplified_blocks:
+            for dest in simplified_blocks[block]["dests"]:
+                digraph+=f"{block} -> {dest};\n"
+        digraph+="}"
+        #need to create the files directory and put all the functions files in, then call apc w/ paths to all cfgs
+        fun_filename = api.scratch_dir + "/"+str(oid)+"_."+fun_name+".dot"
+        fun_filenames.append(fun_filename)
+        with open(fun_filename,"w") as f:
+            f.write(digraph)
+        #finally, call the script to get the apc back
+
+        # adj_matrix = sympy.zeros(n,n)
+        # # #fill in the adjacency matrix
+        # #first identify the function start
+        # function_start=fun
+        # function_end=fun
+        # for block in fun_blocks:
+        #     for bblock_id, bblock_dict in fun_blocks.items():
+        #         #obviously we shouldn't see if the basic block calls itself, that's ok
+        #         if bblock_id == block:
+        #             continue
+        #         #if another basic block in the function calls this one, this one can't be
+        #         #the first basic block in the function
+        #         if block in bblock_dict['dests']:
+        #             continue
+        #         function_end=bblock_id
+        # #fill in the adj_matrix with the ending block at the end
+        # #and the starting block at the origin
+        # #to put starting block at origin and fill in the matrix in an order,
+        # #we'll partially order the blocks to have function start at the start
+        # partially_ordered_blocks = [function_start]
+        # for block in fun_blocks:
+        #     if block == function_end or block == function_start:
+        #         continue
+        #     partially_ordered_blocks.append(block)
+        # if function_start != function_end:
+        #     partially_ordered_blocks.append(function_end)
+        # i = 0
+        # for block in partially_ordered_blocks:
+        #     j = 0
+        #     for dblock in partially_ordered_blocks:
+        #         if dblock in fun_blocks[block]['dests']:
+        #             adj_matrix[i,j] = 1
+        #         j += 1
+        #     i+=1
+        # #last element must be 1 to get determinant
+        # adj_matrix[-1,-1] = 1
+        # logger.debug(f"function {fun} adj_matrix = {adj_matrix}")
+        # results[fun_name]['adjacency matrix'] = adj_matrix
+        # with ThreadingTimeout(seconds=10):
+        #     degree, solution_terms = calc_func_apc(adj_matrix,n)
+        # results[fun_name]['degree'] = degree
+        # results[fun_name]['solution terms'] = solution_terms
+    command = f"python3 src/oxide/modules/extractors_dev/path_complexity/src/binary_run.py"
+    for f_fname in fun_filenames:
+        command += f" {f_fname}"
+    pythonpath = ""
+    for directory in sys.path:
+        pythonpath = pythonpath + directory + ";"
+    env = os.environ.copy()
+    try:
+        subproc_out = subprocess.check_output(command, universal_newlines=True, shell=True, stderr=subprocess.STDOUT,env=env)
+    except subprocess.CalledProcessError as e:
+        print(e.output)
+        outstring = ""
+        for f in fun_filenames:
+            outstring += f'"{f}" '
+        print(outstring.strip())
+        return None
+    subproc_out = subproc_out.split("\n")
+    #we'll trim the junk before the function name off the output
+    trim_len=len(str(oid)+"_.")
+    for line in subproc_out[:-1]:
+        line = line.split("|")
+        fun_name = line[0][trim_len:]
+        if len(line) < 2 or fun_name not in results: continue
+        results[fun_name] = {"O":line[1]}
+            
+    #clean up the created files
+    # for f_fname in fun_filenames:
+    #     try:
+    #         os.remove(f_fname)
+    #     except:
+    #         pass
+    # while not api.store(NAME,oid,results,opts):
+    #     sleep(1)
+    #     logger.info(f"trying to store to api")
     return results

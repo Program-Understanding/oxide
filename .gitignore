@@ -48,3 +48,4 @@ localstore/*
 # pytorch saves
 *.pt
 
+/src/oxide/modules/extractors_dev/path_complexity/src
