@@ -10,6 +10,7 @@ import tlsh
 from tabulate import tabulate
 import csv
 from difflib import  unified_diff, SequenceMatcher
+from collections import defaultdict
 import pandas as pd
 import time
 
@@ -115,23 +116,26 @@ class CollectionComparator:
         self.collection = collection
         self.collection_tags = api.get_tags(self.collection)
         self.collection_oids = set(api.expand_oids(self.collection))
-        self.collection_exec, self.collection_non_exec = self.separate_oids(self.collection_oids)
+        self.collection_exes, self.collection_non_exes = self._separate_oids(self.collection_oids)
+        self.collection_funcs = {}
 
         self.ref_collection = ref_collection
         if self.ref_collection:
             self.ref_collection_tags = api.get_tags(self.ref_collection)
             self.ref_collection_oids = set(api.expand_oids(self.ref_collection))
-            self.ref_collection_exec, self.ref_collection_non_exec = self.separate_oids(self.ref_collection_oids)  
+            self.ref_collection_exes, self.ref_collection_non_exec = self._separate_oids(self.ref_collection_oids)  
+            self.ref_collection_funcs = {}
+            self.all_ref_collection_funcs = self._get_all_functions(self.ref_collection_exes)
         else:       
             self.ref_collection_tags = []
             self.ref_collection_oids = []
-            self.ref_collection_exec = []
+            self.ref_collection_exes = []
             self.ref_collection_non_exec = []
 
         self.match_count = 0
         self.mismatch_count = 0
 
-    def separate_oids(self, oids):
+    def _separate_oids(self, oids):
         executables, non_executables = set(), set()
         for oid in oids:
             tags = api.get_tags(oid) or {}
@@ -141,62 +145,80 @@ class CollectionComparator:
                 non_executables.add(oid)
         return executables, non_executables
 
-    def calculate_stats(self, part, total):
-        if part is not int:
-            return len(part), f"{round((len(part) / len(total)) * 100, 2)}%"
+    def _seperate_funcs(self):
+        self.collection_funcs = separate_uniq_repeated(self.uniq_col_exes)
+        self.ref_collection_funcs = separate_uniq_repeated(self.unmatched_ref_exes)
 
-    def file_matches(self, collection_oids, ref_collection_oids):
-        if collection_oids and ref_collection_oids:
-            matches = list(collection_oids.intersection(ref_collection_oids))
-            return matches, collection_oids.difference(ref_collection_oids), ref_collection_oids.difference(collection_oids)
-        else:
-            return [], collection_oids, ref_collection_oids
+    def _classify_files(self):
+        self.modified_exes = {}
+        self.unmatched_exes = {}
+        self.failed_exes = []
 
+        for oid in self.uniq_col_exes:
+            result, num_matched_funcs = self._match_oid(oid)
 
-    def _get_repeated_functions(self, collection_oids):
-        unique_functions = {}
-        repeated_functions = {}
-        
-        for oid in collection_oids:
-            funcs = api.get_tags(oid).get("FUNC_TLSH")
-            if funcs:
-                for func in funcs:
-                    if func in unique_functions:
-                        repeated_functions[func] = funcs[func]
-                    else:
-                        unique_functions[func] = funcs[func]
-        
-        return repeated_functions
+            if result:
+                if result == "FAILED":
+                    self.failed_exes.append(oid)
+                else:
+                    self.modified_exes[oid] = {
+                        'ref_oid': result, 
+                        'func_matches': num_matched_funcs,
+                        'modified_funcs': {},
+                        'unmatched_funcs': {}
+                        }
+                    self.unmatched_ref_exes.remove(result)
 
-
-    def sort_files(self, collection_oids, reference_col_oids):
-        results = {
-            'UNMATCHED_EXECUTABLES': {},
-            'MODIFIED_EXECUTABLES': {},
-            'FAILED': []
-        }
-
-        ref_col_funcs = self._get_all_functions(reference_col_oids)
-        repeated_col_funcs = self._get_repeated_functions(collection_oids)
-
-        for oid in collection_oids:
-            oid_result, ref_files = self._process_oid(oid,ref_col_funcs, repeated_col_funcs, reference_col_oids)
-
-            if oid_result == "FAILED":
-                results['FAILED'].append(oid)
-            elif len(ref_files) == 1:
-                results['MODIFIED_EXECUTABLES'][oid] = {
-                    'REPORT': oid_result,
-                    'REF_FILE_ID': next(iter(ref_files))
-                }
-            # New File
             else:
-                results['UNMATCHED_EXECUTABLES'][oid] = {
-                    'REPORT': oid_result,
-                    'REF_FILE_ID': None
-                }
+                self.unmatched_exes[oid] = {
+                    'ref_oid': None, 
+                    'func_matches': 0,
+                    'modified_funcs': {},
+                    'unmatched_funcs': {}
+                    }
+        
+    def _handle_unmatched_exes(self):
+        if len(self.unmatched_ref_exes) > len(self.unmatched_exes):
+            oids = list(self.unmatched_exes.keys())
+            most_matches = {}
 
-        return results
+            for oid in oids:
+                count = {}
+                matches = self._find_closest_functions(oid)
+                for match in matches:
+                    ref_file = matches[match]['ref_file']
+                    count[ref_file] = count.get(ref_file, 0) + 1  # Increment count
+
+                if count:
+                    best = max(count, key=count.get)  # Get ref_file with highest count
+                    most_matches[oid] = {
+                        'file': best,
+                        'count': count[best]
+                    }
+
+            # Find the best matching ref_oid
+            best_match = {}
+
+            for ref_oid in self.unmatched_ref_exes:
+                candidates = [(oid, data['count']) for oid, data in most_matches.items() if data['file'] == ref_oid]
+                if candidates:
+                    # Pick the one with the highest count
+                    best_match[ref_oid] = max(candidates, key=lambda x: x[1])[0]
+
+            for match in best_match:
+                self.modified_exes[best_match[match]] = {
+                    'ref_oid': match, 
+                    'func_matches': 0,
+                    'modified_funcs': {},
+                    'unmatched_funcs': {}
+                    }
+
+    def _match_functions(self):
+        oids = list(self.modified_exes.keys())
+        p = progress.Progress(len(oids))
+        for oid in oids:
+            self._pair_modified_functions(oid)
+            p.tick()
 
     def _get_all_functions(self, oids):
         functions = []
@@ -206,176 +228,230 @@ class CollectionComparator:
                 functions += funcs
         return functions
 
-    def _process_oid(self, oid, ref_collection_funcs, repeated_funcs, reference_oids):
-        oid_funcs = api.get_tags(oid).get("FUNC_TLSH")
+    def _match_oid(self, oid):
+        uniq_funcs = self.collection_funcs[oid]['funcs']
+        rep_funcs = self.collection_funcs[oid]['rep_funcs']
 
-        oid_result = {
-            'func_matches': {},
-            'modified_funcs': {},
-            'unmatched_funcs': {}
-        }
-        potential_ref_files = []
-        potential_ref_files_match = {}
-        potential_ref_files_modified = {}
+        if uniq_funcs is None and rep_funcs is None:
+            return "FAILED"
 
-        if oid_funcs is None:
-            return "FAILED", None
+        results = self._get_function_matches(uniq_funcs)
 
-        oid_result, unmatched_funcs, potential_ref_files_match = self._get_function_matches(oid_funcs, ref_collection_funcs, repeated_funcs, reference_oids, oid_result)
-
-        if len(potential_ref_files_match) == 1:
-            ref_file = next(iter(potential_ref_files_match))
-            ref_funcs = api.get_tags(ref_file).get("FUNC_TLSH", {})
-            num_expected_new_funcs = len(oid_funcs) - len(ref_funcs)
-            if num_expected_new_funcs < 0:
-                num_expected_new_funcs = 0
-
-            oid_result = self._find_modified_functions(oid, unmatched_funcs, potential_ref_files_match, oid_result, num_expected_new_funcs)
+        if len(results) == 1:
+            ref_oid = next(iter(results))
+            for match in results[ref_oid]:
+                self.collection_funcs[oid]['funcs'].pop(match)
+                self.ref_collection_funcs[ref_oid]['funcs'].pop(match)
+            return ref_oid, results[ref_oid]
         else:
-            oid_result, potential_ref_files_modified = self._find_closest_functions(oid, unmatched_funcs, reference_oids, oid_result)
+            print(results)
+            input()
+            return None, None
 
-        
-        potential_ref_files = {**potential_ref_files_match, **potential_ref_files_modified}
-
-        return oid_result, potential_ref_files
-
-    def _get_function_matches(self, oid_funcs, ref_funcs, repeated_funcs, reference_oids, oid_result):
-        potential_ref_files = {}
-        unmatched_funcs = {}
+    def _get_function_matches(self, oid_funcs):
+        results = {}
         for func in oid_funcs:
-            if func in repeated_funcs:
-                continue
-            else:
-                if func in ref_funcs:
-                    for ref_oid in reference_oids:
-                        ref_oid_funcs = api.get_tags(ref_oid).get("FUNC_TLSH", [])
-                        if func in ref_oid_funcs:
-                            if ref_oid not in oid_result['func_matches']:
-                                oid_result['func_matches'][ref_oid] = {}
-                            oid_result['func_matches'][ref_oid][func] = {
-                                'func_name': oid_funcs[func],
-                                'ref_func_name': ref_oid_funcs[func]
-                            }
-                            if ref_oid not in potential_ref_files:
-                                potential_ref_files[ref_oid] = 1
-                            else:
-                                potential_ref_files[ref_oid] = 1
-                else:
-                    unmatched_funcs[func] = oid_funcs[func]
-        return oid_result, unmatched_funcs, potential_ref_files
+            for ref_oid in self.unmatched_ref_exes:
+                ref_oid_funcs = self.ref_collection_funcs[ref_oid]['funcs']
+                if func in ref_oid_funcs:
+                    if ref_oid not in results:
+                        results[ref_oid] = {func: oid_funcs[func]}
+                    else:
+                        results[ref_oid][func] = oid_funcs[func]
+        return results
 
-    def _calculate_top_matches(self, func, func_name, ref_oids_to_check):
+    def _find_top_matches_from_oids(self, func, ref_oids):
         """
         Calculate the top 5 matches for a given function across reference OIDs.
+        Supports ref_oids as a single ref_oid or a list of ref_oids.
         """
         matches = []
-        for ref_oid in ref_oids_to_check:
+
+        # Ensure ref_oids is a list for uniform processing
+        if not isinstance(ref_oids, list):
+            ref_oids = [ref_oids]
+
+        # Iterate over each ref_oid
+        for ref_oid in ref_oids:
             ref_funcs = api.get_tags(ref_oid).get("FUNC_TLSH", {})
             for ref_func, ref_func_name in ref_funcs.items():
                 similarity_score = tlsh.diff(func, ref_func)
-                matches.append({'score': similarity_score, 'file': ref_oid, 'func': ref_func_name})
+                matches.append({'score': similarity_score, 'file': ref_oid, 'func': ref_func, 'func_name': ref_func_name})
 
         # Return the top 5 matches sorted by similarity score
         return sorted(matches, key=lambda x: x['score'])[:5]
 
-    def _find_best_function_match(self, file, func, top_matches):
+    def _find_top_matches_from_funcs(self, func, ref_oid, ref_funcs):
+        """
+        Calculate the top 5 matches for a given function across reference OIDs.
+        Supports ref_oids as a single ref_oid or a list of ref_oids.
+        """
+        matches = []
+        for ref_func, ref_func_name in ref_funcs.items():
+            similarity_score = tlsh.diff(func, ref_func)
+            matches.append({'score': similarity_score, 'file': ref_oid, 'func': ref_func, 'func_name': ref_func_name})
+
+        # Return the top 5 matches sorted by similarity score
+        return sorted(matches, key=lambda x: x['score'])[:5]
+
+    def _find_best_function_match(self, file, func, func_name, top_matches):
         """
         Match a function's instructions with its top reference matches using SequenceMatcher.
         """
-        best_score = 0
-        best_match = {}
+        best_match = {
+            'ratio_score': 0,
+            'file': None,
+            'func_name': None,
+            'ref_file': None,
+            'ref_func_name': None
+        }
         for match in top_matches:
             ref_file = match['file']
             ref_func = match['func']
+            ref_func_name = match['func_name']
 
-            func_comparator = FunctionComparator(file, func, ref_file, ref_func)
-            match_score = func_comparator.match_score
+            func_comparator = api.retrieve("function_ratio_score", [file, ref_file], {"function": func_name, "ref_function": ref_func_name})
+            ratio_score = func_comparator['ratio_score']
 
-            if match_score > best_score:
-                best_score = match_score
-                func_comparator._diff_features()
-                best_match = func_comparator.__dict__
+            if ratio_score > best_match['ratio_score']:
+                best_match['ratio_score'] = ratio_score
+                best_match['file'] = file
+                best_match['func'] = func
+                best_match['func_name'] = func_name
+                best_match['ref_file'] = ref_file
+                best_match['ref_func'] = ref_func
+                best_match['ref_func_name'] = ref_func_name
+                # func_comparator._diff_features()
+                # best_match = func_comparator.__dict__
+
+        diff_features = api.retrieve("function_diff_features", [file, ref_file], {"function": func_name, "ref_function": ref_func_name}) 
+        for feature in diff_features:
+            best_match[feature] = diff_features[feature]
 
         return best_match
 
-    def _find_modified_functions(self, file_oid, oid_funcs, ref_oids, oid_result, num_expected_new_funcs):
+    def _pair_modified_functions(self, oid):
+        """
+        Identify modified functions by comparing them with reference functions and 
+        classify them based on their match scores.
+        """
+        paired_funcs = []
+        unpaired_funcs = []
+
+        ref_oid = self.modified_exes[oid]['ref_oid']
+
+        # Retrieve and merge function dictionaries
+        funcs = {**self.collection_funcs[oid]['funcs'], **self.collection_funcs[oid]['rep_funcs']}
+        ref_funcs = {**self.ref_collection_funcs[ref_oid]['funcs'], **self.ref_collection_funcs[ref_oid]['rep_funcs']}
+
+        # Handle Added Function Scenario
+        if len(funcs) > len(ref_funcs):
+            for ref_func, ref_func_name in ref_funcs.items():
+                # Calculate top matches for the function using TLSH
+                top_matches = self._find_top_matches_from_funcs(ref_func, oid, funcs)
+
+                # Find the best match for the function
+                ref_best_match = self._find_best_function_match(ref_oid, ref_func, ref_func_name, top_matches)
+
+                best_match = self._find_best_function_match(ref_best_match['ref_file'], ref_best_match['ref_func'], ref_best_match['ref_func_name'], [{'file': ref_oid, 'func': ref_func, 'func_name': ref_func_name}])
+
+                # Append the match data for sorting later
+                paired_funcs.append((ref_best_match['ref_func_name'], best_match))
+                del funcs[best_match['func']]   
+
+            for func in funcs:
+                unpaired_funcs.append((func, funcs[func]))
+            
+
+        else:
+            for func, func_name in funcs.items():
+                # Calculate top matches for the function using TLSH
+                top_matches = self._find_top_matches_from_funcs(func, ref_oid, ref_funcs)
+
+                # Find the best match for the function
+                best_match = self._find_best_function_match(oid, func, func_name, top_matches)
+
+                # Append the match data for sorting later
+                paired_funcs.append((func_name, best_match))
+
+        # Sort all functions by match score in descending order
+        paired_funcs.sort(key=lambda x: x[1]['ratio_score'], reverse=True)
+
+        # Populate the oid_result with modified and unmatched functions
+        for func_name, best_match in paired_funcs:
+            self.modified_exes[oid]['modified_funcs'][func_name] = best_match
+        for func, func_name in unpaired_funcs:
+            self.modified_exes[oid]['unmatched_funcs'][func] = func_name
+    
+    def _find_closest_functions(self, oid):
         """
         Identify modified functions by comparing them with reference functions and 
         classify them based on their match scores.
         """
         func_matches = []
 
-        for func, func_name in oid_funcs.items():
+        funcs = api.get_tags(oid).get("FUNC_TLSH", {})
+
+        for func, func_name in funcs.items():
             # Calculate top matches for the function using TLSH
-            top_matches = self._calculate_top_matches(func, func_name, ref_oids)
+            top_matches = self._find_top_matches_from_oids(func, self.unmatched_ref_exes)
 
             # Find the best match for the function
-            best_match = self._find_best_function_match(file_oid, func_name, top_matches)
+            best_match = self._find_best_function_match(oid, func_name, top_matches)
 
             # Append the match data for sorting later
             func_matches.append((func_name, best_match))
 
         # Sort all functions by match score in descending order
-        func_matches.sort(key=lambda x: x[1]['match_score'], reverse=True)
+        func_matches.sort(key=lambda x: x[1]['ratio_score'], reverse=True)
 
-        # Classify functions into modified and unmatched based on the threshold
-        modified_funcs = func_matches[:len(func_matches) - num_expected_new_funcs]
-        unmatched_funcs = func_matches[len(func_matches) - num_expected_new_funcs:]
+        return func_matches
 
-        # Populate the oid_result with modified and unmatched functions
-        for func_name, best_match in modified_funcs:
-            oid_result['modified_funcs'][func_name] = best_match
-
-        for func_name, best_match in unmatched_funcs:
-            oid_result['unmatched_funcs'][func_name] = best_match
-
-        return oid_result
-    
-    def _find_closest_functions(self, file_oid, oid_funcs, ref_oids, oid_result):
-        """
-        Identify closest function match by comparing them with reference functions.
-        """
-        reference_files = {}
-        for func, func_name in oid_funcs.items():
-            # Calculate top matches for the function using TLSH
-            top_matches = self._calculate_top_matches(func, func_name, ref_oids)
-
-            # Find the best match using difflib
-            best_match = self._find_best_function_match(file_oid, func_name, top_matches)
-
-            if best_match['ref_file'] in reference_files:
-                reference_files[best_match['ref_file']] += 1
-            else:
-                reference_files[best_match['ref_file']] = 1
-
-            oid_result['unmatched_funcs'][func_name] = best_match
-
-        return oid_result, reference_files
-
-    def generate_file_report(self):
+    def generate_report(self):
         """Generate report data for file matches."""
-        matched_execs, uniq_col_execs, uniq_ref_execs = self.file_matches(self.collection_exec, self.ref_collection_exec)
-        matched_non_execs, uniq_col_non_execs, _ = self.file_matches(self.collection_non_exec, self.ref_collection_non_exec)
-        sorted_files = self.sort_files(uniq_col_execs, uniq_ref_execs)
+        self.matched_exes, self.uniq_col_exes, self.unmatched_ref_exes = file_matches(self.collection_exes, self.ref_collection_exes)
+        self.matched_non_exes, self.uniq_col_non_exes, self.uniq_ref_non_exes = file_matches(self.collection_non_exes, self.ref_collection_non_exec)
+        self._seperate_funcs()
+        self._classify_files()
+        self._handle_unmatched_exes()
+        self._match_functions()
         self.collection_report = {
-            'EXECUTABLE_MATCHES': matched_execs,
-            'NON_EXECUTABLE_MATCHES': matched_non_execs,
-            'MODIFIED_EXECUTABLES': sorted_files['MODIFIED_EXECUTABLES'],
-            'UNMATCHED_EXECUTABLES': sorted_files['UNMATCHED_EXECUTABLES'],
-            'UNMATCHED_NON_EXECUTABLES': uniq_col_non_execs,
-            'FAILED_EXECUTABLES': sorted_files['FAILED']
+            'EXECUTABLE_MATCHES': self.matched_exes,
+            'NON_EXECUTABLE_MATCHES': self.matched_non_exes,
+            'MODIFIED_EXECUTABLES': self.modified_exes,
+            'UNMATCHED_EXECUTABLES': self.unmatched_exes,
+            'UNMATCHED_NON_EXECUTABLES': self.uniq_col_non_exes,
+            'FAILED_EXECUTABLES': self.failed_exes
         }
 
     def calculate_statistics(self):
         """Calculate statistics for each category in the report."""
         return {
-            'MATCHED EXECUTABLES': self.calculate_stats(self.collection_report["EXECUTABLE_MATCHES"], self.collection_oids),
-            'MATCHED NON-EXECUTABLE': self.calculate_stats(self.collection_report['NON_EXECUTABLE_MATCHES'], self.collection_oids),
-            'MODIFIED EXECUTABLES': self.calculate_stats(self.collection_report['MODIFIED_EXECUTABLES'], self.collection_oids),
-            'UNMATCHED EXECUTABLES': self.calculate_stats(self.collection_report['UNMATCHED_EXECUTABLES'], self.collection_oids),
-            'UNMATCHED NON-EXECUTABLES': self.calculate_stats(self.collection_report['UNMATCHED_NON_EXECUTABLES'], self.collection_oids),
-            'FAILED EXECUTABLES': self.calculate_stats(self.collection_report['FAILED_EXECUTABLES'], self.collection_oids)
+            'MATCHED EXECUTABLES': calculate_stats(self.collection_report["EXECUTABLE_MATCHES"], self.collection_oids),
+            'MATCHED NON-EXECUTABLE': calculate_stats(self.collection_report['NON_EXECUTABLE_MATCHES'], self.collection_oids),
+            'MODIFIED EXECUTABLES': calculate_stats(self.collection_report['MODIFIED_EXECUTABLES'], self.collection_oids),
+            'UNMATCHED EXECUTABLES': calculate_stats(self.collection_report['UNMATCHED_EXECUTABLES'], self.collection_oids),
+            'UNMATCHED NON-EXECUTABLES': calculate_stats(self.collection_report['UNMATCHED_NON_EXECUTABLES'], self.collection_oids),
+            'FAILED EXECUTABLES': calculate_stats(self.collection_report['FAILED_EXECUTABLES'], self.collection_oids)
         }
+    
+    def print_statistics(self, stats):
+        title = f"{api.get_colname_from_oid(self.collection)} Compared to {api.get_colname_from_oid(self.ref_collection)}"
+
+        columns = [
+            "Category",
+            f"# of {api.get_colname_from_oid(self.collection)} Files",
+            f"% of {api.get_colname_from_oid(self.collection)} Files",
+        ]
+
+        rows = []
+        for key, (total, percentage) in stats.items():
+            rows.append([key, total, percentage])
+        
+        df = pd.DataFrame(rows, columns=columns)
+        
+        print(title)
+        print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
     def print_matching_results(self):
         # Prepare data structures
@@ -388,10 +464,12 @@ class CollectionComparator:
             'classify_FP': 0,
             'classify_FN': 0,
             'classify_TN': 0,
+            'modified_funcs': 0,
+            'unmatched_funcs': 0
         }
 
         # Iterate over files in the collection report
-        for file_id, data in self.collection_report['MODIFIED_EXECUTABLES'].items():
+        for file_id, report in self.collection_report['MODIFIED_EXECUTABLES'].items():
             file_stats = {
                 'pair_correct': 0,
                 'pair_incorrect': 0,
@@ -399,62 +477,50 @@ class CollectionComparator:
                 'classify_FP': 0,
                 'classify_FN': 0,
                 'classify_TN': 0,
+                'modified_funcs': len(report['modified_funcs']),
+                'unmatched_funcs': len(report['unmatched_funcs'])
             }
-            report = data['REPORT']
-            ref_file_id = data['REF_FILE_ID']
+
+            ref_file_id = report['ref_oid']
 
             # Get sets of function names
             func_names = set(api.get_tags(file_id).get("FUNC_TLSH", {}).values())
             ref_func_names = set(api.get_tags(ref_file_id).get("FUNC_TLSH", {}).values())
-            paired_funcs = func_names & ref_func_names
-            new_funcs = func_names - ref_func_names
-
-            # Process function matches
-            for func_match in report['func_matches'].values():
-                for match in func_match:
-                    file_stats['classify_TP'] += 1
-                    if func_match[match]['func_name'] == func_match[match]['ref_func_name']:
-                        file_stats['pair_correct'] += 1
-                    else:
-                        file_stats['pair_incorrect'] += 1
-
+            print(len(func_names))
+            print(len(ref_func_names))
             # Process modified functions
             for func, func_report in report['modified_funcs'].items():
-                if func in paired_funcs:
+                if func in ref_func_names:
                     file_stats['classify_TP'] += 1
                 else:
+                    print("fp ", func)
                     file_stats['classify_FP'] += 1
 
-                if func == func_report['ref_func']:
+                if func == func_report['ref_func_name']:
                     file_stats['pair_correct'] += 1
                 else:
                     file_stats['pair_incorrect'] += 1
 
             # Process unmatched functions
             for func, func_report in report['unmatched_funcs'].items():
-                if func in new_funcs:
+                if func in func_names and func not in ref_func_names:
                     file_stats['classify_TN'] += 1
                 else:
                     file_stats['classify_FN'] += 1
-
-                if func == func_report['ref_func']:
-                    file_stats['pair_correct'] += 1
-                else:
-                    file_stats['pair_incorrect'] += 1
 
             # Update totals
             for key in total_stats:
                 total_stats[key] += file_stats[key]
 
             # Calculate per-file metrics
-            pair_total = file_stats['pair_correct'] + file_stats['pair_incorrect']
             TP = file_stats['classify_TP']
             FP = file_stats['classify_FP']
             FN = file_stats['classify_FN']
             TN = file_stats['classify_TN']
+            num_modified = TP + FN
+            num_unmatched = FP + TN
             classify_correct = TP + TN
-            classify_incorrect = FP + FN
-            classify_total = classify_correct + classify_incorrect
+            num_funcs = TP + FN + FP + TN
 
             precision = TP / (TP + FP) if (TP + FP) != 0 else 0.0
             recall = TP / (TP + FN) if (TP + FN) != 0 else 0.0
@@ -465,12 +531,12 @@ class CollectionComparator:
             results.append({
                 'file_id': file_id,
                 '# Paired Correctly': file_stats['pair_correct'],
-                '# of Function Pairs': pair_total,
-                '% Paired Correctly': (file_stats['pair_correct'] / pair_total) * 100 if pair_total else 0.0,
-                'Modified Functions': TP + FN,
-                'New Functions': FP + TN,
+                '# of Function Pairs': num_modified,
+                '% Paired Correctly': (file_stats['pair_correct'] / num_modified) * 100 if num_modified else 0.0,
+                'Modified Functions': num_modified,
+                'New Functions': num_unmatched,
                 '# Classified Correctly': classify_correct,
-                '% Classified Correctly': (classify_correct / classify_total) * 100 if classify_total else 0.0,
+                '% Classified Correctly': (classify_correct / num_funcs) * 100 if num_funcs else 0.0,
                 'Precision': precision,
                 'Recall': recall,
                 'Accuracy': accuracy,
@@ -481,11 +547,13 @@ class CollectionComparator:
         file_stats_df = pd.DataFrame(results)
 
         # Compute totals and overall metrics
-        total_pair_total = total_stats['pair_correct'] + total_stats['pair_incorrect']
+
         total_TP = total_stats['classify_TP']
         total_FP = total_stats['classify_FP']
         total_FN = total_stats['classify_FN']
         total_TN = total_stats['classify_TN']
+        total_modified = total_TP + total_FN
+        total_unmatched = total_FP + total_TN
 
         total_classify_correct = total_TP + total_TN
         total_classify_incorrect = total_FP + total_FN
@@ -500,10 +568,10 @@ class CollectionComparator:
         overall_row = pd.DataFrame([{
             'file_id': 'OVERALL',
             '# Paired Correctly': total_stats['pair_correct'],
-            '# of Function Pairs': total_pair_total,
-            '% Paired Correctly': (total_stats['pair_correct'] / total_pair_total) * 100 if total_pair_total else 0.0,
-            'Modified Functions': total_TP + total_FN,
-            'New Functions': total_FP + total_TN,
+            '# of Function Pairs': total_modified,
+            '% Paired Correctly': (total_stats['pair_correct'] / total_modified) * 100 if total_modified else 0.0,
+            'Modified Functions': total_modified,
+            'New Functions': total_unmatched,
             '# Classified Correctly': total_classify_correct,
             '% Classified Correctly': (total_classify_correct / total_classify_total) * 100 if total_classify_total else 0.0,
             'Precision': overall_precision,
@@ -574,11 +642,14 @@ class CollectionComparator:
             print(tabulate(df, headers="keys", tablefmt="psql", showindex=False))
 
     def print_category_w_ref(self, files_report):
-        for file_id, data in files_report.items():
-            ref_file_id = data['REF_FILE_ID']
+        for file_id, report in files_report.items():
+            ref_file_id = report['ref_oid']
             if ref_file_id:
                 self.print_table_match(file_id, ref_file_id)
             
+            
+            report = data['REPORT']
+
             report = data['REPORT']
             # Print func_matches table
             if 'func_matches' in report and len(report['func_matches']) > 0:
@@ -612,15 +683,15 @@ class CollectionComparator:
             basic_blocks       = func_report['basic_blocks']       or 0
             instr_added        = func_report['added_instr']        or 0
             instr_removed      = func_report['removed_instr']      or 0
-            instr_modified     = func_report['modified_isntr']     or 0
+            instr_modified     = func_report['modified_instr']     or 0
             func_calls         = func_report['func_calls']         or 0
 
 
 
             rows.append([
                 func,
-                func_report['ref_func'],
-                func_report['match_score'],
+                func_report['ref_func_name'],
+                func_report['ratio_score'],
                 basic_blocks,
                 instr_added,
                 instr_removed,
@@ -645,25 +716,18 @@ class CollectionComparator:
         print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
     def print_func_matches(self, report):
-        ref_file, func_matches = next(iter(report['func_matches'].items()))
-        for match in func_matches:
-            if func_matches[match]['func_name'] == func_matches[match]['ref_func_name']:
-                self.match_count += 1
-            else:
-                self.mismatch_count += 1
-        print(f"{len(func_matches)} Exact Function Matches")
+        print(f"{len(report['func_matches'])} Exact Function Matches")
 
     def print_unmatched_funcs(self, report):
         num_unmatched = len(report['unmatched_funcs'])
         print(f"{num_unmatched} Unmatched Functions:")
 
-        columns = ["Function", "Closest Match File", "Closest Match Function", "Score"]
+        columns = ["Function"]
         rows = []
         for func, details in report['unmatched_funcs'].items():
-            rows.append([func, details['ref_file'], details['ref_func'], details['match_score']])
+            rows.append([details])
 
         df = pd.DataFrame(rows, columns=columns)
-        df.sort_values(by="Score", ascending=False, inplace=True)
         print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
     def print_table_match(self, file_id, ref_file_id):
@@ -692,16 +756,18 @@ class CollectionComparator:
                     print(line)     
 
 class FunctionComparator:
-    def __init__(self, file, func, ref_file, ref_func):
+    def __init__(self, file, func, func_name, ref_file, ref_func, ref_func_name):
         self.file = file
         self.func = func
-        self.func_insts = self._retrieve_function_instructions(self.file, self.func)
+        self.func_name = func_name
+        self.func_insts = self._retrieve_function_instructions(self.file, self.func_name)
         self.num_func_bb = None
         self.num_func_calls = None
 
         self.ref_file = ref_file
         self.ref_func = ref_func
-        self.ref_func_insts = self._retrieve_function_instructions(self.ref_file, self.ref_func)
+        self.ref_func_name = ref_func_name
+        self.ref_func_insts = self._retrieve_function_instructions(self.ref_file, self.ref_func_name)
         self.num_ref_func_bb = None
         self.num_ref_func_calls = None
 
@@ -729,8 +795,8 @@ class FunctionComparator:
     
     def _diff_features(self):
         # Control Flow
-        self.num_func_bb, self.num_func_calls = self._get_bb(self.file, self.func)
-        self.num_ref_func_bb, self.num_ref_func_calls = self._get_bb(self.ref_file, self.ref_func)
+        self.num_func_bb, self.num_func_calls = self._get_bb(self.file, self.func_name)
+        self.num_ref_func_bb, self.num_ref_func_calls = self._get_bb(self.ref_file, self.ref_func_name)
 
         if self.num_func_bb - self.num_ref_func_bb != 0:
             self.basic_blocks = self.num_func_bb - self.num_ref_func_bb
@@ -945,7 +1011,7 @@ def compare_all_collections(args, opts):
             collection_tags = api.get_tags(collection)
             if not (collection_tags.get("FRAMEWORK_DATA") and collection_tags["FRAMEWORK_DATA"].get(ref_collection)) or force == "COMPARE":
                 analyzer = CollectionComparator(collection, ref_collection)   
-                analyzer.generate_file_report()
+                analyzer.generate_report()
                 if collection_tags.get("FRAMEWORK_DATA"):
                     collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.collection_report
                 else:
@@ -979,7 +1045,7 @@ def compare_collections(args, opts):
         if not collection_tags.get("FRAMEWORK_DATA"):
             collection_tags["FRAMEWORK_DATA"] = {}
         analyzer = CollectionComparator(collection, ref_collection)   
-        analyzer.generate_file_report()
+        analyzer.generate_report()
         collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.collection_report
         api.apply_tags(collection, collection_tags)
         end_time = time.time()
@@ -1187,6 +1253,37 @@ def split_collection(input_string):
         return parts[0], parts[1]
     else:
         return parts[0], None  # Return None if the delimiter is not found
+
+def separate_uniq_repeated(oid_list: dict):
+    # 1) Gather all functions from this list of OIDs
+    func_to_oids = defaultdict(set)
+    for oid in oid_list:
+        funcs = api.get_tags(oid).get("FUNC_TLSH", [])
+        for func in funcs:
+            func_to_oids[func].add(oid)
+
+    # 2) Build a results dict with "unique" / "repeated" per OID
+    results = {}
+    for oid in oid_list:
+        results[oid] = {'funcs': {}, "rep_funcs": {}}
+        funcs = api.get_tags(oid).get("FUNC_TLSH", [])
+        for func in funcs:
+            if len(func_to_oids[func]) == 1:
+                results[oid]['funcs'][func] = funcs[func]
+            else:
+                results[oid]["rep_funcs"][func] = funcs[func]
+    return results
+
+def file_matches(oids, ref_oids):
+    if oids and ref_oids:
+        matches = list(oids.intersection(ref_oids))
+        return matches, oids.difference(ref_oids), ref_oids.difference(oids)
+    else:
+        return [], oids, ref_oids
+
+def calculate_stats(part, total):
+    if part is not int:
+        return len(part), f"{round((len(part) / len(total)) * 100, 2)}%"
 
 def _print_file_tags(oid):
     tags = api.get_tags(oid)
