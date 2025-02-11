@@ -121,6 +121,29 @@ def extract_from_oid(oid: str, opts: dict) -> bool:
 
 #     return occlusion, valid_instructions
 
+@_log_fun_time
+def _compute_occlusion(disasm):
+    """ Identify overlapping instructions but retain the longest valid ones. """
+    occlusion = defaultdict(list)
+    valid_instructions = set()
+    
+    # Step 1: Identify all overlaps
+    for offset, details in disasm.items():
+        for i in range(offset + 1, offset + details["size"]):
+            occlusion[i].append(offset)  # Track potential overlapping instructions
+
+    # Step 2: Retain only the longest instruction per overlapping region
+    covered = set()
+    for offset in sorted(disasm.keys()):
+        if offset in covered:
+            continue  # Skip if another instruction already claimed this byte
+
+        valid_instructions.add(offset)
+        for i in range(offset, offset + disasm[offset]["size"]):
+            covered.add(i)  # Mark all bytes of this instruction as covered
+
+    return occlusion, valid_instructions
+
 
 
 @_log_fun_time
