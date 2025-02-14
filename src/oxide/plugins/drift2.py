@@ -149,41 +149,6 @@ class CollectionComparator:
 
         for oid in self.uniq_col_exes:
             self._match_oid(oid)
-        
-    def _handle_unmatched_exes(self):
-        oids = list(self.unmatched_exes.keys())
-        most_matches = {}
-
-        for oid in oids:
-            count = {}
-            matches = self._find_closest_functions(oid)
-            for match in matches:
-                ref_file = matches[match]['ref_file']
-                count[ref_file] = count.get(ref_file, 0) + 1  # Increment count
-
-            if count:
-                best = max(count, key=count.get)  # Get ref_file with highest count
-                most_matches[oid] = {
-                    'file': best,
-                    'count': count[best]
-                }
-
-        # Find the best matching ref_oid
-        best_match = {}
-
-        for ref_oid in self.unmatched_ref_exes:
-            candidates = [(oid, data['count']) for oid, data in most_matches.items() if data['file'] == ref_oid]
-            if candidates:
-                # Pick the one with the highest count
-                best_match[ref_oid] = max(candidates, key=lambda x: x[1])[0]
-
-        for match in best_match:
-            self.modified_exes[best_match[match]] = {
-                'ref_oid': match, 
-                'matched_funcs': 0,
-                'modified_funcs': {},
-                'unmatched_funcs': {}
-                }
 
     def _match_functions(self):
         oids = list(self.modified_exes.keys())
@@ -260,61 +225,6 @@ class CollectionComparator:
         # Return the top 5 matches sorted by similarity score
         return sorted(matches, key=lambda x: x['score'])[:5]
 
-    def _find_top_matches_from_funcs(self, func, ref_oid, ref_funcs):
-        """
-        Calculate the top 5 matches for a given function across reference OIDs.
-        Supports ref_oids as a single ref_oid or a list of ref_oids.
-        """
-        matches = []
-        for ref_func_addr, ref_func in ref_funcs.items():
-            ref_func_hash = ref_func['tlsh hash']
-            ref_func_name = ref_func['name']
-            similarity_score = tlsh.diff(func['tlsh hash'], ref_func_hash)
-            matches.append({'score': similarity_score, 'file': ref_oid, 'func': ref_func_addr, 'func_name': ref_func_name})
-
-        # Return the top 5 matches sorted by similarity score
-        return sorted(matches, key=lambda x: x['score'])[:5]
-
-    def _find_best_function_match(self, file, func_addr, func, top_matches):
-        """
-        Match a function's instructions with its top reference matches using SequenceMatcher.
-        """
-        best_match = {
-            'ged': None,
-            'file': None,
-            'func_name': None,
-            'ref_file': None,
-            'ref_func_name': None
-        }
-        for match in top_matches:
-            ref_file = match['file']
-            ref_func_addr = match['func']
-            ref_func_name = match['func_name']
-
-            # func_comparator = api.retrieve("function_ratio_score", [file, ref_file], {"function": func_addr, "ref_function": ref_func_addr})
-            # ratio_score = func_comparator['ratio_score']
-            ged = api.retrieve("cfg_ged", [file, ref_file])
-            print(ged)
-            input()
-
-            if ged and ged < best_match['ged'] or best_match['ged'] is None:
-                best_match['ged'] = ged
-                best_match['file'] = file
-                best_match['func'] = func_addr
-                best_match['func_name'] = func['name']
-                best_match['ref_file'] = ref_file
-                best_match['ref_func'] = ref_func_addr
-                best_match['ref_func_name'] = ref_func_name
-        
-        if best_match['ged'] is not None:
-            diff_features = api.retrieve("function_diff_features", [best_match['file'], best_match['ref_file']], {"function": best_match['func_name'], "ref_function": best_match['ref_func_name']}) 
-            for feature in diff_features:
-                best_match[feature] = diff_features[feature]
-
-            return best_match
-        else:
-            return None
-
     def _pair_modified_functions(self, oid):
         """
         Identify modified functions by comparing them with reference functions and 
@@ -332,28 +242,6 @@ class CollectionComparator:
             diff_features = api.retrieve("function_diff_features", [oid, ref_oid], {"functionA": func['func_name'], "functionB": func['ref_func_name']})
             for feature, value in diff_features.items():
                 self.modified_exes[oid]['modified_funcs'][func_addr][feature] = value
-    
-    def _find_closest_functions(self, oid):
-        """
-        Identify modified functions by comparing them with reference functions and 
-        classify them based on their match scores.
-        """
-        func_matches = {}
-
-        funcs = self.collection_funcs[oid]['funcs']
-
-        for func, func_name in funcs.items():
-            # Calculate top matches for the function using TLSH
-            top_matches = self._find_top_matches_from_oids(func, self.unmatched_ref_exes)
-
-            # Find the best match for the function
-            best_match = self._find_best_function_match(oid, func, func_name, top_matches)
-
-            if best_match:
-                # Append the match data for sorting later
-                func_matches[func_name] = best_match
-
-        return func_matches
 
     def generate_report(self):
         """Generate report data for file matches."""
@@ -361,7 +249,6 @@ class CollectionComparator:
         self.matched_non_exes, self.uniq_col_non_exes, self.uniq_ref_non_exes = file_matches(self.collection_non_exes, self.ref_collection_non_exec)
         self._seperate_funcs()
         self._classify_files()
-        # self._handle_unmatched_exes()
         self._match_functions()
         self.collection_report = {
             'EXECUTABLE_MATCHES': self.matched_exes,
