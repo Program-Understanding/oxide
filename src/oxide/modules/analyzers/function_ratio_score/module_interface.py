@@ -28,6 +28,7 @@ NAME = "function_ratio_score"
 # imports
 import logging
 from difflib import SequenceMatcher, unified_diff
+import strsim_py
 from typing import Dict, Any, List
 
 from oxide.core import api
@@ -74,7 +75,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     results = {
         'ratio_score': ratio_score,
     }
-
     api.store(NAME, oid, results, opts)
 
     return results
@@ -85,6 +85,6 @@ def retrieve_function_instructions(file, func):
     """
     function_data = api.retrieve('function_tlsh', file, {'replace_addrs': True})
     for func_id, details in function_data.items():
-        if details.get('name') == func:
+        if details.get('vaddr') == func:
             return details.get('modified_fun_instructions', None)
     return None

@@ -949,16 +949,6 @@ def tag_disasm(oid, force, tags):
             tags['DISASM'] = 'PASS'
     return tags    
 
-def split_collection(input_string):
-    # Split the string at the occurrence of "---"
-    parts = input_string.split('---', maxsplit=1)
-    
-    # Check if the delimiter was found and return both parts
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    else:
-        return parts[0], None  # Return None if the delimiter is not found
-
 def _print_file_tags(oid):
     tags = api.get_tags(oid)
     if tags and len(tags) > 1:
