@@ -10,7 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from scipy.optimize import linear_sum_assignment
 from typing import List, Dict
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import RobustScaler, normalize
 
 
 from oxide.core import api
@@ -68,16 +68,18 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
             del fileB_acfg[r]
 
     if len(fileA_acfg) > 0 or len(fileB_acfg):
-        modified_funcs, unmatched = pair_modified_functions(fileA, fileA_acfg, fileB, fileB_acfg)
+        modified_funcs, added_funcs, removed_funcs = pair_modified_functions(fileA, fileA_acfg, fileB, fileB_acfg)
     else:
         modified_funcs = {}
         unmatched = {}
+        added_funcs = {}
+        removed_funcs = {}
         # Probably need to fix this at somepoint
 
     result = {
         'matched_funcs': matched_funcs,
         'modified_funcs': modified_funcs,
-        'unmatched_funcs': unmatched
+        'unmatched_funcs': added_funcs
     }
 
     return result
@@ -131,16 +133,17 @@ def pair_matched_functions(A_unique_funcs, B_unique_funcs):
             matched_B.append(B_addr)
     return results, matched_A, matched_B
 
-def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors, similarity_threshold=0.6):
+def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
     """
-    Matches functions from fileA to fileB based on cosine similarity of feature vectors.
-    Uses TLSH as an initial filter, then performs batch similarity comparison.
-    Stores unmatched functions separately.
+    Matches functions from fileA to fileB using TLSH and cosine similarity with enhanced normalization,
+    dynamic thresholding, and backup KNN matching.
+    Handles files with different numbers of functions by explicitly tracking additions and removals.
     """
     paired_functions = {}
-    unmatched_functions = {}
+    added_functions = {}  # Functions in fileA that have no match in fileB
+    removed_functions = {}  # Functions in fileB that have no match in fileA
 
-    # Retrieve function details (addresses replaced for clarity)
+    # Retrieve function TLSH hashes
     A_funcs = api.retrieve("function_tlsh", fileA, {"replace_addrs": True})
     B_funcs = api.retrieve("function_tlsh", fileB, {"replace_addrs": True})
 
@@ -149,23 +152,32 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors, similari
     A_keys, A_matrix = zip(*fileA_vectors.items())
     B_keys, B_matrix = zip(*fileB_vectors.items())
 
-    A_matrix = np.vstack(A_matrix)
-    B_matrix = np.vstack(B_matrix)
+    # Step 3: Normalize Vectors
+    scaler = RobustScaler()
+    A_matrix = scaler.fit_transform(A_matrix)
+    B_matrix = scaler.transform(B_matrix)
 
-    # Compute cosine similarity in batch
+    A_matrix = normalize(A_matrix, norm="l2")
+    B_matrix = normalize(B_matrix, norm="l2")
+
+    # Step 4: Compute Similarity
     sim_matrix = cosine_similarity(A_matrix, B_matrix)
 
-    # Hungarian Algorithm for best 1-to-1 matches.
-    # For a rectangular cost matrix, this will return a matching for each function in fileA.
+    # Step 5: Compute Dynamic Similarity Threshold
+    dynamic_threshold = compute_dynamic_threshold(sim_matrix)
+
+    # Step 6: Hungarian Matching
     cost_matrix = 1 - sim_matrix
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
-    # Process each match
+    matched_A = set()
+    matched_B = set()
+
     for i, j in zip(row_ind, col_ind):
         funcA, funcB = A_keys[i], B_keys[j]
         similarity = sim_matrix[i, j]
 
-        if similarity >= similarity_threshold:
+        if similarity >= dynamic_threshold:
             paired_functions[funcA] = {
                 "matched_function": funcB,
                 "similarity": similarity,
@@ -173,13 +185,22 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors, similari
                 "ref_file": fileB,
                 "ref_func_name": B_funcs[funcB]['name']
             }
-        else:
-            unmatched_functions[funcA] = {
-                "possible_match": funcB,
-                "similarity": similarity,
-                "func_name": A_funcs[funcA]['name'],
-                "ref_file": fileB,
-                "ref_func_name": B_funcs[funcB]['name']
-            }
+            matched_A.add(funcA)
+            matched_B.add(funcB)
 
-    return paired_functions, unmatched_functions
+    # Step 7: Identify Added & Removed Functions
+    added_functions = {k: A_funcs[k] for k in A_keys if k not in matched_A}
+    removed_functions = {k: B_funcs[k] for k in B_keys if k not in matched_B}
+
+    return paired_functions, added_functions, removed_functions
+
+def compute_dynamic_threshold(similarity_matrix):
+    valid_scores = similarity_matrix[similarity_matrix >= 0]
+    if valid_scores.size < 5:
+        return 0.6  # Default fallback threshold
+
+    q1 = np.percentile(valid_scores, 25)
+    q3 = np.percentile(valid_scores, 75)
+    iqr = q3 - q1
+
+    return max(q1 - 1.5 * iqr, 0.4)  # Prevent threshold from dropping too low

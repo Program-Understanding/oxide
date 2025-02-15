@@ -9,10 +9,19 @@ import shutil
 import tlsh
 from tabulate import tabulate
 import csv
-from difflib import  unified_diff, SequenceMatcher
 from collections import defaultdict
 import pandas as pd
 import time
+from scipy.optimize import linear_sum_assignment
+import numpy as np
+
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics.pairwise import cosine_similarity
+from scipy.optimize import linear_sum_assignment
+from sklearn.preprocessing import StandardScaler, normalize
+from sklearn.preprocessing import PowerTransformer, StandardScaler, normalize, RobustScaler
+
 
 from oxide.core import progress, api
 
@@ -142,13 +151,155 @@ class CollectionComparator:
         self.collection_funcs = separate_uniq_repeated(self.uniq_col_exes)
         self.ref_collection_funcs = separate_uniq_repeated(self.unmatched_ref_exes)
 
+    # def _classify_files(self):
+    #     """Pairs `oid` files with the best `ref_oid` files based on similarity scores, handling different list sizes."""
+        
+    #     self.modified_exes = {}
+    #     self.unmatched_oids = set(self.uniq_col_exes)
+    #     self.unmatched_ref_oids = set(self.unmatched_ref_exes)
+    #     self.failed_exes = []
+
+    #     oid_list = list(self.uniq_col_exes)
+    #     ref_oid_list = list(self.unmatched_ref_exes)
+    #     len_A, len_B = len(oid_list), len(ref_oid_list)
+
+    #     # Step 1: Retrieve feature vectors for all files
+    #     file_vectors = {}
+
+    #     for oid in oid_list + ref_oid_list:
+    #         vector = api.retrieve("file_vector", oid)
+    #         if vector is None:
+    #             self.failed_exes.append(oid)
+    #             continue
+    #         file_vectors[oid] = np.array(vector)
+
+    #     if not file_vectors:
+    #         return
+
+    #     # Ensure all vectors have the same length
+    #     max_length = max(len(v) for v in file_vectors.values())
+    #     for k in file_vectors.keys():
+    #         file_vectors[k] = np.pad(file_vectors[k], (0, max_length - len(file_vectors[k])), 'constant')
+
+    #     # Create feature matrix in a well-defined order
+    #     ordered_keys = oid_list + ref_oid_list
+    #     feature_matrix = np.array([file_vectors[k] for k in ordered_keys])
+
+    #     # Step 2: Normalize All Feature Vectors Together
+    #     scaler = RobustScaler()
+    #     scaled_matrix = scaler.fit_transform(feature_matrix)
+    #     normalized_matrix = normalize(scaled_matrix, norm='l2')
+
+    #     # Step 3: Compute Pairwise Similarity
+    #     full_similarity = cosine_similarity(normalized_matrix)
+    #     similarity_matrix = full_similarity[:len_A, len_A:]
+
+    #     if similarity_matrix.size == 0:
+    #         return
+
+    #     # Step 4: Compute Adaptive Outlier-Based Threshold
+    #     outlier_threshold = self.compute_outlier_threshold(similarity_matrix)
+
+    #     # Step 5: Handle Unequal Lists with High Penalty Padding
+    #     max_size = max(len_A, len_B)
+    #     if len_A < max_size:
+    #         padding = np.full((max_size - len_A, len_B), 1000)
+    #         similarity_matrix = np.vstack([similarity_matrix, padding])
+    #         oid_list += [f"DUMMY_A_{i}" for i in range(max_size - len_A)]
+    #     if len_B < max_size:
+    #         padding = np.full((max_size, max_size - len_B), 1000)
+    #         similarity_matrix = np.hstack([similarity_matrix, padding])
+    #         ref_oid_list += [f"DUMMY_B_{i}" for i in range(max_size - len_B)]
+
+    #     # Step 6: Convert to Cost Matrix
+    #     cost_matrix = np.where(similarity_matrix >= 0, 1 - similarity_matrix, 1000)
+
+    #     # Step 7: Apply Hungarian Algorithm
+    #     row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+    #     # Step 8: Assign Matches
+    #     for i, j in zip(row_ind, col_ind):
+    #         oid, ref_oid = oid_list[i], ref_oid_list[j]
+    #         best_score = similarity_matrix[i, j]
+
+    #         if "DUMMY" not in oid and "DUMMY" not in ref_oid:
+    #             if best_score < outlier_threshold:
+    #                 print(f"Potential Addition/Removal: {oid} ↔ {ref_oid} (Score: {best_score})")
+    #             else:
+    #                 self.modified_exes[oid] = {"ref_oid": ref_oid, "similarity": best_score}
+    #                 self.unmatched_oids.discard(oid)
+    #                 self.unmatched_ref_oids.discard(ref_oid)
+
+
     def _classify_files(self):
+        """Pairs `oid` files with the best `ref_oid` files based on TLSH similarity, handling different list sizes."""
+
         self.modified_exes = {}
-        self.unmatched_exes = {}
+        self.unmatched_oids = set(self.uniq_col_exes)
+        self.unmatched_ref_oids = set(self.unmatched_ref_exes)
         self.failed_exes = []
 
-        for oid in self.uniq_col_exes:
-            self._match_oid(oid)
+        oid_list = list(self.uniq_col_exes)
+        ref_oid_list = list(self.unmatched_ref_exes)
+        len_A, len_B = len(oid_list), len(ref_oid_list)
+
+        # Step 1: Retrieve TLSH Hashes for All Files
+        file_hashes = {}
+
+        for oid in oid_list + ref_oid_list:
+            tlsh_hash = api.retrieve("file_tlsh", oid)
+            if not tlsh_hash or tlsh_hash == "TNULL":  # Handle invalid hashes
+                self.failed_exes.append(oid)
+                continue
+            file_hashes[oid] = tlsh_hash
+
+        if not file_hashes:
+            return
+
+        # Create TLSH similarity matrix
+        similarity_matrix = np.full((len_A, len_B), 1000)  # Initialize with high cost
+
+        for i, oid in enumerate(oid_list):
+            for j, ref_oid in enumerate(ref_oid_list):
+                hashA = file_hashes.get(oid)
+                hashB = file_hashes.get(ref_oid)
+
+                if hashA and hashB:
+                    tlsh_distance = tlsh.diff(hashA, hashB)
+                    similarity_matrix[i, j] = tlsh_distance  # Lower distance = more similar
+
+        # Step 3: Apply Hungarian Algorithm to Find Best Matches
+        row_ind, col_ind = linear_sum_assignment(similarity_matrix)
+
+        # Step 4: Assign Matches Based on TLSH Distance
+        threshold = 50  # TLSH distance threshold (adjustable)
+        
+        for i, j in zip(row_ind, col_ind):
+            oid, ref_oid = oid_list[i], ref_oid_list[j]
+            tlsh_distance = similarity_matrix[i, j]
+
+            if tlsh_distance < threshold:  # Lower values mean more similarity
+                self.modified_exes[oid] = {
+                    "ref_oid": ref_oid,
+                    "similarity": tlsh_distance
+                }
+                self.unmatched_oids.discard(oid)
+                self.unmatched_ref_oids.discard(ref_oid)
+    
+    def compute_outlier_threshold(self, similarity_matrix):
+        """ Compute an adaptive threshold using IQR-based outlier detection. """
+        valid_scores = similarity_matrix[similarity_matrix >= 0]  # Ignore dummy values
+
+        if valid_scores.size < 5:  # Too few values to compute outliers reliably
+            return 0.6  # Default threshold
+
+        q1 = np.percentile(valid_scores, 25)
+        q3 = np.percentile(valid_scores, 75)
+        iqr = q3 - q1
+
+        lower_bound = q1 - 1.5 * iqr  # Define lower outlier threshold
+
+        return max(lower_bound, 0.4)  # Ensure it doesn't go below 0.4
 
     def _match_functions(self):
         oids = list(self.modified_exes.keys())
@@ -162,68 +313,6 @@ class CollectionComparator:
             if funcs:
                 functions += funcs
         return functions
-
-    def _match_oid(self, oid):
-        uniq_funcs = self.collection_funcs[oid]['funcs']
-        rep_funcs = self.collection_funcs[oid]['rep_funcs']
-        empty_funcs = self.collection_funcs[oid]['empty_funcs']
-
-        if uniq_funcs is None and rep_funcs is None:
-            self.failed_exes.append(oid)
-
-        results = self._get_function_matches(uniq_funcs)
-
-        if len(results) == 1:
-            ref_oid = next(iter(results))
-            self.modified_exes[oid] = {'ref_oid': ref_oid}
-            self.unmatched_ref_exes.remove(ref_oid)
-        else:
-            most = {
-                'matches': 0,
-                'file': None
-            }
-            for f in results:
-                if len(results[f]) > most['matches']:
-                    most['file'] = f
-                    most['matches'] = len(results[f])
-            if most['file']:
-                self.modified_exes[oid] = {'ref_oid': most['file']}
-                self.unmatched_ref_exes.remove(most['file'])
-            else:
-                self.unmatched_exes[oid] = {'ref_oid': None}
-
-    def _get_function_matches(self, oid_funcs):
-        results = {}
-        for func in oid_funcs:
-            func_hash = oid_funcs[func]['tlsh hash']
-            for ref_oid in self.unmatched_ref_exes:
-                ref_oid_funcs = self.ref_collection_funcs[ref_oid]['funcs']
-                ref_oid_func_hashes = {}
-                for f in ref_oid_funcs:
-                    ref_oid_func_hashes[ref_oid_funcs[f]['tlsh hash']] = f
-                if func_hash in ref_oid_func_hashes:
-                    if ref_oid not in results:
-                        results[ref_oid] = {func: oid_funcs[func]}
-                    else:
-                        results[ref_oid][func] = oid_funcs[func]
-        return results
-
-    def _find_top_matches_from_oids(self, func, ref_oids):
-        """
-        Calculate the top 5 matches for a given function across reference OIDs.
-        Supports ref_oids as a single ref_oid or a list of ref_oids.
-        """
-        matches = []
-
-        # Iterate over each ref_oid
-        for ref_oid in ref_oids:
-            ref_funcs = self.ref_collection_funcs[ref_oid]['funcs']
-            for ref_func, ref_func_name in ref_funcs.items():
-                similarity_score = tlsh.diff(func, ref_func)
-                matches.append({'score': similarity_score, 'file': ref_oid, 'func': ref_func, 'func_name': ref_func_name})
-
-        # Return the top 5 matches sorted by similarity score
-        return sorted(matches, key=lambda x: x['score'])[:5]
 
     def _pair_modified_functions(self, oid):
         """
@@ -254,7 +343,7 @@ class CollectionComparator:
             'EXECUTABLE_MATCHES': self.matched_exes,
             'NON_EXECUTABLE_MATCHES': self.matched_non_exes,
             'MODIFIED_EXECUTABLES': self.modified_exes,
-            'UNMATCHED_EXECUTABLES': self.unmatched_exes,
+            'UNMATCHED_EXECUTABLES': self.unmatched_oids,
             'UNMATCHED_NON_EXECUTABLES': self.uniq_col_non_exes,
             'FAILED_EXECUTABLES': self.failed_exes
         }
@@ -450,6 +539,7 @@ class CollectionComparator:
             self.print_category_w_ref({file: self.collection_report['MODIFIED_EXECUTABLES'][file]})
         else:
             self.print_category_w_ref(self.collection_report['MODIFIED_EXECUTABLES'])
+            self.save_csv_report(self.collection_report['MODIFIED_EXECUTABLES'])
 
     def print_unmatched_executables(self, file):
         print("\n================== UNMATCHED EXECUTABLES ==================")
@@ -473,11 +563,13 @@ class CollectionComparator:
             print(f"\nNon-Executable: {file}")
             print(tabulate(df, headers="keys", tablefmt="psql", showindex=False))
 
+    
     def print_category_w_ref(self, files_report):
         for file_id, report in files_report.items():
             ref_file_id = report['ref_oid']
+            similarity = report['similarity']
             if ref_file_id:
-                self.print_table_match(file_id, ref_file_id)
+                self.print_table_match(file_id, ref_file_id, similarity)
 
             # Print func_matches table
             if 'matched_funcs' in report and len(report['matched_funcs']) > 0:
@@ -492,6 +584,86 @@ class CollectionComparator:
             if 'unmatched_funcs' in report and len(report['unmatched_funcs']) > 0:
                 self.print_unmatched_funcs(report)
             print("\n")
+
+
+    def save_csv_report(self, files_report, output_dir="csv_reports"):
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Lists to store data for each report type
+        file_match_rows = []
+        matched_funcs_rows = []
+        modified_funcs_rows = []
+        unmatched_funcs_rows = []
+        
+        for file_id, report in files_report.items():
+            # --- File match info ---
+            ref_file_id = report.get('ref_oid')
+            similarity = report.get('similarity')
+            if ref_file_id:
+                # Retrieve file names (assumes api.get_names_from_oid exists)
+                file_names = list(api.get_names_from_oid(file_id))
+                if len(file_names) > 1:
+                    file_name_info = f"{len(file_names)} Associated File Names"
+                else:
+                    file_name_info = file_names[0] if file_names else "Unknown"
+                
+                ref_file_names = list(api.get_names_from_oid(ref_file_id))
+                if len(ref_file_names) > 1:
+                    ref_file_name_info = f"{len(ref_file_names)} Associated Ref File Names"
+                else:
+                    ref_file_name_info = ref_file_names[0] if ref_file_names else "Unknown"
+                
+                file_match_rows.append({
+                    "File ID": file_id,
+                    "Ref File ID": ref_file_id,
+                    "File Names": file_name_info,
+                    "Ref File Names": ref_file_name_info,
+                    "Similarity Score": similarity
+                })
+            
+            # --- Matched functions summary ---
+            if 'matched_funcs' in report and len(report['matched_funcs']) > 0:
+                matched_funcs_rows.append({
+                    "File ID": file_id,
+                    "Exact Matched Funcs Count": len(report['matched_funcs'])
+                })
+            
+            # --- Modified functions details ---
+            if 'modified_funcs' in report and len(report['modified_funcs']) > 0:
+                for func, func_report in report['modified_funcs'].items():
+                    modified_funcs_rows.append({
+                        "File ID": file_id,
+                        "Function": func_report.get('func_name'),
+                        "Ref Function": func_report.get('ref_func_name'),
+                        "Score": func_report.get('similarity')
+                })
+        
+            # --- Unmatched functions details ---
+            if 'unmatched_funcs' in report and len(report['unmatched_funcs']) > 0:
+                for func, details in report['unmatched_funcs'].items():
+                    unmatched_funcs_rows.append({
+                        "File ID": file_id,
+                        "Unmatched Function": details
+                    })
+    
+        # --- Write each section to its own CSV file ---
+        if file_match_rows:
+            df = pd.DataFrame(file_match_rows)
+            df.to_csv(os.path.join(output_dir, "file_matches.csv"), index=False)
+            
+        if matched_funcs_rows:
+            df = pd.DataFrame(matched_funcs_rows)
+            df.to_csv(os.path.join(output_dir, "matched_funcs_summary.csv"), index=False)
+            
+        if modified_funcs_rows:
+            df = pd.DataFrame(modified_funcs_rows)
+            df.to_csv(os.path.join(output_dir, "modified_funcs.csv"), index=False)
+            
+        if unmatched_funcs_rows:
+            df = pd.DataFrame(unmatched_funcs_rows)
+            df.to_csv(os.path.join(output_dir, "unmatched_funcs.csv"), index=False)
+
+        print(f"Reports saved to directory: {output_dir}")
 
     def print_modified_funcs_features(self, report):
         columns = [
@@ -555,24 +727,32 @@ class CollectionComparator:
         for func, details in report['unmatched_funcs'].items():
             rows.append([details])
 
-        df = pd.DataFrame(rows, columns=columns)
-        print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
+        # df = pd.DataFrame(rows, columns=columns)
+        # print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
-    def print_table_match(self, file_id, ref_file_id):
-        print()
-        print(f"File: {file_id}")
+    def print_table_match(self, file_id, ref_file_id, similarity):
+        # Retrieve file names for both file IDs
         file_names = list(api.get_names_from_oid(file_id))
         if len(file_names) > 1:
-            print(f"{len(file_names)} Associated File Names")
+            file_name_info = f"{len(file_names)} Associated File Names"
         else:
-            print(f"File Name: {file_names[0]}")
-
-        print(f"Ref File: {ref_file_id}")
+            file_name_info = f"File Name: {file_names[0]}"
+            
         ref_file_names = list(api.get_names_from_oid(ref_file_id))
         if len(ref_file_names) > 1:
-            print(f"{len(ref_file_names)} Associated Ref File Names")
+            ref_file_name_info = f"{len(ref_file_names)} Associated Ref File Names"
         else:
-            print(f"Ref File Name: {ref_file_names[0]}")
+            ref_file_name_info = f"Ref File Name: {ref_file_names[0]}"
+        
+        # Create table data with two columns: one for the file and one for the ref_file
+        table_data = [
+            [f"File: {file_id}", f"Ref File: {ref_file_id}"],
+            [file_name_info, ref_file_name_info],
+            [f"Similarity Score: {similarity}", ""]
+        ]
+        
+        # Print the table using tabulate
+        print(tabulate(table_data, tablefmt="grid"))
 
     def print_compare_functions(self, file_oid, function):
         for mod_func in self.collection_report['MODIFIED_EXECUTABLES'][file_oid]['modified_funcs']:
