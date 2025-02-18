@@ -67,7 +67,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         if r in fileB_acfg:
             del fileB_acfg[r]
 
-    if len(fileA_acfg) > 0 or len(fileB_acfg):
+    if len(fileA_acfg) > 0 and len(fileB_acfg) > 0:
         modified_funcs, added_funcs, removed_funcs = pair_modified_functions(fileA, fileA_acfg, fileB, fileB_acfg)
     else:
         modified_funcs = {}

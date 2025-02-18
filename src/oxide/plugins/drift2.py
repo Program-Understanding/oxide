@@ -13,14 +13,10 @@ from collections import defaultdict
 import pandas as pd
 import time
 from scipy.optimize import linear_sum_assignment
+import os
+import json
+import pandas as pd
 import numpy as np
-
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics.pairwise import cosine_similarity
-from scipy.optimize import linear_sum_assignment
-from sklearn.preprocessing import StandardScaler, normalize
-from sklearn.preprocessing import PowerTransformer, StandardScaler, normalize, RobustScaler
 
 
 from oxide.core import progress, api
@@ -268,38 +264,39 @@ class CollectionComparator:
                     tlsh_distance = tlsh.diff(hashA, hashB)
                     similarity_matrix[i, j] = tlsh_distance  # Lower distance = more similar
 
-        # Step 3: Apply Hungarian Algorithm to Find Best Matches
+        # Step 3: Compute Adaptive Threshold
+        dynamic_threshold = self.compute_outlier_threshold(similarity_matrix)
+
+        # Step 4: Apply Hungarian Algorithm to Find Best Matches
         row_ind, col_ind = linear_sum_assignment(similarity_matrix)
 
-        # Step 4: Assign Matches Based on TLSH Distance
-        threshold = 50  # TLSH distance threshold (adjustable)
-        
+        # Step 5: Assign Matches Based on Dynamic TLSH Distance Threshold
         for i, j in zip(row_ind, col_ind):
             oid, ref_oid = oid_list[i], ref_oid_list[j]
             tlsh_distance = similarity_matrix[i, j]
 
-            if tlsh_distance < threshold:  # Lower values mean more similarity
+            if tlsh_distance < dynamic_threshold:  # Use adaptive threshold
                 self.modified_exes[oid] = {
                     "ref_oid": ref_oid,
                     "similarity": tlsh_distance
                 }
                 self.unmatched_oids.discard(oid)
                 self.unmatched_ref_oids.discard(ref_oid)
-    
+
     def compute_outlier_threshold(self, similarity_matrix):
-        """ Compute an adaptive threshold using IQR-based outlier detection. """
+        """ Compute an adaptive threshold using IQR-based outlier detection, ensuring non-negative values for TLSH distance. """
         valid_scores = similarity_matrix[similarity_matrix >= 0]  # Ignore dummy values
 
         if valid_scores.size < 5:  # Too few values to compute outliers reliably
-            return 0.6  # Default threshold
+            return 50  # Default TLSH distance threshold
 
         q1 = np.percentile(valid_scores, 25)
         q3 = np.percentile(valid_scores, 75)
         iqr = q3 - q1
 
-        lower_bound = q1 - 1.5 * iqr  # Define lower outlier threshold
+        lower_bound = max(q3 + 1.5 * iqr, 0)  # Ensure threshold remains non-negative
 
-        return max(lower_bound, 0.4)  # Ensure it doesn't go below 0.4
+        return min(lower_bound, 300)  # Cap threshold at a reasonable upper bound
 
     def _match_functions(self):
         oids = list(self.modified_exes.keys())
@@ -344,6 +341,7 @@ class CollectionComparator:
             'NON_EXECUTABLE_MATCHES': self.matched_non_exes,
             'MODIFIED_EXECUTABLES': self.modified_exes,
             'UNMATCHED_EXECUTABLES': self.unmatched_oids,
+            'REMOVED_EXECUTABLES': self.unmatched_ref_oids,
             'UNMATCHED_NON_EXECUTABLES': self.uniq_col_non_exes,
             'FAILED_EXECUTABLES': self.failed_exes
         }
@@ -377,152 +375,6 @@ class CollectionComparator:
         print(title)
         print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
-    def print_pairing_results(self):
-        # Prepare data structures
-        results = []
-
-        total_stats = {
-            'pair_correct': 0,
-            'pair_incorrect': 0,
-            'classify_TP': 0,
-            'classify_FP': 0,
-            'classify_FN': 0,
-            'classify_TN': 0,
-        }
-
-        # Iterate over files in the collection report
-        for file_id, report in self.collection_report['MODIFIED_EXECUTABLES'].items():
-            file_stats = {
-                'pair_correct': 0,
-                'pair_incorrect': 0,
-                'classify_TP': 0,
-                'classify_FP': 0,
-                'classify_FN': 0,
-                'classify_TN': 0,
-            }
-
-            ref_file_id = report['ref_oid']
-
-            # Get sets of function names
-            func_names = set(api.get_tags(file_id).get("FUNC_TLSH", {}).values())
-            ref_func_names = set(api.get_tags(ref_file_id).get("FUNC_TLSH", {}).values())
-
-            for func, func_report in report['matched_funcs'].items():
-                file_stats['classify_TP'] += 1
-                file_stats['pair_correct'] += 1
-
-            # Process modified functions
-            for func, func_report in report['modified_funcs'].items():
-                if func in ref_func_names:
-                    file_stats['classify_TP'] += 1
-                else:
-                    file_stats['classify_FP'] += 1
-
-                if func == func_report['ref_func_name']:
-                    file_stats['pair_correct'] += 1
-                else:
-                    file_stats['pair_incorrect'] += 1
-
-            # Process unmatched functions
-            for func, func_report in report['unmatched_funcs'].items():
-                if func in func_names and func not in ref_func_names:
-                    file_stats['classify_TN'] += 1
-                else:
-                    file_stats['classify_FN'] += 1
-
-            # Update totals
-            for key in total_stats:
-                total_stats[key] += file_stats[key]
-
-            # Calculate per-file metrics
-            TP = file_stats['classify_TP']
-            FP = file_stats['classify_FP']
-            FN = file_stats['classify_FN']
-            TN = file_stats['classify_TN']
-            num_pairs = TP + FN
-            classify_correct = TP + TN
-            num_funcs = TP + FN + FP + TN
-
-            precision = TP / (TP + FP) if (TP + FP) != 0 else 0.0
-            recall = TP / (TP + FN) if (TP + FN) != 0 else 0.0
-            accuracy = (TP + TN) / (TP + FP + TN + FN) if (TP + FP + TN + FN) != 0 else 0.0
-            f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) != 0 else 0.0
-
-            # Collect row data for this file
-            results.append({
-                'file_id': file_id,
-                '# Paired Correctly': file_stats['pair_correct'],
-                '# of Function Pairs': num_pairs,
-                '% Paired Correctly': (file_stats['pair_correct'] / num_pairs) * 100 if num_pairs else 0.0,
-                '# Classified Correctly': classify_correct,
-                '% Classified Correctly': (classify_correct / num_funcs) * 100 if num_funcs else 0.0,
-                'Precision': precision,
-                'Recall': recall,
-                'Accuracy': accuracy,
-                'F1': f1
-            })
-
-        # Build a DataFrame for per-file results
-        file_stats_df = pd.DataFrame(results)
-
-        # Compute totals and overall metrics
-
-        total_TP = total_stats['classify_TP']
-        total_FP = total_stats['classify_FP']
-        total_FN = total_stats['classify_FN']
-        total_TN = total_stats['classify_TN']
-        total_pairs = total_TP + total_FN
-
-        total_classify_correct = total_TP + total_TN
-        total_classify_incorrect = total_FP + total_FN
-        total_classify_total = total_classify_correct + total_classify_incorrect
-
-        overall_precision = total_TP / (total_TP + total_FP) if (total_TP + total_FP) != 0 else 0.0
-        overall_recall = total_TP / (total_TP + total_FN) if (total_TP + total_FN) != 0 else 0.0
-        overall_accuracy = (total_TP + total_TN) / (total_TP + total_FP + total_TN + total_FN) if (total_TP + total_FP + total_TN + total_FN) != 0 else 0.0
-        overall_f1 = (2 * overall_precision * overall_recall) / (overall_precision + overall_recall) if (overall_precision + overall_recall) != 0 else 0.0
-
-        # Create a one-row DataFrame for the overall totals
-        overall_row = pd.DataFrame([{
-            'file_id': 'OVERALL',
-            '# Paired Correctly': total_stats['pair_correct'],
-            '# of Function Pairs': total_pairs,
-            '% Paired Correctly': (total_stats['pair_correct'] / total_pairs) * 100 if total_pairs else 0.0,
-            '# Classified Correctly': total_classify_correct,
-            '% Classified Correctly': (total_classify_correct / total_classify_total) * 100 if total_classify_total else 0.0,
-            'Precision': overall_precision,
-            'Recall': overall_recall,
-            'Accuracy': overall_accuracy,
-            'F1': overall_f1
-        }])
-
-        # Separate pair stats and classify stats into different DataFrames
-        pair_cols = ['file_id', '# Paired Correctly', '# of Function Pairs', '% Paired Correctly']
-        classify_cols = ['file_id', '# Classified Correctly', '% Classified Correctly', 'Precision', 'Recall', 'Accuracy', 'F1']
-
-        # Build per-file pair stats DataFrame
-        pair_stats_df = file_stats_df[pair_cols].copy()
-        # Build per-file classify stats DataFrame
-        classify_stats_df = file_stats_df[classify_cols].copy()
-
-        # Build overall row subsets
-        pair_overall_row = overall_row[pair_cols].copy()
-        classify_overall_row = overall_row[classify_cols].copy()
-        
-        print("\nPer-File")
-        print("Pairing Stats")
-        print(tabulate(pair_stats_df, headers='keys', tablefmt='psql', showindex=False))
-        print("Classification Stats")
-        print(tabulate(classify_stats_df, headers='keys', tablefmt='psql', showindex=False))
-
-        print("\nOverall")
-        print("Pairing Stats")
-        print(tabulate(pair_overall_row, headers='keys', tablefmt='psql', showindex=False))
-        print("Classification Stats")
-        print(tabulate(classify_overall_row, headers='keys', tablefmt='psql', showindex=False))
-
-
-
     def print_failed_executable(self):
         print("\n========================== FAILED EXECUTABLES ==========================")
         for file in self.collection_report['FAILED_EXECUTABLES']:
@@ -539,7 +391,7 @@ class CollectionComparator:
             self.print_category_w_ref({file: self.collection_report['MODIFIED_EXECUTABLES'][file]})
         else:
             self.print_category_w_ref(self.collection_report['MODIFIED_EXECUTABLES'])
-            self.save_csv_report(self.collection_report['MODIFIED_EXECUTABLES'])
+            self.save_csv_report(self.collection_report)
 
     def print_unmatched_executables(self, file):
         print("\n================== UNMATCHED EXECUTABLES ==================")
@@ -585,20 +437,43 @@ class CollectionComparator:
                 self.print_unmatched_funcs(report)
             print("\n")
 
-
     def save_csv_report(self, files_report, output_dir="csv_reports"):
         os.makedirs(output_dir, exist_ok=True)
         
         # Lists to store data for each report type
-        file_match_rows = []
-        matched_funcs_rows = []
-        modified_funcs_rows = []
-        unmatched_funcs_rows = []
-        
-        for file_id, report in files_report.items():
-            # --- File match info ---
+        file_pairing_rows = []
+        file_classification = {
+            'Matched': [],
+            'Modified': [],
+            "Unmatched": {},
+            'Removed': {}
+        }
+
+        # File Classification
+        file_classification["Matched"] = files_report['EXECUTABLE_MATCHES']
+        for file_id in files_report['UNMATCHED_EXECUTABLES']:
+            # Retrieve file names (assumes api.get_names_from_oid exists)
+            file_names = list(api.get_names_from_oid(file_id))
+            if len(file_names) > 1:
+                file_name_info = f"{len(file_names)} Associated File Names"
+            else:
+                file_name_info = file_names[0] if file_names else "Unknown"
+
+            file_classification['Unmatched'][file_id] = file_name_info
+        for file_id in files_report['REMOVED_EXECUTABLES']:
+            # Retrieve file names (assumes api.get_names_from_oid exists)
+            file_names = list(api.get_names_from_oid(file_id))
+            if len(file_names) > 1:
+                file_name_info = f"{len(file_names)} Associated File Names"
+            else:
+                file_name_info = file_names[0] if file_names else "Unknown"
+
+            file_classification['Removed'][file_id] = file_name_info
+        for file_id, report in files_report['MODIFIED_EXECUTABLES'].items():
+            file_classification["Modified"].append(file_id)
+
+            # --- File match info --- 
             ref_file_id = report.get('ref_oid')
-            similarity = report.get('similarity')
             if ref_file_id:
                 # Retrieve file names (assumes api.get_names_from_oid exists)
                 file_names = list(api.get_names_from_oid(file_id))
@@ -609,61 +484,29 @@ class CollectionComparator:
                 
                 ref_file_names = list(api.get_names_from_oid(ref_file_id))
                 if len(ref_file_names) > 1:
-                    ref_file_name_info = f"{len(ref_file_names)} Associated Ref File Names"
+                    ref_file_name_info = f"{len(ref_file_names)} Associated File Names"
                 else:
                     ref_file_name_info = ref_file_names[0] if ref_file_names else "Unknown"
                 
-                file_match_rows.append({
+                file_pairing_rows.append({
                     "File ID": file_id,
                     "Ref File ID": ref_file_id,
                     "File Names": file_name_info,
                     "Ref File Names": ref_file_name_info,
-                    "Similarity Score": similarity
-                })
-            
-            # --- Matched functions summary ---
-            if 'matched_funcs' in report and len(report['matched_funcs']) > 0:
-                matched_funcs_rows.append({
-                    "File ID": file_id,
-                    "Exact Matched Funcs Count": len(report['matched_funcs'])
-                })
-            
-            # --- Modified functions details ---
-            if 'modified_funcs' in report and len(report['modified_funcs']) > 0:
-                for func, func_report in report['modified_funcs'].items():
-                    modified_funcs_rows.append({
-                        "File ID": file_id,
-                        "Function": func_report.get('func_name'),
-                        "Ref Function": func_report.get('ref_func_name'),
-                        "Score": func_report.get('similarity')
                 })
         
-            # --- Unmatched functions details ---
-            if 'unmatched_funcs' in report and len(report['unmatched_funcs']) > 0:
-                for func, details in report['unmatched_funcs'].items():
-                    unmatched_funcs_rows.append({
-                        "File ID": file_id,
-                        "Unmatched Function": details
-                    })
-    
-        # --- Write each section to its own CSV file ---
-        if file_match_rows:
-            df = pd.DataFrame(file_match_rows)
-            df.to_csv(os.path.join(output_dir, "file_matches.csv"), index=False)
-            
-        if matched_funcs_rows:
-            df = pd.DataFrame(matched_funcs_rows)
-            df.to_csv(os.path.join(output_dir, "matched_funcs_summary.csv"), index=False)
-            
-        if modified_funcs_rows:
-            df = pd.DataFrame(modified_funcs_rows)
-            df.to_csv(os.path.join(output_dir, "modified_funcs.csv"), index=False)
-            
-        if unmatched_funcs_rows:
-            df = pd.DataFrame(unmatched_funcs_rows)
-            df.to_csv(os.path.join(output_dir, "unmatched_funcs.csv"), index=False)
+        # --- Write file pairing data to CSV ---
+        if file_pairing_rows:
+            df = pd.DataFrame(file_pairing_rows)
+            df.to_csv(os.path.join(output_dir, "file_pairing.csv"), index=False)
 
+        # --- Dump file_classification to JSON file ---
+        json_file_path = os.path.join(output_dir, "file_classification.json")
+        with open(json_file_path, "w") as json_file:
+            json.dump(file_classification, json_file, indent=4)
+        
         print(f"Reports saved to directory: {output_dir}")
+
 
     def print_modified_funcs_features(self, report):
         columns = [
@@ -860,11 +703,7 @@ def file_analysis(args, opts) -> None:
                 except concurrent.futures.TimeoutError:
                     future.cancel()
                     _clean_up_disasm()
-                    analyzer.tags["DISASM"] = {
-                        "RESULT": "TIMEOUT",
-                        "PASS": {},
-                        "FAIL": {}
-                    }
+                    analyzer.tags["DISASM"] = "TIMEOUT"
                 
                 if analyzer.tags.get("DISASM") == "PASS":
                     analyzer.tag_function_tlsh()
@@ -980,8 +819,6 @@ def compare_collections(args, opts):
     elif view == "failed":
         analyzer.print_statistics(stats)
         analyzer.print_failed_executable()
-    elif view == "accuracy":
-        analyzer.print_pairing_results()
     else:
         analyzer.print_statistics(stats)
 
@@ -1232,7 +1069,7 @@ def tag_disasm(oid, force, tags):
 
 def split_collection(input_string):
     # Split the string on the rightmost occurrence of '-'
-    parts = input_string.rsplit('-', maxsplit=1)
+    parts = input_string.rsplit('-v', maxsplit=1)
     
     # Check if the delimiter was found and return both parts
     if len(parts) == 2:
