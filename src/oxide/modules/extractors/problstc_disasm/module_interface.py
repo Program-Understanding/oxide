@@ -49,17 +49,10 @@ def documentation() -> Dict[str, Any]:
 
 
 BOTTOM = -1
-COUNT = 0
 DEBUG = 0
-
-function_start = {}
-function_end = {}
 
 CONTROL_GROUPS = {"CALL", "COND_BR", "UNCOND_BR", "RET"}
 BRANCH_GROUPS = {"CALL", "COND_BR", "UNCOND_BR"}
-
-RH = defaultdict(set)
-H = defaultdict(float)
 
 NEAR_JUMP = 0.00001525902  # (2^32 - 1)^-1
 REL_JUMP = 0.00392156862  # (2^16 - 1)^-1
@@ -388,7 +381,13 @@ def _hint_three(offset, prev_list, disasm):
 ##🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥##
 
 def extract(disasm: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
-    global RH, H
+    global RH, H, function_start, function_end, COUNT
+
+    function_start = {}
+    function_end = {}
+    RH = defaultdict(set)
+    H = defaultdict(float)
+    COUNT = 0
 
     res, data_prob, code_prob = {}, {}, {}
     occlusion_space, valid_instructions = _compute_occlusion(disasm)
