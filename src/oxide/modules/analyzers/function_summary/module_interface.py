@@ -54,7 +54,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         f_dict = {}
         ghidra_dis = api.retrieve("ghidra_disasm", oid)
         complexity = api.retrieve("cyclo_complexity", oid)
-        disassembly = api.get_field("disassembly", oid,oid)['instructions']
+        disassembly = api.get_field("disassembly", oid, oid)['instructions']
         if "functions" in ghidra_dis:
             funs = ghidra_dis["functions"]
         else: funs = None

@@ -53,7 +53,10 @@ def sample_by_time(args, opts):
         f_dict = results_dict[oid]
         # f_dict[g_d[fun]["name"]]["angr seconds"] = f"{ftime} seconds"
         for fun in f_dict:
-            angr_seconds = float(f_dict[fun]["angr seconds"].split(" ")[0])
+            try:
+                angr_seconds = float(f_dict[fun]["angr seconds"].split(" ")[0])
+            except:
+                continue
             if angr_seconds >= t:
                 if not oid in results:
                     results[oid] = {f"functions >= {t}": []}

@@ -23,20 +23,20 @@ THE SOFTWARE.
 """
 
 DESC = " This module is a template for analyzer, new analyzers can copy this format"
-NAME = "function_diff_features"
+NAME = "function_unified_diff"
 
 # imports
 import logging
+from difflib import SequenceMatcher, unified_diff
 from typing import Dict, Any, List
 
 from oxide.core import api
-from utils import retrieve_function_instructions, diff_features
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"functionA": {"type": str, "mangle": True, "default": "None"},
-            "functionB": {"type": str, "mangle": True, "default": "None"}
+opts_doc = {"function": {"type": str, "mangle": True, "default": "None"},
+            "ref_function": {"type": str, "mangle": True, "default": "None"}
 }
 
 
@@ -56,33 +56,38 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         into other modules
     """
     logger.debug("process()")
+
     oid_list = api.expand_oids(oid_list)
     results = {}
-    fileA = oid_list[0]
-    funcA = opts['functionA']
-    funcA_insts = retrieve_function_instructions(fileA, funcA)
+    oid = oid_list[0]
+    func = opts['function']
+    func_insts = retrieve_function_instructions(oid, func)
 
-    fileB = oid_list[1]
-    funcB = opts['functionB']
-    funcB_insts = retrieve_function_instructions(fileB, funcB)
+    ref_oid = oid_list[1]
+    ref_func = opts['function']
+    ref_func_insts = retrieve_function_instructions(ref_oid, ref_func)
 
-    if funcA_insts and funcB_insts:
-        added_instr, removed_instr, modified_isntr, basic_blocks, func_calls = diff_features(fileA, funcA, funcA_insts, fileB, funcB, funcB_insts)
-    else:
-        added_instr = 0
-        removed_instr = 0
-        modified_isntr = 0
-        basic_blocks = 0
-        func_calls = 0
+    if func_insts and ref_func_insts:
+        u_diff = unified_diff(func_insts, ref_func_insts, n=0)
+    
+    unified_diff_result = []
+    for line in u_diff:
+        unified_diff_result.append(line)
 
     results = {
-        'added_instr': added_instr,
-        'removed_instr': removed_instr,
-        'modified_instr': modified_isntr,
-        'basic_blocks': basic_blocks,
-        'func_calls': func_calls
+        'unified_diff': unified_diff_result
     }
 
-    api.store(NAME, fileA, results, opts)
+    api.store(NAME, oid, results, opts)
 
     return results
+
+def retrieve_function_instructions(file, func):
+    """
+    Retrieve function instructions for a specific function by its name.
+    """
+    function_data = api.retrieve('function_tlsh', file, {'replace_addrs': True})
+    for func_id, details in function_data.items():
+        if details.get('name') == func:
+            return details.get('modified_fun_instructions', None)
+    return None
