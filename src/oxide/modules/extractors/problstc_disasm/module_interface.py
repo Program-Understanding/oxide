@@ -100,80 +100,77 @@ def extract_from_oid(oid: str, opts: dict) -> bool:
     
     api.store(NAME, oid, result, opts)
     return True
-    
-# @_log_fun_time
-# def _compute_occlusion(disasm):
-#     """ Identify instruction occlusions but do not filter any instructions. """
-#     occlusion = defaultdict(list)
-#     valid_instructions = set(disasm.keys())  # Keep all instructions
 
-#     # Identify overlaps (but do not filter anything)
-#     for offset, details in disasm.items():
-#         for i in range(offset + 1, offset + details["size"]):
-#             occlusion[i].append(offset)
 
-#     return occlusion, valid_instructions
 
 @_log_fun_time
 def _compute_occlusion(disasm):
-    """ Identify overlapping instructions but retain the longest valid ones. """
+    """ Identify overlapping instructions and remove """
     occlusion = defaultdict(list)
     valid_instructions = set()
-    
-    # Step 1: Identify all overlaps
+
     for offset, details in disasm.items():
         for i in range(offset + 1, offset + details["size"]):
-            occlusion[i].append(offset)  # Track potential overlapping instructions
+            occlusion[i].append(offset)
 
-    # Step 2: Retain only the longest instruction per overlapping region
     covered = set()
     for offset in sorted(disasm.keys()):
         if offset in covered:
+            logger.debug(f"Skipping {offset} due to occlusion")
             continue  # Skip if another instruction already claimed this byte
+
+        instr = disasm[offset]['str']
+
+        if instr.startswith('pop ') and offset + disasm[offset]['size'] in disasm:
+            next_instr = disasm[offset + disasm[offset]['size']]['str']
+            if next_instr == 'ret':
+                valid_instructions.add(offset)
+                covered.add(offset + disasm[offset]['size'])  # Mark `ret` too
+                continue
 
         valid_instructions.add(offset)
         for i in range(offset, offset + disasm[offset]["size"]):
             covered.add(i)  # Mark all bytes of this instruction as covered
 
+    logger.debug(f"Final valid instructions after occlusion: {sorted(valid_instructions)}")
     return occlusion, valid_instructions
-
 
 
 @_log_fun_time
 def _compute_destinations(disasm):
-    """ Compute successor addresses (CFG) and predecessor mappings. """
+    """ Compute successor addresses (CFG) and ensure function epilogues are correctly identified. """
     dests, preds = {}, defaultdict(list)
     last_offset = list(disasm.keys())[-1]
 
     for offset, details in disasm.items():
-        # Normalize multi-byte NOPs
-        if details['str'].startswith('nop'):
-            if details['size'] > 1:
-                details['str'] = "nopl 0x0(%rax,rax,1)"
+        instr = details['str']
+        next_offset = offset + details['size']
 
-        if offset in function_end:
-            # Do not allow execution to continue past function end
+        if instr.startswith('pop '):
+            if next_offset in disasm and (disasm[next_offset]['str'].startswith('pop ') or disasm[next_offset]['str'] == 'ret'):
+                dests[offset] = [next_offset]
+                preds[next_offset].append(offset)
+
+        if instr == 'ret':
+            function_end[offset] = True  # Mark function boundary
+            dests[offset] = []
             continue
 
         if not set(details["groups"]) & CONTROL_GROUPS:
             # Default fallthrough for non-control flow instructions
-            if offset + details['size'] <= last_offset:
-                dests[offset] = [offset + details['size']]
-                preds[offset + details['size']].append(offset)
+            if next_offset <= last_offset:
+                dests[offset] = [next_offset]
+                preds[next_offset].append(offset)
             else:
                 dests[offset] = []
-            continue  # No need to check branches
+            continue  
 
         try:
             if "UNCOND_BR" in details["groups"]:
                 dests[offset] = [int(details['op_str'], 16)]
             elif "COND_BR" in details["groups"] or "CALL" in details["groups"]:
                 jump_target = int(details['op_str'], 16)
-                dests[offset] = [offset + details['size'], jump_target]
-
-                if jump_target in disasm:
-                    function_name = disasm[jump_target].get('symbol', f'func_{jump_target:X}')
-                    dests[offset].append(function_name)
+                dests[offset] = [next_offset, jump_target]
                 preds[jump_target].append(offset)
             else:
                 dests[offset] = []
@@ -184,6 +181,8 @@ def _compute_destinations(disasm):
             preds[target].append(offset)
 
     return dests, preds
+
+
 
 
 
@@ -210,40 +209,47 @@ def update_H():
             H[offset] = prod
 
 def _compute_fixed_point(disasm, code_prob, data_prob, cfg, preds, occlusion_space):
-    """ Main loop of algorithm 1 of https://www.cs.purdue.edu/homes/zhan3299/res/ICSE19.pdf
-            ~line 8
-    """
-
+    """ Ensure function epilogues (`pop` + `ret`) are retained while preventing infinite loops. """
     global COUNT
 
-    # Identify function boundaries to ensure decoding starts at the right place
+    MAX_ITERATIONS = 1000  # Prevent infinite looping
+    function_start = {}
+    function_end = {}
+
+    # Identify function boundaries
     for offset, details in disasm.items():
-        if details['str'] in {'push rbp', 'mov rbp, rsp'}:
+        instr = details['str']
+
+        if instr in {'push rbp', 'mov rbp, rsp'}:
             function_start[offset] = True
-        if details['str'] in {'leave', 'ret'}:
+        if instr in {'leave', 'ret'}:
             function_end[offset] = True
 
     fixed_point = False
-    while not fixed_point:
+    iteration = 0
+
+    while not fixed_point and iteration < MAX_ITERATIONS:
         fixed_point = True
+        iteration += 1  # Increment iteration count
 
-        # Forward propagate hints between instructions
-        fixed_point = _forward_propagation(disasm, data_prob, cfg) and fixed_point
-        if COUNT == 2: break
+        for offset in disasm:
+            instr = disasm[offset]['str']
+            next_offset = offset + disasm[offset]['size']
+            if instr.startswith('pop ') and next_offset in disasm:
+                next_instr = disasm[next_offset]['str']
+                if next_instr.startswith('pop ') or next_instr == 'ret':
+                    code_prob[offset] = max(code_prob.get(offset, 0), 1.0)  # Keep `pop`
+                    code_prob[next_offset] = max(code_prob.get(next_offset, 0), 1.0)  # Keep `ret`
 
-        # From overlapping candidate instructions, assign probability of data based on surrounding bytes
+        # Adjust occlusion probabilities
         _adjust_occlusion_probs(disasm, code_prob, data_prob, occlusion_space)
 
         fixed_point = _back_propagation(disasm, code_prob, data_prob, preds) and fixed_point
 
-        COUNT += 1
+    logger.info(f"Fixed-point computation finished after {iteration} iterations.")
+    return function_start, function_end
 
-        if COUNT % 4000 == 0:
-            print("data_prob", data_prob)
-            fixed_point = True
 
-    
-    return function_start, function_end  # Return the function markers if needed elsewhere
 
 
 @_log_fun_time
@@ -347,7 +353,6 @@ def _back_propagation(disasm, code_prob, data_prob, preds):
 
     return fixed_point
 
-##🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥##
 @_log_fun_time
 def _hint_one(offset, prev_list, disasm):
     """ Implements Control Flow Convergence hint. """
@@ -378,7 +383,6 @@ def _hint_three(offset, prev_list, disasm):
         if prev_reg_write & curr_reg_read:
             RH[prev].add(("3orig", offset))
             RH[offset].add(("3orig", prev))
-##🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥##
 
 def extract(disasm: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
     global RH, H, function_start, function_end, COUNT
@@ -395,13 +399,17 @@ def extract(disasm: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
 
     min_offset, max_offset = min(disasm), max(disasm)
     for offset in range(min_offset, max_offset + 1):
+        if offset == 2763:
+            pass
         if offset not in valid_instructions:
             data_prob[offset], code_prob[offset] = 1.0, 0.0  # Treat as data
         else:
             data_prob[offset], code_prob[offset] = BOTTOM, BOTTOM
         H[offset], RH[offset] = BOTTOM, set()
-
+    
     for offset, prev_list in preds.items():
+        if offset == 2763:
+            pass
         _hint_one(offset, prev_list, disasm)
         _hint_two(offset, prev_list, disasm)
         _hint_three(offset, prev_list, disasm)
