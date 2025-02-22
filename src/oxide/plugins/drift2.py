@@ -13,6 +13,8 @@ from collections import defaultdict
 import pandas as pd
 import time
 from scipy.optimize import linear_sum_assignment
+from sklearn.preprocessing import RobustScaler, normalize
+from sklearn.metrics.pairwise import cosine_similarity
 import os
 import json
 import pandas as pd
@@ -104,11 +106,6 @@ class FileAnalyzer:
         if "FILE_CATEGORY" not in self.tags or self.force == "FILE_CATEGORY":
             self.tags["FILE_CATEGORY"] = api.get_field("categorize", self.oid, self.oid)
 
-    def tag_function_tlsh(self):
-        if "FUNC_TLSH" not in self.tags or self.force == "FUNC_TLSH":
-            self.tags.get("FUNC_HASH", None)
-            self.tags["FUNC_TLSH"] = api.retrieve("function_tlsh", self.oid, {"replace_addrs": True})
-
 class CollectionComparator:
     def __init__(self, collection, ref_collection) -> None:
         self.collection = collection
@@ -147,7 +144,7 @@ class CollectionComparator:
         self.collection_funcs = separate_uniq_repeated(self.uniq_col_exes)
         self.ref_collection_funcs = separate_uniq_repeated(self.unmatched_ref_exes)
 
-    # def _classify_files(self):
+    # def _classify_files(self, threshold = 0.9):
     #     """Pairs `oid` files with the best `ref_oid` files based on similarity scores, handling different list sizes."""
         
     #     self.modified_exes = {}
@@ -160,72 +157,76 @@ class CollectionComparator:
     #     len_A, len_B = len(oid_list), len(ref_oid_list)
 
     #     # Step 1: Retrieve feature vectors for all files
-    #     file_vectors = {}
+    #     oid_vectors = {}
+    #     ref_oid_vectors = {}
 
-    #     for oid in oid_list + ref_oid_list:
+    #     for oid in oid_list:
     #         vector = api.retrieve("file_vector", oid)
     #         if vector is None:
     #             self.failed_exes.append(oid)
     #             continue
-    #         file_vectors[oid] = np.array(vector)
+    #         oid_vectors[oid] = np.array(vector)
+        
+    #     for ref_oid in ref_oid_list:
+    #         vector = api.retrieve("file_vector", ref_oid)  # Fixed incorrect variable
+    #         if vector is None:
+    #             self.failed_exes.append(ref_oid)  # Fixed incorrect variable
+    #             continue
+    #         ref_oid_vectors[ref_oid] = np.array(vector)  # Fixed incorrect variable
 
-    #     if not file_vectors:
+    #     if not oid_vectors or not ref_oid_vectors:
     #         return
+        
+    #     # Convert dictionary to ordered lists
+    #     oid_keys, oid_matrix = zip(*oid_vectors.items())
+    #     ref_oid_keys, ref_oid_matrix = zip(*ref_oid_vectors.items())
 
-    #     # Ensure all vectors have the same length
-    #     max_length = max(len(v) for v in file_vectors.values())
-    #     for k in file_vectors.keys():
-    #         file_vectors[k] = np.pad(file_vectors[k], (0, max_length - len(file_vectors[k])), 'constant')
+    #     # Convert to NumPy arrays
+    #     oid_matrix = np.vstack(oid_matrix)
+    #     ref_oid_matrix = np.vstack(ref_oid_matrix)
 
-    #     # Create feature matrix in a well-defined order
-    #     ordered_keys = oid_list + ref_oid_list
-    #     feature_matrix = np.array([file_vectors[k] for k in ordered_keys])
-
-    #     # Step 2: Normalize All Feature Vectors Together
+    #     # Normalize Vectors
     #     scaler = RobustScaler()
-    #     scaled_matrix = scaler.fit_transform(feature_matrix)
-    #     normalized_matrix = normalize(scaled_matrix, norm='l2')
+    #     oid_matrix = scaler.fit_transform(oid_matrix)
+    #     ref_oid_matrix = scaler.transform(ref_oid_matrix)  # Use `transform` instead of `fit_transform` to prevent data leakage
 
-    #     # Step 3: Compute Pairwise Similarity
-    #     full_similarity = cosine_similarity(normalized_matrix)
-    #     similarity_matrix = full_similarity[:len_A, len_A:]
+    #     oid_matrix = normalize(oid_matrix, norm="l2")
+    #     ref_oid_matrix = normalize(ref_oid_matrix, norm="l2")
 
-    #     if similarity_matrix.size == 0:
-    #         return
+    #     # Step 3: Compute Pairwise Similarity (Only Real Data)
+    #     similarity_matrix = cosine_similarity(oid_matrix, ref_oid_matrix)
 
-    #     # Step 4: Compute Adaptive Outlier-Based Threshold
-    #     outlier_threshold = self.compute_outlier_threshold(similarity_matrix)
-
-    #     # Step 5: Handle Unequal Lists with High Penalty Padding
+    #     # Step 4: Handle Unequal Lists in the Cost Matrix
     #     max_size = max(len_A, len_B)
+
     #     if len_A < max_size:
-    #         padding = np.full((max_size - len_A, len_B), 1000)
+    #         padding = np.full((max_size - len_A, len_B), 1000)  # High cost for missing rows
     #         similarity_matrix = np.vstack([similarity_matrix, padding])
     #         oid_list += [f"DUMMY_A_{i}" for i in range(max_size - len_A)]
+
     #     if len_B < max_size:
-    #         padding = np.full((max_size, max_size - len_B), 1000)
+    #         padding = np.full((max_size, max_size - len_B), 1000)  # High cost for missing columns
     #         similarity_matrix = np.hstack([similarity_matrix, padding])
     #         ref_oid_list += [f"DUMMY_B_{i}" for i in range(max_size - len_B)]
 
-    #     # Step 6: Convert to Cost Matrix
-    #     cost_matrix = np.where(similarity_matrix >= 0, 1 - similarity_matrix, 1000)
+    #     # Step 5: Convert to Cost Matrix
+    #     cost_matrix = 1 - similarity_matrix  # Convert similarity to cost
 
-    #     # Step 7: Apply Hungarian Algorithm
+    #     # Step 6: Apply Hungarian Algorithm
     #     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
-    #     # Step 8: Assign Matches
+    #     # Step 7: Assign Matches
     #     for i, j in zip(row_ind, col_ind):
     #         oid, ref_oid = oid_list[i], ref_oid_list[j]
     #         best_score = similarity_matrix[i, j]
 
     #         if "DUMMY" not in oid and "DUMMY" not in ref_oid:
-    #             if best_score < outlier_threshold:
-    #                 print(f"Potential Addition/Removal: {oid} ↔ {ref_oid} (Score: {best_score})")
-    #             else:
+    #             print(best_score)
+    #             # print(best_score)
+    #             if best_score >= threshold:  # Ensure similarity threshold is reasonable
     #                 self.modified_exes[oid] = {"ref_oid": ref_oid, "similarity": best_score}
     #                 self.unmatched_oids.discard(oid)
     #                 self.unmatched_ref_oids.discard(ref_oid)
-
 
     def _classify_files(self):
         """Pairs `oid` files with the best `ref_oid` files based on TLSH similarity, handling different list sizes."""
@@ -252,8 +253,8 @@ class CollectionComparator:
         if not file_hashes:
             return
 
-        # Create TLSH similarity matrix
-        similarity_matrix = np.full((len_A, len_B), 1000)  # Initialize with high cost
+        # Step 2: Create TLSH Similarity Matrix
+        similarity_matrix = np.full((len_A, len_B), 9999)  # Large but finite padding
 
         for i, oid in enumerate(oid_list):
             for j, ref_oid in enumerate(ref_oid_list):
@@ -261,43 +262,35 @@ class CollectionComparator:
                 hashB = file_hashes.get(ref_oid)
 
                 if hashA and hashB:
-                    tlsh_distance = tlsh.diff(hashA, hashB)
-                    similarity_matrix[i, j] = tlsh_distance  # Lower distance = more similar
+                    tlsh_distance = tlsh.diff(hashA, hashB)  # TLSH distance (lower = better match)
+                    similarity_matrix[i, j] = tlsh_distance  
 
-        # Step 3: Compute Adaptive Threshold
-        dynamic_threshold = self.compute_outlier_threshold(similarity_matrix)
+        # Step 3: Handle Unequal Lists in the Cost Matrix
+        max_size = max(len_A, len_B)
 
-        # Step 4: Apply Hungarian Algorithm to Find Best Matches
+        if len_A < max_size:
+            padding = np.full((max_size - len_A, len_B), 9999)  # Use large number instead of inf
+            similarity_matrix = np.vstack([similarity_matrix, padding])
+            oid_list += [f"DUMMY_A_{i}" for i in range(max_size - len_A)]
+
+        if len_B < max_size:
+            padding = np.full((max_size, max_size - len_B), 9999)  # Use large number instead of inf
+            similarity_matrix = np.hstack([similarity_matrix, padding])
+            ref_oid_list += [f"DUMMY_B_{i}" for i in range(max_size - len_B)]
+
+        # Step 4: Hungarian Algorithm on Cost Matrix (TLSH distance is already a cost)
         row_ind, col_ind = linear_sum_assignment(similarity_matrix)
 
-        # Step 5: Assign Matches Based on Dynamic TLSH Distance Threshold
+        # Step 5: Assign Matches
         for i, j in zip(row_ind, col_ind):
             oid, ref_oid = oid_list[i], ref_oid_list[j]
-            tlsh_distance = similarity_matrix[i, j]
+            best_score = similarity_matrix[i, j]
 
-            if tlsh_distance < dynamic_threshold:  # Use adaptive threshold
-                self.modified_exes[oid] = {
-                    "ref_oid": ref_oid,
-                    "similarity": tlsh_distance
-                }
+            if "DUMMY" not in oid and "DUMMY" not in ref_oid:
+                self.modified_exes[oid] = {"ref_oid": ref_oid, "similarity": best_score}
                 self.unmatched_oids.discard(oid)
                 self.unmatched_ref_oids.discard(ref_oid)
-
-    def compute_outlier_threshold(self, similarity_matrix):
-        """ Compute an adaptive threshold using IQR-based outlier detection, ensuring non-negative values for TLSH distance. """
-        valid_scores = similarity_matrix[similarity_matrix >= 0]  # Ignore dummy values
-
-        if valid_scores.size < 5:  # Too few values to compute outliers reliably
-            return 50  # Default TLSH distance threshold
-
-        q1 = np.percentile(valid_scores, 25)
-        q3 = np.percentile(valid_scores, 75)
-        iqr = q3 - q1
-
-        lower_bound = max(q3 + 1.5 * iqr, 0)  # Ensure threshold remains non-negative
-
-        return min(lower_bound, 300)  # Cap threshold at a reasonable upper bound
-
+                    
     def _match_functions(self):
         oids = list(self.modified_exes.keys())
         for oid in oids:
@@ -323,6 +316,7 @@ class CollectionComparator:
         self.modified_exes[oid]['matched_funcs'] = pair_results['matched_funcs']
         self.modified_exes[oid]['modified_funcs'] = pair_results['modified_funcs']
         self.modified_exes[oid]['unmatched_funcs'] = pair_results['unmatched_funcs']
+        self.modified_exes[oid]['unmatched_ref_funcs'] = pair_results['unmatched_ref_funcs']
 
         for func_addr, func in self.modified_exes[oid]['modified_funcs'].items():
             diff_features = api.retrieve("function_diff_features", [oid, ref_oid], {"functionA": func['func_name'], "functionB": func['ref_func_name']})
@@ -337,8 +331,8 @@ class CollectionComparator:
         self._classify_files()
         self._match_functions()
         self.collection_report = {
-            'EXECUTABLE_MATCHES': self.matched_exes,
-            'NON_EXECUTABLE_MATCHES': self.matched_non_exes,
+            'MATCHED_EXECUTABLES': self.matched_exes,
+            'NON_MATCHED_EXECUTABLES': self.matched_non_exes,
             'MODIFIED_EXECUTABLES': self.modified_exes,
             'UNMATCHED_EXECUTABLES': self.unmatched_oids,
             'REMOVED_EXECUTABLES': self.unmatched_ref_oids,
@@ -349,8 +343,8 @@ class CollectionComparator:
     def calculate_statistics(self):
         """Calculate statistics for each category in the report."""
         return {
-            'MATCHED EXECUTABLES': calculate_stats(self.collection_report["EXECUTABLE_MATCHES"], self.collection_oids),
-            'MATCHED NON-EXECUTABLE': calculate_stats(self.collection_report['NON_EXECUTABLE_MATCHES'], self.collection_oids),
+            'MATCHED EXECUTABLES': calculate_stats(self.collection_report["MATCHED_EXECUTABLES"], self.collection_oids),
+            'MATCHED NON-EXECUTABLE': calculate_stats(self.collection_report['NON_MATCHED_EXECUTABLES'], self.collection_oids),
             'MODIFIED EXECUTABLES': calculate_stats(self.collection_report['MODIFIED_EXECUTABLES'], self.collection_oids),
             'UNMATCHED EXECUTABLES': calculate_stats(self.collection_report['UNMATCHED_EXECUTABLES'], self.collection_oids),
             'UNMATCHED NON-EXECUTABLES': calculate_stats(self.collection_report['UNMATCHED_NON_EXECUTABLES'], self.collection_oids),
@@ -450,7 +444,7 @@ class CollectionComparator:
         }
 
         # File Classification
-        file_classification["Matched"] = files_report['EXECUTABLE_MATCHES']
+        file_classification["Matched"] = files_report['MATCHED_EXECUTABLES']
         for file_id in files_report['UNMATCHED_EXECUTABLES']:
             # Retrieve file names (assumes api.get_names_from_oid exists)
             file_names = list(api.get_names_from_oid(file_id))
@@ -704,9 +698,7 @@ def file_analysis(args, opts) -> None:
                     future.cancel()
                     _clean_up_disasm()
                     analyzer.tags["DISASM"] = "TIMEOUT"
-                
-                if analyzer.tags.get("DISASM") == "PASS":
-                    analyzer.tag_function_tlsh()
+
                 exe_count += 1
 
                 # Apply the tags to the OID
@@ -751,6 +743,7 @@ def compare_all_collections(args, opts):
     collections = get_collections(args, opts)
 
     force = opts.get('force', None)
+    threshold = opts.get('file_threshold', None)
 
     ref_collections = api.collection_cids()
 
@@ -761,7 +754,7 @@ def compare_all_collections(args, opts):
             collection_tags = api.get_tags(collection)
             if not (collection_tags.get("FRAMEWORK_DATA") and collection_tags["FRAMEWORK_DATA"].get(ref_collection)) or force == "COMPARE":
                 analyzer = CollectionComparator(collection, ref_collection)   
-                analyzer.generate_report()
+                analyzer.generate_report(threshold)
                 if collection_tags.get("FRAMEWORK_DATA"):
                     collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.collection_report
                 else:
@@ -837,67 +830,93 @@ def compare_collections_series(args, opts):
     # Sort by version tuple
     parsed_collections.sort(key=lambda x: x[3])
     ref_collection = None
-    # Open CSV file once and write header later.
-    # We'll write the header after we have at least one 'stats' object.
-    csv_filename = f"/home/nathan/Documents/{product}_file_changes.csv"
-    fieldnames = None  # Will determine after first stats retrieval
-    csv_file = open(csv_filename, mode='w', newline='')
-    csv_writer = None
+
+    file_classification_results = {}
+    file_classification_accuracy = {}
+    file_pairing_accuracy = {}
+
     # Keep track of the reference version
     ref_version = None
-    times = {}
-    try:
-        p = progress.Progress(len(collections))
-        for collection, product, version, version_tuple in parsed_collections:
-            start_time = time.time()
-            colname = api.get_colname_from_oid(collection)
-            collection_tags = api.get_tags(collection)
-            if not collection_tags.get("FRAMEWORK_DATA") or not collection_tags["FRAMEWORK_DATA"].get(ref_collection) or force == "COMPARE":
-                if not collection_tags.get("FRAMEWORK_DATA"):
-                    collection_tags["FRAMEWORK_DATA"] = {}
-                analyzer = CollectionComparator(collection, ref_collection)   
-                analyzer.generate_report()
-                collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.collection_report
-                api.apply_tags(collection, collection_tags)
-            else:
-                analyzer = CollectionComparator(collection, ref_collection)
-                analyzer.collection_report = collection_tags["FRAMEWORK_DATA"].get(ref_collection)
-            file_stats = {
-                'EXECUTABLE_MATCHES': len(analyzer.collection_report["EXECUTABLE_MATCHES"]),
-                'NON_EXECUTABLE_MATCHES': len(analyzer.collection_report['NON_EXECUTABLE_MATCHES']),
-                'MODIFIED_EXECUTABLES': len(analyzer.collection_report['MODIFIED_EXECUTABLES']),
-                'UNMATCHED_EXECUTABLES': len(analyzer.collection_report['UNMATCHED_EXECUTABLES']),
-                'UNMATCHED_NON_EXECUTABLES': len(analyzer.collection_report['UNMATCHED_NON_EXECUTABLES']),
-                'FAILED_EXECUTABLES': len(analyzer.collection_report['FAILED_EXECUTABLES'])
-            }
-            # Initialize CSV writer on first iteration, now including a 'ref_version' column
-            if csv_writer is None:
-                fieldnames = ['version', 'ref_version'] + list(file_stats.keys())
-                csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-                csv_writer.writeheader()
-            # Write the transformed stats to the CSV file
-            row_data = {
-                'version': version,
-                'ref_version': ref_version if ref_version is not None else 'None'
-            }
-            row_data.update(file_stats)
-            csv_writer.writerow(row_data)
-            # Update reference info for the next iteration
-            ref_version = version
-            ref_collection = collection
-            times[str(colname)] = time.time() - start_time
-            p.tick()
-    finally:
-        csv_file.close()
-    # Write the times dictionary to a CSV file
-    # Adjust the filename and path as needed
-    with open('/home/nathan/Documents/compare_times.csv', 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        # Write header
-        writer.writerow(['collection', 'time_elapsed'])
-        # Write data
-        for colname, elapsed_time in times.items():
-            writer.writerow([colname, elapsed_time])
+
+    p = progress.Progress(len(collections))
+    for collection, product, version, version_tuple in parsed_collections:
+        colname = api.get_colname_from_oid(collection)
+        collection_tags = api.get_tags(collection)
+        if not collection_tags.get("FRAMEWORK_DATA") or not collection_tags["FRAMEWORK_DATA"].get(ref_collection) or force == "COMPARE":
+            if not collection_tags.get("FRAMEWORK_DATA"):
+                collection_tags["FRAMEWORK_DATA"] = {}
+            analyzer = CollectionComparator(collection, ref_collection)   
+            analyzer.generate_report()
+            collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.collection_report
+            api.apply_tags(collection, collection_tags)
+        else:
+            analyzer = CollectionComparator(collection, ref_collection)
+            analyzer.collection_report = collection_tags["FRAMEWORK_DATA"].get(ref_collection)
+
+        # File Pairing Accuracy
+        pair_TP, pair_FP, pair_FN = get_file_pairing_accuracy(analyzer.collection_report)
+
+        # Calculate precision, recall and F1 score safely (handle division by zero)
+        precision = pair_TP / (pair_TP + pair_FP) if (pair_TP + pair_FP) > 0 else 0
+        recall = pair_TP / (pair_TP + pair_FN) if (pair_TP + pair_FN) > 0 else 0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
+        file_pairing_accuracy[version] = {
+            'Version': version,
+            'Ref Version': ref_version,
+            'TP': pair_TP,
+            'FP': pair_FP,
+            'FN': pair_FN,
+            'Precision': precision,
+            'Recall': recall,
+            'F1': f1
+        }
+
+        # File Classification Results
+        class_TP, class_FP, class_FN, class_TN = get_file_classification_accuracy(analyzer.collection_report)
+
+        # Calculate accuracy, precision, recall, and F1 score for classification, with safe division
+        total = class_TP + class_FP + class_FN + class_TN
+        accuracy = (class_TP + class_TN) / total if total > 0 else 0
+        precision = class_TP / (class_TP + class_FP) if (class_TP + class_FP) > 0 else 0
+        recall = class_TP / (class_TP + class_FN) if (class_TP + class_FN) > 0 else 0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
+        file_classification_accuracy[version] = {
+            'Version': version,
+            'Ref Version': ref_version,
+            'TP': class_TP,
+            'FP': class_FP,
+            'FN': class_FN,
+            'TN': class_TN,
+            'Accuracy': accuracy,
+            'Precision': precision,
+            'Recall': recall,
+            'F1': f1
+        }
+
+
+        file_classification_results[version] = {
+            'Version': version,
+            'Ref Version': ref_version,
+            'Matched Executables': len(analyzer.collection_report["MATCHED_EXECUTABLES"]),
+            'Matched Non-Executables': len(analyzer.collection_report['NON_MATCHED_EXECUTABLES']),
+            'Modified Executables': len(analyzer.collection_report['MODIFIED_EXECUTABLES']),
+            'Unmatched Executables': len(analyzer.collection_report['UNMATCHED_EXECUTABLES']),
+            'Unmatched Non-Executables': len(analyzer.collection_report['UNMATCHED_NON_EXECUTABLES']),
+            'Failed Executables': len(analyzer.collection_report['FAILED_EXECUTABLES'])
+        }
+
+        # File Classification Accuracy
+        
+        ref_version = version
+        ref_collection = collection
+        p.tick()
+    
+    # Dump the dictionaries to CSV files.
+    dump_to_csv(file_classification_results, 'csv_reports/file/file_classification_results.csv')
+    dump_to_csv(file_classification_accuracy, 'csv_reports/file/file_classification_accuracy.csv')
+    dump_to_csv(file_pairing_accuracy, 'csv_reports/file/file_pairing_accuracy.csv')
 
 def get_collection_tags(args, opts):
     def print_collection_info(device, name, tags):
@@ -1141,3 +1160,82 @@ def _clean_up_disasm():
         else:
             print(f"File or directory not found: {file_path}")
     return
+
+# Helper function to dump a dictionary of dictionaries to CSV.
+def dump_to_csv(data_dict, filename):
+    if not data_dict:
+        print(f"No data to dump for {filename}")
+        return
+    # Assume each inner dictionary has the same keys; get headers from the first entry.
+    headers = list(next(iter(data_dict.values())).keys())
+    with open(filename, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=headers)
+        writer.writeheader()
+        for row in data_dict.values():
+            writer.writerow(row)
+
+def get_file_pairing_accuracy(files_report, output_dir="csv_reports"):
+    os.makedirs(output_dir, exist_ok=True)
+    TP = 0
+    FP = 0
+    FN = 0
+
+    ref_col_file_names = get_all_file_names(files_report)
+
+    for file_id, report in files_report['MODIFIED_EXECUTABLES'].items():
+        # --- File match info --- 
+        ref_file_id = report.get('ref_oid')
+        if ref_file_id:
+            # Retrieve file names (assumes api.get_names_from_oid exists)
+            file_names = list(api.get_names_from_oid(file_id))
+            ref_file_names = list(api.get_names_from_oid(ref_file_id))
+
+            # Check if at least one element in file_names is in ref_file_names.
+            if any(name in ref_file_names for name in file_names):
+                TP += 1
+            else:
+                # Check if a pair exists
+                if any(name in ref_col_file_names for name in file_names):
+                    FN += 1
+                else:
+                    FP += 1
+
+    return TP, FP, FN
+
+def get_file_classification_accuracy(report):
+    TP = 0
+    FP = 0
+    FN = 0
+    TN = 0
+
+    ref_col_file_names = get_all_file_names(report)
+
+    TN += len(report['MATCHED_EXECUTABLES'])
+
+    for file_id in report['UNMATCHED_EXECUTABLES']:
+        file_names = list(api.get_names_from_oid(file_id))
+        if any(name in ref_col_file_names for name in file_names):
+            FP += 1
+        else:
+            TP += 1
+
+    for file_id, report in report['MODIFIED_EXECUTABLES'].items():
+        ref_file_id = report.get('ref_oid')
+        if ref_file_id:
+            file_names = list(api.get_names_from_oid(file_id))
+            ref_file_names = list(api.get_names_from_oid(ref_file_id))
+
+            # Check if at least one element in file_names is in ref_file_names.
+            if any(name in ref_file_names for name in file_names):
+                TN += 1
+            else:
+                FN += 1
+
+    return TP, FP, FN, TN
+
+def get_all_file_names(report):
+    file_names = []
+    for group in report:
+        for file_id in report[group]:
+            file_names += list(api.get_names_from_oid(file_id))
+    return file_names
