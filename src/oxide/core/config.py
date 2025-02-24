@@ -99,10 +99,6 @@ plugins = {"default": "True"}
 history = {"file": ".history.txt",
            "max": "200"}
 
-mod_toggle = {
-    "problstc_disasm": "0",
-    "problstc_ref": "0"
-}
 
 ALL_DEFAULTS = {"dir"            : DIR_DEFAULTS,
                 "interface"      : interface_defaults,
@@ -118,8 +114,7 @@ ALL_DEFAULTS = {"dir"            : DIR_DEFAULTS,
                 "history"        : history,
                 "ghidra_project" : ghidra_project,
                 "pharos"         : pharos,
-                "probdisasm"     : probdisasm,
-                "mod_toggle"     : mod_toggle
+                "probdisasm"     : probdisasm
                 }
 
 rcp = configparser.ConfigParser()
