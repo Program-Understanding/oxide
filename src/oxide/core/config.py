@@ -177,7 +177,7 @@ def set_application_directories() -> None:
     global APPLICATION
 
     system = sys.platform
-    
+
     """ Usual configuration directories
         Mac OS X:               ~/Library/Preferences/<AppName>
         Unix:                   ~/.config/<AppName>     # or in $XDG_CONFIG_HOME, if defined
@@ -410,6 +410,7 @@ def read_config(fd):
         for section in rcp.sections():
             if section not in ALL_DEFAULTS:
                 logger.error("Section %s not in ALL_DEFAULTS", section)
+                continue
                 # ALL_DEFAULTS[section] = {} # we should probably not add new sections, but leaving this just in case
             for key in rcp.options(section):
                 if key not in ALL_DEFAULTS[section]:
