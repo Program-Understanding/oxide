@@ -89,8 +89,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                 f_dict[funs[f]['name']]["complexity"] = None
                 f_dict[funs[f]['name']]["complexity_desc"] = None
             f_dict[funs[f]['name']]["operands"] = operands
-            
-
+            f_dict[funs[f]['name']]["params"] = funs[f]["params"]
         results[oid] = f_dict
 
     return results

@@ -27,7 +27,8 @@ def process(oid, opts):
         function_extract = api.retrieve("function_extract", oid,{})
     for fun in g_d:
         #skipping _start as it doesn't ret and will run until it times out
-        if g_d[fun]["name"] == "_start":
+        if g_d[fun]["name"] in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0"]:
+            prog.tick()
             continue
         if opts["summaries"] and g_d[fun]["name"] in function_summary and type(fun) is int:
             f_dict[g_d[fun]["name"]] = {}
@@ -36,6 +37,7 @@ def process(oid, opts):
         elif opts["summaries"] or type(fun) is not int:
             #sometimes the function comes out as a string
             #or it doesn't have a summary
+            prog.tick()
             continue
         if type(fun) is int:
             with angrManager() as angrmanager:
