@@ -21,8 +21,36 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
-
+from typing import Any, List, Optional, Tuple, Protocol
+# pyright: reportAssignmentType=false
 # These will be wired in oxide.py
+# so any lsp errors here are incorrect
+
+class Retrieve(Protocol):
+    def __call__(self, mod_name: str, oid_list: List[str] | str, opts: dict = {},
+             lock: bool = False, dir_override: Optional[str] = None) -> Optional[dict]:
+        ...
+
+class LocalRetrieve(Protocol):
+    def __call__(self,plugin_name: str, data_name: str) -> Optional[Any]:
+        ...
+
+class LocalStore(Protocol):
+    def __call__(self,plugin_name: str, data_name: str, data: Any) -> bool:
+        ...
+
+class GetField(Protocol):
+    def __call__(self,mod_name: str, oid: str, field: str, opts: dict = {},
+              dir_override: Optional[str] = None) -> Optional[Any]:
+                 ...
+class ValidOids(Protocol):
+    def __call__(self,l: List[str]) -> Tuple[List[str], List[str]]:
+        ...
+
+class ExpandOids(Protocol):
+    def __call__(self,oids: str| List[str]) -> List[str]:
+        ...
+
 apply_tags                 = None
 collection_names           = None
 collection_cids            = None
@@ -31,13 +59,13 @@ delete_collection_by_cid   = None
 delete_collection_by_name  = None
 documentation              = None
 exists                     = None
-expand_oids                = None
+expand_oids                : ExpandOids = None
 flush_oid                  = None
 flush_module               = None
 get_cid_from_oid_list      = None
 get_cid_from_name          = None
 get_colname_from_oid       = None
-get_field                  = None
+get_field                  : GetField = None
 get_names_from_oid         = None
 get_oids_with_name         = None
 get_oid_from_data          = None
@@ -51,13 +79,13 @@ local_count_records        = None
 local_delete_data          = None
 local_delete_function_data = None
 local_exists               = None
-local_retrieve             = None
+local_retrieve             : LocalRetrieve = None
 local_retrieve_all         = None
-local_store                = None
+local_store                : LocalStore = None
 load_reference             = None
 models_dir                 = None
 modules_list               = None
-retrieve                   = None
+retrieve                   : Retrieve = None
 retrieve_all_keys          = None
 scratch_dir                = None
 libraries_dir              = None
@@ -72,6 +100,6 @@ source                     = None
 store                      = None
 process                    = None
 tag_filter                 = None
-valid_oids                 = None
+valid_oids                 : ValidOids= None
 tmp_file                   = None
 scripts_dir                = None
