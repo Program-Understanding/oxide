@@ -51,21 +51,13 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     matched_funcs, matched_A, matched_B = pair_matched_functions(A_unique_funcs, B_unique_funcs)
 
-    for m in matched_A:
-        if m in fileA_acfg:
-            del fileA_acfg[m]
+    for i in list(fileA_acfg):
+        if i not in A_unique_funcs or i in matched_A:
+            del fileA_acfg[i]
 
-    for r in A_repeated_funcs:
-        if r in fileA_acfg:
-            del fileA_acfg[r]
-
-    for m in matched_B:
-        if m in fileB_acfg:
-            del fileB_acfg[m]
-
-    for r in B_repeated_funcs:
-        if r in fileB_acfg:
-            del fileB_acfg[r]
+    for i in list(fileB_acfg):
+        if i not in B_unique_funcs or i in matched_B:
+            del fileB_acfg[i]
 
     if len(fileA_acfg) > 0 and len(fileB_acfg) > 0:
         modified_funcs, unmatched_funcs, unmatched_ref_funcs = pair_modified_functions(fileA, fileA_acfg, fileB, fileB_acfg)
@@ -91,6 +83,9 @@ def get_unique_functions(file):
     # Retrieve functions from fileA and group by tlsh hash.
     funcs = api.retrieve("function_tlsh", file, {"replace_addrs": True})
     func_hashes = {}
+
+    if funcs is None: return None, None
+
     for f in funcs:
         hash_val = funcs[f].get('tlsh hash')
         if hash_val:
@@ -203,9 +198,9 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
             paired_functions[funcA] = {
                 "matched_function": funcB,
                 "similarity": similarity,
-                "func_name": A_funcs.get(funcA, {}).get('name', 'Unknown'),
+                "func_name": A_funcs.get(int(funcA), {}).get('name', 'Unknown'),
                 "ref_file": fileB,
-                "ref_func_name": B_funcs.get(funcB, {}).get('name', 'Unknown')
+                "ref_func_name": B_funcs.get(int(funcB), {}).get('name', 'Unknown')
             }
             matched_A.add(funcA)
             matched_B.add(funcB)

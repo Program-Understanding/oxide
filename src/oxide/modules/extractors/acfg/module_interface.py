@@ -40,6 +40,8 @@ def process(oid: str, opts: dict) -> bool:
     node_feature_keys = ["num_successors", "num_predecessors", "betweenness", "num_function_calls", "num_instructions"]
     graph_feature_keys = ["density", "avg_degree", "avg_betweenness", "num_blocks", "num_edges"]
 
+    if functions is None: return False
+
     for func_addr, func_data in functions.items():
         # Get the CFG for the function; skip if not available.
         cfg = get_func_cfg(oid, func_addr)

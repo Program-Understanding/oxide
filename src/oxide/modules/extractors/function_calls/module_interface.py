@@ -48,6 +48,8 @@ def process(oid: str, opts: dict) -> bool:
     functions = api.get_field("ghidra_disasm", oid, "functions")
     basic_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
 
+    if instructions is None: return False
+
     for insn_address, insn_data in instructions.items():
         if ' ' not in insn_data:
             mnemonic = insn_data

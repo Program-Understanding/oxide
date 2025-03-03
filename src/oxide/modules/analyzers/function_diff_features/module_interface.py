@@ -83,6 +83,4 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         'func_calls': func_calls
     }
 
-    api.store(NAME, fileA, results, opts)
-
     return results
