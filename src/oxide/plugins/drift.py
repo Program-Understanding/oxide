@@ -115,7 +115,7 @@ class CollectionComparator:
 
     def _seperate_funcs(self):
         self.collection_funcs = separate_uniq_repeated(self.uniq_col_exes)
-        self.ref_collection_funcs = separate_uniq_repeated(self.unmatched_ref_exes)
+        self.ref_collection_funcs = separate_uniq_repeated(self.uniq_ref_exes)
 
     def _classify_files(self):
         """
@@ -125,13 +125,13 @@ class CollectionComparator:
 
         self.modified_exes = {}
         self.unmatched_oids = set(self.uniq_col_exes)
-        self.unmatched_ref_oids = set(self.unmatched_ref_exes)
+        self.unmatched_ref_oids = set(self.uniq_ref_exes)
         self.failed_exes = []
         self.failed_ref_exes = []
 
         # Convert sets to lists for indexing and cost-matrix alignment
         oid_list = list(self.uniq_col_exes)
-        ref_oid_list = list(self.unmatched_ref_exes)
+        ref_oid_list = list(self.uniq_ref_exes)
 
         ########################################################################
         # STEP 0a: Remove all "FAIL" files from both lists before building the
@@ -239,7 +239,7 @@ class CollectionComparator:
     def _get_all_functions(self, oids):
         functions = []
         for oid in oids:
-            funcs = api.get_tags(oid).get("FUNC_TLSH")
+            funcs = api.retrieve("function_tlsh", oid)
             if funcs:
                 functions += funcs
         return functions
@@ -265,10 +265,12 @@ class CollectionComparator:
 
     def generate_report(self):
         """Generate report data for file matches."""
-        self.matched_exes, self.uniq_col_exes, self.unmatched_ref_exes = file_matches(self.collection_exes, self.ref_collection_exes)
+        self.matched_exes, self.uniq_col_exes, self.uniq_ref_exes = file_matches(self.collection_exes, self.ref_collection_exes)
         self.matched_non_exes, self.uniq_col_non_exes, self.uniq_ref_non_exes = file_matches(self.collection_non_exes, self.ref_collection_non_exec)
+        self.matched_exes = get_num_funcs(self.matched_exes)
         self._seperate_funcs()
         self._classify_files()
+        self.unmatched_oids = get_num_funcs(self.unmatched_oids)
         self._match_functions()
         self.collection_report = {
             'MATCHED_EXECUTABLES': self.matched_exes,
@@ -509,7 +511,6 @@ class CollectionComparator:
         num_unmatched = len(report['unmatched_funcs'])
         print(f"{num_unmatched} Unmatched Functions:")
 
-        columns = ["Function"]
         rows = []
         for func, details in report['unmatched_funcs'].items():
             rows.append([details])
@@ -550,30 +551,6 @@ class CollectionComparator:
 
                 for line in u_diff['unified_diff']:
                     print(line)     
-
-def compare_all_collections(args, opts):
-    collections = get_collections(args, opts)
-
-    force = opts.get('force', None)
-    threshold = opts.get('file_threshold', None)
-
-    ref_collections = api.collection_cids()
-
-    for collection in collections:
-        print(f"COLLECTION: {api.get_colname_from_oid(collection)}")
-        p2 = progress.Progress(len(ref_collections))
-        for ref_collection in ref_collections:  
-            collection_tags = api.get_tags(collection)
-            if not (collection_tags.get("FRAMEWORK_DATA") and collection_tags["FRAMEWORK_DATA"].get(ref_collection)) or force == "COMPARE":
-                analyzer = CollectionComparator(collection, ref_collection)   
-                analyzer.generate_report(threshold)
-                if collection_tags.get("FRAMEWORK_DATA"):
-                    collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.collection_report
-                else:
-                    collection_tags['FRAMEWORK_DATA'] = {}
-                    collection_tags['FRAMEWORK_DATA'][ref_collection] = analyzer.collection_report
-                api.apply_tags(collection, collection_tags)
-            p2.tick()
 
 def compare_collections(args, opts):
     if len(args) < 2:
@@ -617,7 +594,6 @@ def compare_collections(args, opts):
     elif view == "unmatched":
         analyzer.print_statistics(stats)
         analyzer.print_unmatched_executables(file)
-        # analyzer.print_unmatched_non_executables()
     elif view == "modified":
         analyzer.print_statistics(stats)
         analyzer.print_modified_executables(file)
@@ -654,7 +630,11 @@ def compare_collections_series(args, opts):
     for collection, product, version, version_tuple in parsed_collections:
         colname = api.get_colname_from_oid(collection)
         collection_tags = api.get_tags(collection)
-        if not collection_tags.get("FRAMEWORK_DATA") or not collection_tags["FRAMEWORK_DATA"].get(ref_collection) or force == "COMPARE":
+        if collection_tags:
+            pass
+        else:
+            collection_tags = {}
+        if not collection_tags or not collection_tags.get("FRAMEWORK_DATA") or not collection_tags["FRAMEWORK_DATA"].get(ref_collection) or force == "COMPARE":
             if not collection_tags.get("FRAMEWORK_DATA"):
                 collection_tags["FRAMEWORK_DATA"] = {}
             analyzer = CollectionComparator(collection, ref_collection)   
@@ -683,6 +663,8 @@ def compare_collections_series(args, opts):
             'Recall': recall,
             'F1': f1
         }
+
+        modified_funcs, unmatched_funcs, total_funcs = get_triage_results(analyzer.collection_report)
 
         # File Classification Results
         class_TP, class_FP, class_FN, class_TN = get_file_classification_accuracy(analyzer.collection_report, ref_collection)
@@ -716,7 +698,10 @@ def compare_collections_series(args, opts):
             'Modified Executables': len(analyzer.collection_report['MODIFIED_EXECUTABLES']),
             'Unmatched Executables': len(analyzer.collection_report['UNMATCHED_EXECUTABLES']),
             'Unmatched Non-Executables': len(analyzer.collection_report['UNMATCHED_NON_EXECUTABLES']),
-            'Failed Executables': len(analyzer.collection_report['FAILED_EXECUTABLES'])
+            'Failed Executables': len(analyzer.collection_report['FAILED_EXECUTABLES']),
+            'Modified Functions': modified_funcs,
+            'Unmatched Functions': unmatched_funcs,
+            'Total Functions': total_funcs
         }
 
         # File Classification Accuracy
@@ -822,10 +807,8 @@ def import_dataset(args, opts):
             import_sample(sample_name, sample_path)
 
 exports = [
-    compare_all_collections, 
     get_file_tags, 
     get_collection_tags, 
-    compare_all_collections, 
     compare_collections, 
     import_product, 
     import_dataset, 
@@ -878,6 +861,13 @@ def get_collections(args=None, opts=None):
 
     return collections
 
+def get_num_funcs(oids):
+    results = {}
+    for oid in oids:
+        functions = api.get_field('ghidra_disasm', oid, "functions")
+        results[oid] = {'Num_functions': len(functions)}
+    return results
+
 def split_collection(input_string):
     # Split the string on the rightmost occurrence of '-'
     parts = input_string.rsplit('-', maxsplit=1)
@@ -892,7 +882,7 @@ def separate_uniq_repeated(oid_list: dict):
     # 1) Gather all functions from this list of OIDs
     func_to_oids = defaultdict(set)
     for oid in oid_list:
-        funcs = api.get_tags(oid).get("FUNC_TLSH", [])
+        funcs = api.retrieve("function_tlsh", oid)
         for func in funcs:
             func_to_oids[func].add(oid)
 
@@ -900,7 +890,7 @@ def separate_uniq_repeated(oid_list: dict):
     results = {}
     for oid in oid_list:
         results[oid] = {'funcs': {}, "rep_funcs": {}, "empty_funcs": {}}
-        funcs = api.get_tags(oid).get("FUNC_TLSH", [])
+        funcs = api.retrieve("function_tlsh", oid)
         for func in funcs:
             if funcs[func]['tlsh hash'] != None:
                 if len(func_to_oids[func]) == 1:
@@ -1030,6 +1020,31 @@ def get_file_classification_accuracy(report, ref_collection):
                 FN += 1
 
     return TP, FP, FN, TN
+
+def get_triage_results(report):
+    modified = 0
+    unmatched = 0
+    total_funcs = 0
+
+    for file, results in report['MATCHED_EXECUTABLES'].items():
+        num_functions = results.get("Num_functions", 0)
+        total_funcs += num_functions
+        unmatched += num_functions
+    
+    for file, results in report['UNMATCHED_EXECUTABLES'].items():
+        num_functions = results.get("Num_functions", 0)
+        unmatched += num_functions
+        total_funcs += num_functions
+
+    for file, results in report['MODIFIED_EXECUTABLES'].items():
+        modified += len(results['modified_funcs'])
+        unmatched += len(results['unmatched_funcs'])
+
+        total_funcs += len(results['matched_funcs'])
+        total_funcs += len(results['modified_funcs'])
+        total_funcs += len(results['unmatched_funcs'])
+
+    return modified, unmatched, total_funcs
 
 def get_all_file_names(collection):
     file_names = []
