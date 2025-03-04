@@ -67,18 +67,20 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     funcB_insts = retrieve_function_instructions(fileB, funcB)
 
     if funcA_insts and funcB_insts:
-        added_instr, removed_instr, modified_isntr, basic_blocks, func_calls = diff_features(fileA, funcA, funcA_insts, fileB, funcB, funcB_insts)
+        added_instr, removed_instr, opcode_modifications, operand_modifications, basic_blocks, func_calls = diff_features(fileA, funcA, funcA_insts, fileB, funcB, funcB_insts)
     else:
         added_instr = 0
         removed_instr = 0
-        modified_isntr = 0
+        opcode_modifications = 0
+        operand_modifications = 0
         basic_blocks = 0
         func_calls = 0
 
     results = {
         'added_instr': added_instr,
         'removed_instr': removed_instr,
-        'modified_instr': modified_isntr,
+        'modified_opcode_instr': opcode_modifications,
+        'modified_operand_instr': operand_modifications,
         'basic_blocks': basic_blocks,
         'func_calls': func_calls
     }

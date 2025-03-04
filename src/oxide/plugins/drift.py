@@ -3,19 +3,14 @@ from oxide.core.oxide import api
 import pprint
 import csv
 import os 
-import concurrent.futures
-import os
+import subprocess
 import shutil
-import tlsh
 from tabulate import tabulate
 import csv
-from collections import defaultdict
 import pandas as pd
-import time
-from scipy.optimize import linear_sum_assignment
 import os
 import pandas as pd
-import numpy as np
+import datetime
 
 
 from oxide.core import progress, api
@@ -87,18 +82,17 @@ def calculate_statistics(report, target_oids):
         'FAILED EXECUTABLES': calculate_stats(report['FAILED_EXECUTABLES'], target_oids)
     }
 
-def print_statistics(report, stats, target_collection, baseline_collection):
+def print_triage_results(triage_results, target_collection, baseline_collection):
     title = f"{api.get_colname_from_oid(target_collection)} Compared to {api.get_colname_from_oid(baseline_collection)}"
 
     columns = [
         "Category",
-        f"# of {api.get_colname_from_oid(target_collection)} Files",
-        f"% of {api.get_colname_from_oid(target_collection)} Files",
+        f"Total",
     ]
 
     rows = []
-    for key, (total, percentage) in stats.items():
-        rows.append([key, total, percentage])
+    for key, number in triage_results[target_collection].items():
+        rows.append([key, number])
     
     df = pd.DataFrame(rows, columns=columns)
     
@@ -146,8 +140,8 @@ def print_unmatched_non_executables(report):
         print(tabulate(df, headers="keys", tablefmt="psql", showindex=False))
 
 
-def print_category_w_baseline(report, files_report):
-    for file_id, report in files_report.items():
+def print_category_w_baseline(report):
+    for file_id, report in report.items():
         baseline_file_id = report['baseline_oid']
         similarity = report['similarity']
         if baseline_file_id:
@@ -159,15 +153,18 @@ def print_category_w_baseline(report, files_report):
         
         # Print modified_funcs table
         if 'modified_funcs' in report and len(report['modified_funcs']) > 0:
-            # print_modified_funcs_table(report)
             print_modified_funcs_features(report)
+
+        # Print modified_opperand_funcs table
+        if 'modified_opperand_funcs' in report and len(report['modified_opperand_funcs']) > 0:
+            print_modified_opperand_funcs_features(report)
         
         # Print unmatched_funcs table
         if 'unmatched_funcs' in report and len(report['unmatched_funcs']) > 0:
             print_unmatched_funcs(report)
         print("\n")
 
-def save_csv_report(report, files_report, output_dir="csv_reports"):
+def save_csv_report(report, output_dir="csv_reports"):
     os.makedirs(output_dir, exist_ok=True)
     
     # Lists to store data for each report type
@@ -182,8 +179,8 @@ def save_csv_report(report, files_report, output_dir="csv_reports"):
     func_class_rows = []
 
     # File Classification
-    file_classification["Matched"] = files_report['MATCHED_EXECUTABLES']
-    for file_id in files_report['UNMATCHED_EXECUTABLES']:
+    file_classification["Matched"] = report['MATCHED_EXECUTABLES']
+    for file_id in report['UNMATCHED_EXECUTABLES']:
         # Retrieve file names (assumes api.get_names_from_oid exists)
         file_names = list(api.get_names_from_oid(file_id))
         if len(file_names) > 1:
@@ -192,16 +189,9 @@ def save_csv_report(report, files_report, output_dir="csv_reports"):
             file_name_info = file_names[0] if file_names else "Unknown"
 
         file_classification['Unmatched'][file_id] = file_name_info
-    for file_id in files_report['REMOVED_EXECUTABLES']:
-        # Retrieve file names (assumes api.get_names_from_oid exists)
-        file_names = list(api.get_names_from_oid(file_id))
-        if len(file_names) > 1:
-            file_name_info = f"{len(file_names)} Associated File Names"
-        else:
-            file_name_info = file_names[0] if file_names else "Unknown"
 
         file_classification['Removed'][file_id] = file_name_info
-    for file_id, report in files_report['MODIFIED_EXECUTABLES'].items():
+    for file_id, report in report['MODIFIED_EXECUTABLES'].items():
         file_classification["Modified"].append(file_id)
 
         # --- File match info --- 
@@ -256,18 +246,20 @@ def print_modified_funcs_features(report):
         "BBs +/-",
         "Instr +",
         "Instr -",
-        "Instr Mod",
+        "Instr Opcode Mod",
+        "Instr Operand Mod",
         "Func Calls +/-"
     ]
 
     # Collect data rows from the report
     rows = []
     for func, func_report in report['modified_funcs'].items():
-        basic_blocks       = func_report['basic_blocks']       or 0
-        instr_added        = func_report['added_instr']        or 0
-        instr_removed      = func_report['removed_instr']      or 0
-        instr_modified     = func_report['modified_instr']     or 0
-        func_calls         = func_report['func_calls']         or 0
+        basic_blocks = func_report['basic_blocks'] or 0
+        instr_added = func_report['added_instr'] or 0
+        instr_removed = func_report['removed_instr'] or 0
+        instr_modified_opcode = func_report['modified_opcode_instr'] or 0
+        instr_modified_operand = func_report['modified_operand_instr'] or 0
+        func_calls = func_report['func_calls'] or 0
 
 
 
@@ -278,7 +270,8 @@ def print_modified_funcs_features(report):
             basic_blocks,
             instr_added,
             instr_removed,
-            instr_modified,
+            instr_modified_opcode,
+            instr_modified_operand,
             func_calls
         ])
 
@@ -288,7 +281,8 @@ def print_modified_funcs_features(report):
         "BBs +/-",
         "Instr +",
         "Instr -",
-        "Instr Mod",
+        "Instr Opcode Mod",
+        "Instr Operand Mod",
         "Func Calls +/-"
     ]
     df["Total"] = df[numeric_cols].sum(axis=1)
@@ -296,6 +290,60 @@ def print_modified_funcs_features(report):
     df.drop(columns="Total", inplace=True)
 
     print(f"{len(report['modified_funcs'])} Modified Functions:")
+    print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
+
+def print_modified_opperand_funcs_features(report):
+    columns = [
+        "Function",
+        "Baseline Function",
+        "Score",
+        "BBs +/-",
+        "Instr +",
+        "Instr -",
+        "Instr Opcode Mod",
+        "Instr Operand Mod",
+        "Func Calls +/-"
+    ]
+
+    # Collect data rows from the report
+    rows = []
+    for func, func_report in report['modified_opperand_funcs'].items():
+        basic_blocks = func_report['basic_blocks'] or 0
+        instr_added = func_report['added_instr'] or 0
+        instr_removed = func_report['removed_instr'] or 0
+        instr_modified_opcode = func_report['modified_opcode_instr'] or 0
+        instr_modified_operand = func_report['modified_operand_instr'] or 0
+        func_calls = func_report['func_calls'] or 0
+
+
+
+        rows.append([
+            func_report['func_name'],
+            func_report['baseline_func_name'],
+            func_report['similarity'],
+            basic_blocks,
+            instr_added,
+            instr_removed,
+            instr_modified_opcode,
+            instr_modified_operand,
+            func_calls
+        ])
+
+    df = pd.DataFrame(rows, columns=columns)
+
+    numeric_cols = [
+        "BBs +/-",
+        "Instr +",
+        "Instr -",
+        "Instr Opcode Mod",
+        "Instr Operand Mod",
+        "Func Calls +/-"
+    ]
+    df["Total"] = df[numeric_cols].sum(axis=1)
+    df.sort_values(by="Total", ascending=False, inplace=True)
+    df.drop(columns="Total", inplace=True)
+
+    print(f"{len(report['modified_opperand_funcs'])} Modified Operand Functions:")
     print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
 def print_func_matches(report):
@@ -342,6 +390,14 @@ def print_compare_functions(report, file_oid, function):
 
             for line in u_diff['unified_diff']:
                 print(line)     
+    for mod_func in report['MODIFIED_EXECUTABLES'][file_oid]['modified_opperand_funcs']:
+        if function == report['MODIFIED_EXECUTABLES'][file_oid]['modified_opperand_funcs'][mod_func]['func_name']:
+            func_comparator = report['MODIFIED_EXECUTABLES'][file_oid]['modified_opperand_funcs'][mod_func]
+            print(func_comparator)
+            u_diff = api.retrieve("function_unified_diff", [file_oid, func_comparator['baseline_file']], {"function": func_comparator['func_name'], "baseline_function": func_comparator['baseline_func_name']})
+
+            for line in u_diff['unified_diff']:
+                print(line)     
 
 def compare_collections(args, opts):
     if len(args) < 2:
@@ -361,24 +417,29 @@ def compare_collections(args, opts):
 
     report = get_report(target_collection, baseline_collection)
 
+    triage_results = {}
+    triage_results[target_collection] = get_triage_results(report, target_collection, baseline_collection)
+    time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dump_to_csv(triage_results  , f'csv_reports/{target_collection}/{time_stamp}/file_classification_results.csv')
+
     # Calculate statistics
-    stats = calculate_statistics(report, api.expand_oids(target_collection))
+    # stats = calculate_statistics(report, api.expand_oids(target_collection))
     if view == "stats":
-        print_statistics(report, stats, target_collection, baseline_collection)
+        print_triage_results(triage_results, target_collection, baseline_collection)
     elif view == "unmatched":
-        print_statistics(report, stats, target_collection, baseline_collection)
+        print_triage_results(triage_results, target_collection, baseline_collection)
         print_unmatched_executables(report, file)
     elif view == "modified":
-        print_statistics(report, stats, target_collection, baseline_collection)
+        print_triage_results(triage_results, target_collection, baseline_collection)
         print_modified_executables(report, file)
     elif view == "failed":
-        print_statistics(report, stats, target_collection, baseline_collection)
+        print_triage_results(triage_results, target_collection, baseline_collection)
         print_failed_executable()
     else:
-        print_statistics(report, stats, target_collection, baseline_collection)
+        print_triage_results(triage_results, target_collection, baseline_collection)
 
     if file and function:
-        print_compare_functions(file, function)
+        print_compare_functions(report, file, function)
 
 def compare_collections_series(args, opts):
     # Assume get_collections returns a list of collection IDs
@@ -410,8 +471,9 @@ def compare_collections_series(args, opts):
         p.tick()
     
     # Dump the dictionaries to CSV files.
-    dump_to_csv(file_classification_results, 'csv_reports/file/file_classification_results.csv')
-    dump_to_csv(file_pairing_accuracy, 'csv_reports/file/file_pairing_accuracy.csv')
+    time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dump_to_csv(file_classification_results, f'csv_reports/series/{time_stamp}/file_classification_results.csv')
+    dump_to_csv(file_pairing_accuracy,    f'csv_reports/series/{time_stamp}/file_pairing_accuracy.csv')
 
 def import_product(args, opts):
     dir_path = args[0]
@@ -471,6 +533,45 @@ def import_dataset(args, opts):
             # Create the sample_name as "product_name-version_name"
             sample_name = f"{product}---{sample}"
             import_sample(sample_name, sample_path)
+
+def import_data(args, opts):
+    # Check if the provided path is a valid directory
+    dir_path = args[0]
+    collection_name = args[1]
+    if not os.path.isdir(dir_path):
+        return {"error": f"Target directory {dir_path} does not exist!"}
+
+    # Check if binwalk is installed
+    if not shutil.which("binwalk"):
+        return {"error": "binwalk is not installed. Please install it and try again."}
+
+    extracted_files = []
+
+    for root, _, files in os.walk(dir_path):
+        for file in files:
+            file_path = os.path.join(root, file)
+
+            try:
+                subprocess.run(["binwalk", "-e", file_path], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+                # Binwalk extracts to a folder called _<filename>.extracted
+                extracted_dir = os.path.join(root, f"_{file}.extracted")
+                if os.path.isdir(extracted_dir):
+                    extracted_files.append(extracted_dir)
+
+            except subprocess.CalledProcessError as e:
+                print(f"  Extraction failed for {file_path}: {e}")
+
+    if not extracted_files:
+        return {"message": "No extracted files found."}
+    try:
+        for extracted_dir in extracted_files:
+            oids, new_files = api.import_directory(extracted_dir)
+            api.create_collection(collection_name, oids, oids)
+    except Exception as e:
+        return {"error": f"Failed to import extracted files: {e}"}
+
+    return {"message": f"Extraction and import complete for collection {collection_name}"}
 
 exports = [
     compare_collections, 
@@ -539,13 +640,17 @@ def calculate_stats(part, total):
     if part is not int:
         return len(part), f"{round((len(part) / len(total)) * 100, 2)}%"
 
-# Helper function to dump a dictionary of dictionaries to CSV.
 def dump_to_csv(data_dict, filename):
     if not data_dict:
         print(f"No data to dump for {filename}")
         return
-    # Assume each inner dictionary has the same keys; get headers from the first entry.
+    
+    # Make sure the directory structure in the file path exists
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    
+    # Assume each inner dictionary has the same keys; get headers from the first entry
     headers = list(next(iter(data_dict.values())).keys())
+    
     with open(filename, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=headers)
         writer.writeheader()
@@ -637,7 +742,10 @@ def get_file_classification_accuracy(report, baseline_collection):
     return TP, FP, FN, TN
 
 def get_triage_results(report, target_version, baseline_version):
+    matched_file = 0
+    matched_function = 0
     modified = 0
+    modified_operand = 0
     unmatched = 0
     total_funcs = 0
 
@@ -646,7 +754,7 @@ def get_triage_results(report, target_version, baseline_version):
     for file, results in report['MATCHED_EXECUTABLES'].items():
         num_functions = results.get("Num_functions", 0)
         total_funcs += num_functions
-        unmatched += num_functions
+        matched_file += num_functions
     
     for file, results in report['UNMATCHED_EXECUTABLES'].items():
         num_functions = results.get("Num_functions", 0)
@@ -654,11 +762,14 @@ def get_triage_results(report, target_version, baseline_version):
         total_funcs += num_functions
 
     for file, results in report['MODIFIED_EXECUTABLES'].items():
+        matched_function += len(results['matched_funcs'])
         modified += len(results['modified_funcs'])
+        modified_operand += len(results['modified_opperand_funcs'])
         unmatched += len(results['unmatched_funcs'])
 
         total_funcs += len(results['matched_funcs'])
         total_funcs += len(results['modified_funcs'])
+        total_funcs += len(results['modified_opperand_funcs'])
         total_funcs += len(results['unmatched_funcs'])
 
     results = {
@@ -670,7 +781,10 @@ def get_triage_results(report, target_version, baseline_version):
             'Unmatched Executables': len(report['UNMATCHED_EXECUTABLES']),
             'Unmatched Non-Executables': len(report['UNMATCHED_NON_EXECUTABLES']),
             'Failed Executables': len(report['FAILED_EXECUTABLES']),
-            'Modified Functions': modified,
+            'Matched Functions (Matched File)': matched_file,
+            'Matched Functions (Modified File)': matched_function,
+            'Mod. Functions': modified,
+            'Mod. Functions (Excl: Operand)': modified_operand,
             'Unmatched Functions': unmatched,
             'Total Functions': total_funcs
         }

@@ -44,8 +44,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     fileB = oid_list[1]
     fileB_acfg = api.retrieve("acfg", fileB)
 
-    opts['baseline': fileB]
-
     A_unique_funcs = get_unique_functions(fileA)
     B_unique_funcs = get_unique_functions(fileB)
 
@@ -129,8 +127,6 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
     """
 
     paired_functions = {}
-    unmatched_funcs = {}  # Functions in fileA with no match in fileB
-    unmatched_baseline_funcs = {}  # Functions in fileB with no match in fileA
 
     # Retrieve function TLSH hashes
     A_funcs = api.retrieve("function_tlsh", fileA, {"replace_addrs": True}) or {}
@@ -179,8 +175,8 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
     # Step 5: Apply Hungarian Matching
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
-    matched_A = set()
-    matched_B = set()
+    unmacthed_A = set()
+    unmatched_B = set()
 
     # Step 7: Filter Matches Based on Threshold
     for i, j in zip(row_ind, col_ind):
@@ -195,12 +191,8 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
                 "baseline_file": fileB,
                 "baseline_func_name": B_funcs.get(int(funcB), {}).get('name', 'Unknown')
             }
-            matched_A.add(funcA)
-            matched_B.add(funcB)
+        else:
+            unmacthed_A.add(funcA)
+            unmatched_B.add(funcB)
 
-
-    # Step 8: Identify Added & Removed Functions
-    unmatched_funcs = {k: A_funcs[k] for k in A_keys if k not in matched_A and "DUMMY" not in str(k)}
-    unmatched_baseline_funcs = {k: B_funcs[k] for k in B_keys if k not in matched_B and "DUMMY" not in str(k)}
-
-    return paired_functions, unmatched_funcs, unmatched_baseline_funcs
+    return paired_functions, unmacthed_A, unmatched_B
