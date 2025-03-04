@@ -18,9 +18,7 @@ from oxide.core import api
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"functionA": {"type": str, "mangle": True, "default": "None"},
-            "functionB": {"type": str, "mangle": True, "default": "None"}
-}
+opts_doc = {}
 
 def documentation() -> Dict[str, Any]:
     """ Documentation for this module
@@ -46,8 +44,10 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     fileB = oid_list[1]
     fileB_acfg = api.retrieve("acfg", fileB)
 
-    A_unique_funcs, A_repeated_funcs = get_unique_functions(fileA)
-    B_unique_funcs, B_repeated_funcs = get_unique_functions(fileB)
+    opts['baseline': fileB]
+
+    A_unique_funcs = get_unique_functions(fileA)
+    B_unique_funcs = get_unique_functions(fileB)
 
     matched_funcs, matched_A, matched_B = pair_matched_functions(A_unique_funcs, B_unique_funcs)
 
@@ -60,25 +60,24 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
             del fileB_acfg[i]
 
     if len(fileA_acfg) > 0 and len(fileB_acfg) > 0:
-        modified_funcs, unmatched_funcs, unmatched_ref_funcs = pair_modified_functions(fileA, fileA_acfg, fileB, fileB_acfg)
+        modified_funcs, unmatched_funcs, unmatched_baseline_funcs = pair_modified_functions(fileA, fileA_acfg, fileB, fileB_acfg)
     else:
         modified_funcs = {}
         unmatched_funcs = {}
-        unmatched_ref_funcs = {}
+        unmatched_baseline_funcs = {}
         # Probably need to fix this at somepoint
 
     result = {
         'matched_funcs': matched_funcs,
         'modified_funcs': modified_funcs,
         'unmatched_funcs': unmatched_funcs,
-        'unmatched_ref_funcs': unmatched_ref_funcs
+        'unmatched_baseline_funcs': unmatched_baseline_funcs
     }
 
     return result
 
 def get_unique_functions(file):
     unique_funcs = {}
-    repeated_funcs = []
 
     # Retrieve functions from fileA and group by tlsh hash.
     funcs = api.retrieve("function_tlsh", file, {"replace_addrs": True})
@@ -90,19 +89,13 @@ def get_unique_functions(file):
         hash_val = funcs[f].get('tlsh hash')
         if hash_val:
             func_hashes.setdefault(hash_val, []).append((f, funcs[f]))
-        else:
-            # Probably need to figure out how we want to handle these types of functions
-            # Functions that were to small to get a hash
-            repeated_funcs.append(f)
 
     # Only keep unique tlsh hash entries for fileA.
     for hash_val, funcs in func_hashes.items():
         if len(funcs) == 1:
             unique_funcs[funcs[0][0]] = funcs[0][1]
-        else:
-            for f in funcs:
-                repeated_funcs.append(f[0])
-    return unique_funcs, repeated_funcs
+
+    return unique_funcs
 
 def pair_matched_functions(A_unique_funcs, B_unique_funcs):
     results = {}
@@ -122,7 +115,7 @@ def pair_matched_functions(A_unique_funcs, B_unique_funcs):
             B_data = B_unique_funcs[B_addr]
             results[A_addr] = {
                 'func_name': A_data.get('name'),
-                'ref_func_name': B_data.get('name')
+                'baseline_func_name': B_data.get('name')
             }
             matched_A.append(A_addr)
             matched_B.append(B_addr)
@@ -137,7 +130,7 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
 
     paired_functions = {}
     unmatched_funcs = {}  # Functions in fileA with no match in fileB
-    unmatched_ref_funcs = {}  # Functions in fileB with no match in fileA
+    unmatched_baseline_funcs = {}  # Functions in fileB with no match in fileA
 
     # Retrieve function TLSH hashes
     A_funcs = api.retrieve("function_tlsh", fileA, {"replace_addrs": True}) or {}
@@ -199,8 +192,8 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
                 "matched_function": funcB,
                 "similarity": similarity,
                 "func_name": A_funcs.get(int(funcA), {}).get('name', 'Unknown'),
-                "ref_file": fileB,
-                "ref_func_name": B_funcs.get(int(funcB), {}).get('name', 'Unknown')
+                "baseline_file": fileB,
+                "baseline_func_name": B_funcs.get(int(funcB), {}).get('name', 'Unknown')
             }
             matched_A.add(funcA)
             matched_B.add(funcB)
@@ -208,6 +201,6 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
 
     # Step 8: Identify Added & Removed Functions
     unmatched_funcs = {k: A_funcs[k] for k in A_keys if k not in matched_A and "DUMMY" not in str(k)}
-    unmatched_ref_funcs = {k: B_funcs[k] for k in B_keys if k not in matched_B and "DUMMY" not in str(k)}
+    unmatched_baseline_funcs = {k: B_funcs[k] for k in B_keys if k not in matched_B and "DUMMY" not in str(k)}
 
-    return paired_functions, unmatched_funcs, unmatched_ref_funcs
+    return paired_functions, unmatched_funcs, unmatched_baseline_funcs
