@@ -155,9 +155,9 @@ def print_category_w_baseline(report):
         if 'modified_funcs' in report and len(report['modified_funcs']) > 0:
             print_modified_funcs_features(report)
 
-        # Print modified_opperand_funcs table
-        if 'modified_opperand_funcs' in report and len(report['modified_opperand_funcs']) > 0:
-            print_modified_opperand_funcs_features(report)
+        # Print modified_operand_funcs table
+        if 'modified_operand_funcs' in report and len(report['modified_operand_funcs']) > 0:
+            print_modified_operand_funcs_features(report)
         
         # Print unmatched_funcs table
         if 'unmatched_funcs' in report and len(report['unmatched_funcs']) > 0:
@@ -292,7 +292,7 @@ def print_modified_funcs_features(report):
     print(f"{len(report['modified_funcs'])} Modified Functions:")
     print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
-def print_modified_opperand_funcs_features(report):
+def print_modified_operand_funcs_features(report):
     columns = [
         "Function",
         "Baseline Function",
@@ -307,7 +307,7 @@ def print_modified_opperand_funcs_features(report):
 
     # Collect data rows from the report
     rows = []
-    for func, func_report in report['modified_opperand_funcs'].items():
+    for func, func_report in report['modified_operand_funcs'].items():
         basic_blocks = func_report['basic_blocks'] or 0
         instr_added = func_report['added_instr'] or 0
         instr_removed = func_report['removed_instr'] or 0
@@ -343,7 +343,7 @@ def print_modified_opperand_funcs_features(report):
     df.sort_values(by="Total", ascending=False, inplace=True)
     df.drop(columns="Total", inplace=True)
 
-    print(f"{len(report['modified_opperand_funcs'])} Modified Operand Functions:")
+    print(f"{len(report['modified_operand_funcs'])} Modified Operand Functions:")
     print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
 def print_func_matches(report):
@@ -385,15 +385,13 @@ def print_compare_functions(report, file_oid, function):
     for mod_func in report['MODIFIED_EXECUTABLES'][file_oid]['modified_funcs']:
         if function == report['MODIFIED_EXECUTABLES'][file_oid]['modified_funcs'][mod_func]['func_name']:
             func_comparator = report['MODIFIED_EXECUTABLES'][file_oid]['modified_funcs'][mod_func]
-            print(func_comparator)
             u_diff = api.retrieve("function_unified_diff", [file_oid, func_comparator['baseline_file']], {"function": func_comparator['func_name'], "baseline_function": func_comparator['baseline_func_name']})
 
             for line in u_diff['unified_diff']:
                 print(line)     
-    for mod_func in report['MODIFIED_EXECUTABLES'][file_oid]['modified_opperand_funcs']:
-        if function == report['MODIFIED_EXECUTABLES'][file_oid]['modified_opperand_funcs'][mod_func]['func_name']:
-            func_comparator = report['MODIFIED_EXECUTABLES'][file_oid]['modified_opperand_funcs'][mod_func]
-            print(func_comparator)
+    for mod_func in report['MODIFIED_EXECUTABLES'][file_oid]['modified_operand_funcs']:
+        if function == report['MODIFIED_EXECUTABLES'][file_oid]['modified_operand_funcs'][mod_func]['func_name']:
+            func_comparator = report['MODIFIED_EXECUTABLES'][file_oid]['modified_operand_funcs'][mod_func]
             u_diff = api.retrieve("function_unified_diff", [file_oid, func_comparator['baseline_file']], {"function": func_comparator['func_name'], "baseline_function": func_comparator['baseline_func_name']})
 
             for line in u_diff['unified_diff']:
@@ -764,12 +762,12 @@ def get_triage_results(report, target_version, baseline_version):
     for file, results in report['MODIFIED_EXECUTABLES'].items():
         matched_function += len(results['matched_funcs'])
         modified += len(results['modified_funcs'])
-        modified_operand += len(results['modified_opperand_funcs'])
+        modified_operand += len(results['modified_operand_funcs'])
         unmatched += len(results['unmatched_funcs'])
 
         total_funcs += len(results['matched_funcs'])
         total_funcs += len(results['modified_funcs'])
-        total_funcs += len(results['modified_opperand_funcs'])
+        total_funcs += len(results['modified_operand_funcs'])
         total_funcs += len(results['unmatched_funcs'])
 
     results = {
