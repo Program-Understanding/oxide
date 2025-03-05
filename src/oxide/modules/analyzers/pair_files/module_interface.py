@@ -76,8 +76,6 @@ def pair_modified_functions(oid, modified_target_exes):
     """
     baseline_oid = modified_target_exes[oid]['baseline_oid']
 
-    print(baseline_oid)
-
     pair_results = api.retrieve("pair_functions", [oid, baseline_oid])
     modified_funcs = pair_results['modified_funcs']
 
