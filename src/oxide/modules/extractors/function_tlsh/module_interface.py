@@ -9,6 +9,7 @@ set ghidra_disasm to False for emu_angr_disasm."
 import logging
 from oxide.core import api
 import tlsh
+import hashlib
 import re
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -17,7 +18,7 @@ opts_doc = {"disasm": {"type": str, "mangle": False, "default": "ghidra_disasm",
             "output_fun_name": {"type": bool, "mangle": False, "default": False, "description": "whether to output function names or their offsets"}, 
             "output_vaddr": {"type": bool, "mangle": False, "default": False,"description":"whether to output function vaddr or function offset"}, 
             "by_opcode": {"type": bool, "mangle": False, "default":False,"description":"generate TLSH hash by opcode/mnemonic instead of entire instruction"},
-            "replace_addrs": {"type": bool, "mangle": True, "default":False,"description":"abstract away exact address values"},
+            "lift_addrs": {"type": bool, "mangle": True, "default":False,"description":"abstract away exact address values"},
             "processor": {"type": str, "mangle": True, "default": "none"}
             }
 
@@ -84,7 +85,7 @@ def process(oid, opts):
                 else:
                     for sub_str in opcode:
                         addr_val, len_val = address_value(sub_str)
-                        if opts["replace_addrs"] and addr_val:
+                        if opts["lift_addrs"] and addr_val:
                             # Replace or reuse abstracted value for the address
                             if sub_str not in abstracted_pointer_values:
                                 unique_index = len(abstracted_pointer_values)
@@ -99,8 +100,10 @@ def process(oid, opts):
                 modified_instructions.append(modified_insn_text)  # Add the modified instruction to the list
         if fun_instr_count > 5 and tlsh.hash(fun_string.encode()) != "TNULL":  # Eliminate functions that are just jumping to external
             fun_info["tlsh hash"] = tlsh.hash(fun_string.encode())
+            fun_info["hash"] = hashlib.sha1(fun_string.encode()).hexdigest()
         else:
             fun_info["tlsh hash"] = None
+            fun_info["hash"] = None
         fun_info['fun_string'] = fun_string
         fun_info['fun_instructions'] = instructions
         fun_info['modified_fun_instructions'] = modified_instructions  # Add modified instructions

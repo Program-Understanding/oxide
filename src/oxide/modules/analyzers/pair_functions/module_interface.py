@@ -47,14 +47,26 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     A_unique_funcs = get_unique_functions(fileA)
     B_unique_funcs = get_unique_functions(fileB)
 
+    A_unique_lifted_funcs = get_unique_lifted_functions(fileA)
+    B_unique_lifted_funcs = get_unique_lifted_functions(fileB)
+
     matched_funcs, matched_A, matched_B = pair_matched_functions(A_unique_funcs, B_unique_funcs)
 
+    for a in matched_A:
+        if a in A_unique_lifted_funcs:
+            del A_unique_lifted_funcs[a]
+    for b in matched_B:
+        if b in B_unique_lifted_funcs:
+            del B_unique_lifted_funcs[b]
+
+    lifted_matched_funcs, lifted_matched_A, lifted_matched_B = pair_matched_functions(A_unique_lifted_funcs, B_unique_lifted_funcs)
+
     for i in list(fileA_acfg):
-        if i not in A_unique_funcs or i in matched_A:
+        if i not in A_unique_lifted_funcs or i in lifted_matched_A or i in matched_A:
             del fileA_acfg[i]
 
     for i in list(fileB_acfg):
-        if i not in B_unique_funcs or i in matched_B:
+        if i not in B_unique_lifted_funcs or i in lifted_matched_B or i in matched_B:
             del fileB_acfg[i]
 
     if len(fileA_acfg) > 0 and len(fileB_acfg) > 0:
@@ -67,6 +79,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     result = {
         'matched_funcs': matched_funcs,
+        'lifted_matched_funcs': lifted_matched_funcs,
         'modified_funcs': modified_funcs,
         'unmatched_funcs': unmatched_funcs,
         'unmatched_baseline_funcs': unmatched_baseline_funcs
@@ -74,21 +87,42 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     return result
 
+def get_unique_lifted_functions(file):
+    unique_lifted_funcs = {}
+
+    # Retrieve functions from fileA and group by hash.
+    lifted_funcs = api.retrieve("function_tlsh", file, {"lift_addrs": True})
+    lifted_func_hashes = {}
+
+    if lifted_funcs is None: return None, None
+
+    for f in lifted_funcs:
+        hash_val = lifted_funcs[f].get('hash')
+        if hash_val:
+            lifted_func_hashes.setdefault(hash_val, []).append((f, lifted_funcs[f]))
+
+    # Only keep unique hash entries for fileA.
+    for hash_val, lifted_funcs in lifted_func_hashes.items():
+        if len(lifted_funcs) == 1:
+            unique_lifted_funcs[lifted_funcs[0][0]] = lifted_funcs[0][1]
+
+    return unique_lifted_funcs
+
 def get_unique_functions(file):
     unique_funcs = {}
 
-    # Retrieve functions from fileA and group by tlsh hash.
-    funcs = api.retrieve("function_tlsh", file, {"replace_addrs": True})
+    # Retrieve functions from fileA and group by hash.
+    funcs = api.retrieve("function_tlsh", file, {"lift_addrs": False})
     func_hashes = {}
 
     if funcs is None: return None, None
 
     for f in funcs:
-        hash_val = funcs[f].get('tlsh hash')
+        hash_val = funcs[f].get('hash')
         if hash_val:
             func_hashes.setdefault(hash_val, []).append((f, funcs[f]))
 
-    # Only keep unique tlsh hash entries for fileA.
+    # Only keep unique hash entries for fileA.
     for hash_val, funcs in func_hashes.items():
         if len(funcs) == 1:
             unique_funcs[funcs[0][0]] = funcs[0][1]
@@ -102,14 +136,14 @@ def pair_matched_functions(A_unique_funcs, B_unique_funcs):
 
     B_hashes = {}
     for func in B_unique_funcs:
-        B_hashes[B_unique_funcs[func]['tlsh hash']] = func
+        B_hashes[B_unique_funcs[func]['hash']] = func
 
     # Pair functions only if the hash is unique in both files.
     for func in A_unique_funcs:
-        if A_unique_funcs[func]['tlsh hash'] in B_hashes:
+        if A_unique_funcs[func]['hash'] in B_hashes:
             A_addr = func
             A_data = A_unique_funcs[func]
-            B_addr = B_hashes[A_data['tlsh hash']]
+            B_addr = B_hashes[A_data['hash']]
             B_data = B_unique_funcs[B_addr]
             results[A_addr] = {
                 'func_name': A_data.get('name'),
@@ -128,9 +162,9 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
 
     paired_functions = {}
 
-    # Retrieve function TLSH hashes
-    A_funcs = api.retrieve("function_tlsh", fileA, {"replace_addrs": True}) or {}
-    B_funcs = api.retrieve("function_tlsh", fileB, {"replace_addrs": True}) or {}
+    # Retrieve function hashes
+    A_funcs = api.retrieve("function_tlsh", fileA, {"lift_addrs": True}) or {}
+    B_funcs = api.retrieve("function_tlsh", fileB, {"lift_addrs": True}) or {}
 
     # Ensure both files have function vectors
     if not fileA_vectors or not fileB_vectors:

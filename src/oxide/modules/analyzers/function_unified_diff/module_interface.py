@@ -86,7 +86,7 @@ def retrieve_function_instructions(file, func):
     """
     Retrieve function instructions for a specific function by its name.
     """
-    function_data = api.retrieve('function_tlsh', file, {'replace_addrs': True})
+    function_data = api.retrieve('function_tlsh', file, {'lift_addrs': True})
     for func_id, details in function_data.items():
         if details.get('name') == func:
             return details.get('modified_fun_instructions', None)

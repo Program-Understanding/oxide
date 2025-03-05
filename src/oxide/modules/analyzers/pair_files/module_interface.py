@@ -80,26 +80,27 @@ def pair_modified_functions(oid, modified_target_exes):
     modified_funcs = pair_results['modified_funcs']
 
     modified_target_exes[oid]['matched_funcs'] = pair_results['matched_funcs']
-    modified_target_exes[oid]['modified_funcs'] = {}
-    modified_target_exes[oid]['modified_operand_funcs'] = {}
+    modified_target_exes[oid]['lifted_matched_funcs'] = pair_results['lifted_matched_funcs']
+    modified_target_exes[oid]['structurally_modified_funcs'] = {}
+    modified_target_exes[oid]['operand_modified_funcs'] = {}
     modified_target_exes[oid]['unmatched_funcs'] = pair_results['unmatched_funcs']
     modified_target_exes[oid]['unmatched_baseline_funcs'] = pair_results['unmatched_baseline_funcs']
 
     for func_addr, func in modified_funcs.items():
         diff_features = api.retrieve("function_diff_features", [oid, baseline_oid], {"functionA": func['func_name'], "functionB": func['baseline_func_name']})
         if all(feature_value == 0 for feature, feature_value in diff_features.items() if feature != 'modified_operand_instr'):
-            modified_target_exes[oid]['modified_operand_funcs'][func_addr] = diff_features
-            modified_target_exes[oid]['modified_operand_funcs'][func_addr]['func_name'] = func['func_name']
-            modified_target_exes[oid]['modified_operand_funcs'][func_addr]['baseline_func_name'] = func['baseline_func_name']
-            modified_target_exes[oid]['modified_operand_funcs'][func_addr]['similarity'] = func['similarity']
-            modified_target_exes[oid]['modified_operand_funcs'][func_addr]['baseline_file'] = func['baseline_file']
+            modified_target_exes[oid]['operand_modified_funcs'][func_addr] = diff_features
+            modified_target_exes[oid]['operand_modified_funcs'][func_addr]['func_name'] = func['func_name']
+            modified_target_exes[oid]['operand_modified_funcs'][func_addr]['baseline_func_name'] = func['baseline_func_name']
+            modified_target_exes[oid]['operand_modified_funcs'][func_addr]['similarity'] = func['similarity']
+            modified_target_exes[oid]['operand_modified_funcs'][func_addr]['baseline_file'] = func['baseline_file']
             
         else:
-            modified_target_exes[oid]['modified_funcs'][func_addr] = diff_features
-            modified_target_exes[oid]['modified_funcs'][func_addr]['func_name'] = func['func_name']
-            modified_target_exes[oid]['modified_funcs'][func_addr]['baseline_func_name'] = func['baseline_func_name']
-            modified_target_exes[oid]['modified_funcs'][func_addr]['similarity'] = func['similarity']
-            modified_target_exes[oid]['modified_funcs'][func_addr]['baseline_file'] = func['baseline_file']
+            modified_target_exes[oid]['structurally_modified_funcs'][func_addr] = diff_features
+            modified_target_exes[oid]['structurally_modified_funcs'][func_addr]['func_name'] = func['func_name']
+            modified_target_exes[oid]['structurally_modified_funcs'][func_addr]['baseline_func_name'] = func['baseline_func_name']
+            modified_target_exes[oid]['structurally_modified_funcs'][func_addr]['similarity'] = func['similarity']
+            modified_target_exes[oid]['structurally_modified_funcs'][func_addr]['baseline_file'] = func['baseline_file']
     return modified_target_exes
 
 def get_all_functions(oids):
