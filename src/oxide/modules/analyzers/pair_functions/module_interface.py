@@ -212,7 +212,7 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
     unmacthed_A = set()
     unmatched_B = set()
 
-    # Step 7: Filter Matches Based on Threshold
+    # Step 7: Filter Matches
     for i, j in zip(row_ind, col_ind):
         funcA, funcB = str(A_keys[i]), str(B_keys[j])  # Ensure they are strings
         similarity = sim_matrix[i, j]
