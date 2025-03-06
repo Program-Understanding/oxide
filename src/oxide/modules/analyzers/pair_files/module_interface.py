@@ -282,5 +282,5 @@ def get_num_funcs(oids):
         if functions:
             results[oid] = {'Num_functions': len(functions)}
         else:
-            results[oid] = 0
+            results[oid] = {'Num_functions': 0}
     return results
