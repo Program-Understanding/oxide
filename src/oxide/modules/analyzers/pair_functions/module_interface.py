@@ -91,7 +91,7 @@ def get_unique_lifted_functions(file):
     unique_lifted_funcs = {}
 
     # Retrieve functions from fileA and group by hash.
-    lifted_funcs = api.retrieve("function_tlsh", file, {"lift_addrs": True})
+    lifted_funcs = api.retrieve("function_representations", file, {"lift_addrs": True})
     lifted_func_hashes = {}
 
     if lifted_funcs is None: return None, None
@@ -112,7 +112,7 @@ def get_unique_functions(file):
     unique_funcs = {}
 
     # Retrieve functions from fileA and group by hash.
-    funcs = api.retrieve("function_tlsh", file, {"lift_addrs": False})
+    funcs = api.retrieve("function_representations", file, {"lift_addrs": False})
     func_hashes = {}
 
     if funcs is None: return None, None
@@ -163,8 +163,8 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
     paired_functions = {}
 
     # Retrieve function hashes
-    A_funcs = api.retrieve("function_tlsh", fileA, {"lift_addrs": True}) or {}
-    B_funcs = api.retrieve("function_tlsh", fileB, {"lift_addrs": True}) or {}
+    A_funcs = api.retrieve("function_representations", fileA, {"lift_addrs": True}) or {}
+    B_funcs = api.retrieve("function_representations", fileB, {"lift_addrs": True}) or {}
 
     # Ensure both files have function vectors
     if not fileA_vectors or not fileB_vectors:

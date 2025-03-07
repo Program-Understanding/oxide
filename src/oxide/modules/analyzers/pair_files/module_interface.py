@@ -106,7 +106,7 @@ def pair_modified_functions(oid, modified_target_exes):
 def get_all_functions(oids):
     functions = []
     for oid in oids:
-        funcs = api.retrieve("function_tlsh", oid)
+        funcs = api.retrieve("function_representations", oid)
         if funcs:
             functions += funcs
     return functions
@@ -244,7 +244,7 @@ def separate_uniq_repeated(oid_list: dict):
     # 1) Gather all functions from this list of OIDs
     func_to_oids = defaultdict(set)
     for oid in oid_list:
-        funcs = api.retrieve("function_tlsh", oid)
+        funcs = api.retrieve("function_representations", oid)
         if funcs:
             for func in funcs:
                 func_to_oids[func].add(oid)
@@ -253,7 +253,7 @@ def separate_uniq_repeated(oid_list: dict):
     results = {}
     for oid in oid_list:
         results[oid] = {'funcs': {}, "rep_funcs": {}, "empty_funcs": {}}
-        funcs = api.retrieve("function_tlsh", oid)
+        funcs = api.retrieve("function_representations", oid)
         if funcs:
             for func in funcs:
                 if funcs[func]['tlsh hash'] != None:
