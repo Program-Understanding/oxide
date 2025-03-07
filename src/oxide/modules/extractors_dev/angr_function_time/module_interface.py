@@ -7,8 +7,7 @@ import logging
 from angrProgress import angrProgress
 
 logger = logging.getLogger(NAME)
-opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
-            "summaries": {"type":bool, "mangle":False,"default":True,"description":"Include function summaries from function summary module as well"}}
+opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"}}
 
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
@@ -22,35 +21,75 @@ def process(oid, opts):
         return False
     f_dict = {}
     prog = angrProgress(len(g_d))
-    if opts["summaries"]:
-        function_summary = api.get_field("function_summary", oid, oid)
-        function_extract = api.retrieve("function_extract", oid,{})
+    function_summary = api.get_field("function_summary", oid, oid)
+    function_extract = api.retrieve("function_extract", oid,{})
+    if not function_summary:
+        logger.error(f"Error with function summary for {oid}")
+        return False
+    if not function_extract:
+        logger.error(f"Error with function extract for {oid}")
+        return False
     for fun in g_d:
+        f_name = g_d[fun]["name"]
         #skipping _start as it doesn't ret and will run until it times out
-        if g_d[fun]["name"] in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0"]:
+        #also skipping other libc things and things that don't have any basic blocks
+        if g_d[fun][f_name]["blocks"] == [] or f_name in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0", "__libc_start_main",
+                      #functions excluded by x86 sok
+                      "__x86.get_pc_thunk.bx", # glibc in i386 function
+               "__libc_csu_init",
+               "__libc_csu_fini",
+               "deregister_tm_clones",
+               "register_tm_clones",
+               "__do_global_dtors_aux",
+               "frame_dummy",
+               "_start",
+               "atexit",
+               "_dl_relocate_static_pie",
+               "__stat",
+               "stat64",
+               "fstat64",
+               "lstat64",
+               "fstatat64",
+               "__fstat"]:
             prog.tick()
             continue
-        if opts["summaries"] and g_d[fun]["name"] in function_summary and type(fun) is int:
-            f_dict[g_d[fun]["name"]] = {}
-            f_dict[g_d[fun]["name"]]["summary"] = function_summary[g_d[fun]["name"]]
-            f_dict[g_d[fun]["name"]]["instructions"] = function_extract[g_d[fun]["name"]]["instructions"]
-        elif opts["summaries"] or type(fun) is not int:
-            #sometimes the function comes out as a string
-            #or it doesn't have a summary
-            prog.tick()
-            continue
-        if type(fun) is int:
+        if f_name in function_summary and type(fun) is int:
+            f_dict[f_name] = {}
+            f_dict[f_name]["summary"] = function_summary[f_name]
+            f_dict[f_name]["instructions"] = function_extract[f_name]["instructions"]
+            f_dict[f_name]["angr seconds"] = ""
             with angrManager() as angrmanager:
                 angrproj = angrmanager.angr_project(oid)
                 ftime_result = angrproj.timed_underconstrained_function_run(fun,opts["timeout"])
                 if type(ftime_result) is tuple:
                     ftime = ftime_result[0]
                     stopped_early = ftime_result[1]
-                    f_dict[g_d[fun]["name"]]["angr seconds"] = f"{ftime} seconds"
+                    f_dict[f_name]["angr seconds"] = f"{ftime} seconds"
                     if stopped_early:
-                        f_dict[g_d[fun]["name"]]["stopped early for"] = stopped_early
+                        f_dict[f_name]["stopped early for"] = stopped_early
                 else:
-                    f_dict[g_d[fun]["name"]]["angr seconds"] = "angr error"
+                    f_dict[f_name]["angr seconds"] = "angr error"
+            #checking to see if we stopped early immediately due to low memory
+            #this seems to happen sometimes, maybe due to multiprocessing...
+            #like if we have too many angr processes going at once and one or more
+            #is hogging too much of the RAM, the tests start and stop immediately due
+            #to seeing the RAM being fully used up
+            if "stopped early for" in f_dict[f_name] and f_dict[f_name]["stopped early for"] == "low memory" and float(f_dict[f_name]["angr seconds"].split(" ")[0]) < 0.01:
+                with angrManager() as angrmanager:
+                    angrproj = angrmanager.angr_project(oid)
+                    ftime_result = angrproj.timed_underconstrained_function_run(fun,opts["timeout"])
+                    if type(ftime_result) is tuple:
+                        ftime = ftime_result[0]
+                        stopped_early = ftime_result[1]
+                        f_dict[f_name]["angr seconds"] = f"{ftime} seconds"
+                        if stopped_early:
+                            f_dict[f_name]["stopped early for"] = stopped_early
+                    else:
+                        f_dict[f_name]["angr seconds"] = "angr error"
+        elif type(fun) is not int:
+            #sometimes the function comes out as a string
+            prog.tick()
+            continue
         prog.tick()
     results = f_dict
     api.store(NAME,oid,results,opts)

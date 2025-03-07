@@ -16,11 +16,12 @@ def process(oid, opts):
     from oxide.core.libraries.angr_utils2 import angrManager, angrTherapy,angrManagerProxy
     angrManager.register("angr_project",angrTherapy,angrManagerProxy)
     g_d = api.get_field("ghidra_disasm",oid,"functions")
-    if not g_d:
+    if g_d is None:
         logger.error(f"Error with ghidra disassembly for {oid}!")
         return False
     f_dict = {}
     for fun in g_d:
+        fun_name = g_d[fun]["name"]
         #skipping _start as it doesn't ret and will run until it times out
         if g_d[fun]["name"] in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0"] \
            or type(fun) is not int:
@@ -34,11 +35,11 @@ def process(oid, opts):
             res : tuple[list,dict,list,list,list] | int = angrproj.function_constraints(fun,opts["registers"].split(","),opts["timeout"])
             if type(res) is tuple:
                 constraints, registers, mems, regs, syscalls = res
-                f_dict[g_d[fun]["name"]]["constraints"] = constraints
-                f_dict[g_d[fun]["name"]]["registers"] = registers
-                f_dict[g_d[fun]["name"]]["memory writes"] = mems
-                f_dict[g_d[fun]["name"]]["register writes"] = regs
-                f_dict[g_d[fun]["name"]]["syscalls"] = syscalls
+                f_dict[fun_name]["constraints"] = constraints
+                f_dict[fun_name]["registers"] = registers
+                f_dict[fun_name]["memory writes"] = mems
+                f_dict[fun_name]["register writes"] = regs
+                f_dict[fun_name]["syscalls"] = syscalls
             else:
                 match res:
                     case 0:

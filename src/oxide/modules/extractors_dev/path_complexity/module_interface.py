@@ -146,10 +146,12 @@ def process(oid, opts):
     #use ghidra to get the adjacency matrix
     original_blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
     if not original_blocks:
-        return False
+        logger.error("Couldn't get original blocks")
+        return None
     funs = api.get_field("ghidra_disasm", oid, "functions")
     if not funs:
-        return False
+        logger.error("Couldn't get functions")
+        return None
     for fun in funs:
         fun_name = funs[fun]["name"]
         fun_names.append(fun_names)
@@ -342,7 +344,9 @@ def process(oid, opts):
     env = os.environ.copy()
     try:
         subproc_out = subprocess.check_output(command, universal_newlines=True, shell=True, stderr=subprocess.STDOUT,env=env)
+        print(f"subproc out: {subproc_out}")
     except subprocess.CalledProcessError as e:
+        logger.error("Issue with calling Metrinome")
         print(e.output)
         outstring = ""
         for f in fun_filenames:
@@ -364,7 +368,7 @@ def process(oid, opts):
     #         os.remove(f_fname)
     #     except:
     #         pass
-    # while not api.store(NAME,oid,results,opts):
-    #     sleep(1)
-    #     logger.info(f"trying to store to api")
+    while not api.store(NAME,oid,results,opts):
+        sleep(1)
+        logger.info(f"trying to store to api")
     return results
