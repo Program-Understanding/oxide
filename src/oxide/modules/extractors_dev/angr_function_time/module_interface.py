@@ -33,7 +33,7 @@ def process(oid, opts):
         f_name = g_d[fun]["name"]
         #skipping _start as it doesn't ret and will run until it times out
         #also skipping other libc things and things that don't have any basic blocks
-        if g_d[fun][f_name]["blocks"] == [] or f_name in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0", "__libc_start_main",
+        if g_d[fun]["blocks"] == [] or f_name in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0", "__libc_start_main",
                       #functions excluded by x86 sok
                       "__x86.get_pc_thunk.bx", # glibc in i386 function
                "__libc_csu_init",
