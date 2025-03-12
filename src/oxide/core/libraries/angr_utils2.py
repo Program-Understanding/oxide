@@ -36,15 +36,26 @@ def syscalls_breakpoint(state):
     state.globals["syscalls"].append(state.inspect.syscall_name)
 
 class angrTherapy:
-    def __init__(self,oid):
+    def __init__(self,oid : str):
         import angr
         """
         initiate an angr project given an oid
         """
-        data=api.get_field(api.source(oid),oid,"data",{})
-        f = api.get_field("file_meta",oid,"names").pop()
-        f = api.tmp_file(f,data)
-        self._proj = angr.Project(f)
+        oid_source = api.source(oid)
+        if oid_source is None:
+            logger.error(f"Couldn't get source of OID")
+            return False
+        data=api.get_field(oid_source,oid,"data",{})
+        if data is None:
+            logger.error(f"Couldn't get data from OID")
+            return False
+        f : list[str]|None = api.get_field("file_meta",oid,"names")
+        if f is None:
+            logger.error(f"Couldn't get the file source of OID")
+            return False
+        ff : str= f.pop()
+        fff = api.tmp_file(ff,data)
+        self._proj = angr.Project(fff)
         self._opts = angr.options
 
     def timed_underconstrained_function_run(self,function_offset: int,timeout:int=600)->tuple | bool:
