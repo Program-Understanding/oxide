@@ -387,8 +387,8 @@ def retrieve_all(mod_name: str, dir_override: Optional[str] = None) -> dict:
     return return_val
 
 
-def store(mod_name: str, oid: str, data: bytes, opts: dict = {}, block: bool = True,
-          dir_override: Optional[str] = None):
+def store(mod_name: str, oid: str, data: Dict[str|int,Any], opts: dict = {}, block: bool = True,
+          dir_override: Optional[str] = None) -> bool:
     if dir_override:
         change_db_dir(dir_override)
     return_val = datastore.store(mod_name, oid, data, opts, block)
