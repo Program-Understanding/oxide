@@ -71,9 +71,8 @@ class angrTherapy:
             try:
                 fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS},prototype=prototype)
             except Exception as e:
-                logger.error("Something wrong w/ using prototype... Making call state without prototype")
-                logger.error(f"Protoype was {prototype}")
-                logger.error(traceback.format_exc())
+                logger.warning("Something wrong w/ using prototype... Making call state without prototype")
+                logger.warning(f"Protoype was {prototype}")
                 fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS})
         else:
             fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS})
@@ -87,7 +86,9 @@ class angrTherapy:
             if "lowmem" in simgr.stashes and len(simgr.stashes["lowmem"]) > 0:
                 return (time()-start_time, "low memory")
             return (time()-start_time, False)
-        except Exception:
+        except Exception as e:
+            logger.error(f"angr caught exception {e}")
+            logger.error(traceback.format_exc())
             return False
 
     def function_constraints(self,function_offset:int, registers:list[str]=[],timeout:int=600)->tuple|int:
@@ -154,7 +155,7 @@ class angrTherapy:
                 logger.warning(f"State errored due to {error.error}")
             return constraints, registers_constraints, memory_updates, reg_updates,syscalls
         except Exception as e:
-            logger.error(f"caught exception {e}")
+            logger.error(f"angr caught exception {e}")
             logger.error(f"traceback {traceback.format_exc()}")
             return 0
 

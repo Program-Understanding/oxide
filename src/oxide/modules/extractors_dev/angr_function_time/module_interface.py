@@ -33,17 +33,17 @@ def process(oid, opts):
     for fun in g_d:
         f_name = g_d[fun]["name"]        
         signature = g_d[fun]["signature"]
-        #have to remove stuff that ghidra adds to signature, like "__stdcall"
-        signature = re.sub(r'\b__\w+\b',"",signature)
+        #have to remove stuff that ghidra adds to signature that isn't good
+        signature = re.sub(r'\b__stdcall\b',"",signature)
         #skipping anything with "undefined" in the function signature
         #undefined is ghidra saying it doesn't know the signature properly
         #and if we don't know the signature properly its best to move on
-        if "undefined" in signature:
+        if "undefined" in signature or "FILE" in signature:
             prog.tick()
             continue
         #skipping _start as it doesn't ret and will run until it times out
         #also skipping other libc things and things that don't have any basic blocks
-        if g_d[fun]["blocks"] == [] or f_name in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0", "__libc_start_main",
+        if g_d[fun]["blocks"] == [] or f_name in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0", "__libc_start_main", "malloc", "puts",
                       #functions excluded by x86 sok
                       "__x86.get_pc_thunk.bx", # glibc in i386 function
                "__libc_csu_init",
