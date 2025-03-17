@@ -5,29 +5,29 @@ def retrieve_function_instructions(file, func):
     """
     Retrieve function instructions for a specific function by its name.
     """
-    function_data = api.retrieve('function_tlsh', file, {'lfit_addrs': True})
+    function_data = api.retrieve('function_representations', file, {'lfit_addrs': True})
     for func_id, details in function_data.items():
         if details.get('name') == func:
             return details.get('modified_fun_instructions', None)
     return None
 
-def diff_features(file, func_name, func_insts, ref_file, ref_func_name, ref_func_insts):
+def diff_features(target_file, target_func_name, target_func_insts, baseline_file, baseline_func_name, baseline_func_insts):
     added_instr = 0
     removed_instr = 0
     basic_blocks = 0
     func_calls = 0
 
     # Control Flow
-    num_func_bb, num_func_calls = _get_bb(file, func_name)
-    num_ref_func_bb, num_ref_func_calls = _get_bb(ref_file, ref_func_name)
+    num_target_func_bb, num_target_func_calls = _get_bb(target_file, target_func_name)
+    num_baseline_func_bb, num_baseline_func_calls = _get_bb(baseline_file, baseline_func_name)
 
-    if num_func_bb - num_ref_func_bb != 0:
-        basic_blocks = num_func_bb - num_ref_func_bb
+    if num_target_func_bb - num_baseline_func_bb != 0:
+        basic_blocks = num_target_func_bb - num_baseline_func_bb
 
-    if num_func_calls - num_ref_func_calls != 0:
-        func_calls = num_func_calls - num_ref_func_calls
+    if num_target_func_calls - num_baseline_func_calls != 0:
+        func_calls = num_target_func_calls - num_baseline_func_calls
 
-    added_instr, removed_instr, opcode_modifications, operand_modifications = _instruction_changes(func_insts, ref_func_insts)
+    added_instr, removed_instr, opcode_modifications, operand_modifications = _instruction_changes(target_func_insts, baseline_func_insts)
     return added_instr, removed_instr, opcode_modifications, operand_modifications, basic_blocks, func_calls
 
 def _get_bb(file, func):
@@ -39,43 +39,6 @@ def _get_bb(file, func):
             num_bb = len(file_disasm['functions'][func_addr]['blocks'])
             return function_calls, num_bb
     return 0, 0
-
-# def _instruction_changes(func_insts, ref_func_insts):
-#     u_diff = unified_diff(func_insts, ref_func_insts, n=0)
-
-#     # Initialize counters
-#     lines_added = 0
-#     lines_removed = 0
-#     total_lines_added = 0
-#     total_lines_removed = 0
-#     total_lines_modified = 0
-
-#     # Process the diff
-#     for line in u_diff:
-#         if line.startswith("---") or line.startswith("+++"):
-#             # Skip file headers
-#             continue
-        
-#         if line.startswith("-"):
-#             lines_removed += 1
-#         elif line.startswith("+"):
-#             lines_added += 1
-#         elif line.startswith("@@"):
-#             if lines_added == lines_removed:
-#                 total_lines_modified += lines_added
-#             else:
-#                 total_lines_added += lines_added
-#                 total_lines_removed += lines_removed
-#             lines_added = 0
-#             lines_removed = 0
-#             continue
-#         else:
-#             continue
-
-#         if lines_added == lines_removed:
-#             total_lines_modified += lines_added
-
-#     return total_lines_added, total_lines_removed, total_lines_modified
 
 def parse_instruction(line):
     """
@@ -124,7 +87,7 @@ def _instruction_changes(func_insts, ref_func_insts):
         pairs_to_check = min(len(minus_list), len(plus_list))
         for i in range(pairs_to_check):
             opcode_minus, operands_minus = parse_instruction(minus_list[i])
-            opcode_plus, operands_plus = parse_instruction(plus_list[i])
+            opcode_plus, operands_plus = parse_instruction(minus_list[i])
 
             if opcode_minus == opcode_plus:
                 # Same opcode => operand modification

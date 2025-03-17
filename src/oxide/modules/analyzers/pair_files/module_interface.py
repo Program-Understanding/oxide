@@ -138,20 +138,22 @@ def classify_files(uniq_target_exes, uniq_baseline_exes):
     # similarity matrix. We record them in failed_exes.
     ########################################################################
     filtered_oid_list = []
-    for oid in target_oid_list:
-        disasm_result = api.retrieve('ghidra_disasm', oid)
+    for target_oid in target_oid_list:
+        disasm_result = api.retrieve('ghidra_disasm', target_oid)
         if disasm_result is None or disasm_result == {} or disasm_result["original_blocks"] == {}:
-            failed_target_exes.append(oid)
+            failed_target_exes.append(target_oid)
+            unmatched_target_oids.discard(target_oid)
         else:
-            filtered_oid_list.append(oid)
+            filtered_oid_list.append(target_oid)
             
     target_oid_list = filtered_oid_list
 
     filtered_baseline_oid_list = []
     for baseline_oid in baseline_oid_list:
-        disasm_result = api.retrieve('ghidra_disasm', oid)
+        disasm_result = api.retrieve('ghidra_disasm', baseline_oid)
         if disasm_result is None or disasm_result == {} or disasm_result["original_blocks"] == {}:
             failed_baseline_exes.append(baseline_oid)
+            unmatched_baseline_oids.discard(baseline_oid)
         else:
             filtered_baseline_oid_list.append(baseline_oid)
     baseline_oid_list = filtered_baseline_oid_list
@@ -166,17 +168,26 @@ def classify_files(uniq_target_exes, uniq_baseline_exes):
     # Also drop files that do not have a valid TLSH.
     ########################################################################
     file_hashes = {}
-    for oid in target_oid_list + baseline_oid_list:
-        tlsh_hash = api.get_field("tlshash", oid, 'hash')
+
+    # Process target_oid_list
+    for target_oid in target_oid_list[:]:  # Iterate over a copy to modify the original safely
+        tlsh_hash = api.get_field("tlshash", target_oid, 'hash')
         if not tlsh_hash or tlsh_hash == "TNULL":
-            # Record failures, remove them from the list
-            failed_target_exes.append(oid)
-            if oid in target_oid_list:
-                target_oid_list.remove(oid)
-            if oid in baseline_oid_list:
-                baseline_oid_list.remove(oid)
-            continue
-        file_hashes[oid] = tlsh_hash
+            target_oid_list.remove(target_oid)
+            unmatched_target_oids.discard(target_oid)
+            failed_target_exes.append(target_oid)
+        else:
+            file_hashes[target_oid] = tlsh_hash
+
+    # Process baseline_oid_list
+    for baseline_oid in baseline_oid_list[:]:  # Iterate over a copy to modify the original safely
+        tlsh_hash = api.get_field("tlshash", baseline_oid, 'hash')
+        if not tlsh_hash or tlsh_hash == "TNULL":
+            baseline_oid_list.remove(baseline_oid)
+            unmatched_baseline_oids.discard(baseline_oid)
+        else:
+            file_hashes[baseline_oid] = tlsh_hash
+
 
     # Recompute lengths after removing invalid TLSH files
     len_A, len_B = len(target_oid_list), len(baseline_oid_list)
@@ -187,9 +198,9 @@ def classify_files(uniq_target_exes, uniq_baseline_exes):
     # STEP 2: Build cost (distance) matrix based on TLSH diff
     ########################################################################
     similarity_matrix = np.full((len_A, len_B), 9999)  # Large finite padding
-    for i, oid in enumerate(target_oid_list):
+    for i, target_oid in enumerate(target_oid_list):
         for j, baseline_oid in enumerate(baseline_oid_list):
-            hashA = file_hashes.get(oid)
+            hashA = file_hashes.get(target_oid)
             hashB = file_hashes.get(baseline_oid)
             if hashA and hashB:
                 tlsh_distance = tlsh.diff(hashA, hashB)  # Lower = better match
@@ -219,16 +230,16 @@ def classify_files(uniq_target_exes, uniq_baseline_exes):
     # STEP 5: Assign Matches
     ########################################################################
     for i, j in zip(row_ind, col_ind):
-        oid = target_oid_list[i]
+        target_oid = target_oid_list[i]
         baseline_oid = baseline_oid_list[j]
         best_score = similarity_matrix[i, j]
 
-        if "DUMMY" not in oid and "DUMMY" not in baseline_oid:
-            modified_target_exes[oid] = {
+        if "DUMMY" not in target_oid and "DUMMY" not in baseline_oid:
+            modified_target_exes[target_oid] = {
                 "baseline_oid": baseline_oid,
                 "similarity": best_score
             }
-            unmatched_target_oids.discard(oid)
+            unmatched_target_oids.discard(target_oid)
             unmatched_baseline_oids.discard(baseline_oid)
     return modified_target_exes, unmatched_target_oids, failed_target_exes
 

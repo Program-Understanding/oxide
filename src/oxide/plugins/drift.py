@@ -11,7 +11,7 @@ import pandas as pd
 import os
 import pandas as pd
 import datetime
-
+import time
 
 from oxide.core import progress, api
 
@@ -341,20 +341,19 @@ def print_operand_modified_features(report):
     df.sort_values(by="Total", ascending=False, inplace=True)
     df.drop(columns="Total", inplace=True)
 
-    print(f"{len(report['operand_modified_funcs'])} Modified Operand Functions:")
+    print(f"{len(report['operand_modified_funcs'])} Operand Modified Functions:")
     print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
 def print_func_matches(report):
     print(f"{len(report['matched_funcs'])} Exact Function Matches")
-    print(f"{len(report['lifted_matched_funcs'])} Exact Function Matches")
+    print(f"{len(report['lifted_matched_funcs'])} Lifted-Function Matches")
 
 def print_unmatched_funcs(report):
     num_unmatched = len(report['unmatched_funcs'])
     print(f"{num_unmatched} Unmatched Functions:")
 
-    rows = []
     for func, details in report['unmatched_funcs'].items():
-        rows.append([details])
+        print(details)
 
 def print_table_match(file_id, baseline_file_id, similarity):
     # Retrieve file names for both file IDs
@@ -417,7 +416,11 @@ def compare_collections(args, opts):
     triage_results = {}
     triage_results[target_collection] = get_triage_results(report, target_collection, baseline_collection)
     time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    dump_to_csv(triage_results  , f'csv_reports/{target_collection}/{time_stamp}/file_classification_results.csv')
+    dump_to_csv(triage_results , f'csv_reports/{target_collection}/{time_stamp}/file_classification_results.csv')
+
+    triage_function_results = {}
+    triage_function_results = get_triage_function_results(report)
+    dump_to_csv(triage_function_results, f'csv_reports/{target_collection}/{time_stamp}/function_classification_results.csv')
 
     # Calculate statistics
     # stats = calculate_statistics(report, api.expand_oids(target_collection))
@@ -452,16 +455,23 @@ def compare_collections_series(args, opts):
 
     file_classification_results = {}
     file_pairing_accuracy = {}
+    report_times = {}  # Dictionary to record report times
 
     # Keep track of the baseline version
     baseline_version = None
 
     p = progress.Progress(len(collections))
     for target_collection, product, target_version, version_tuple in parsed_collections:
+        # Record the start time for generating the report
+        start_time = time.time()
         report = get_report(target_collection, baseline_collection)
-
-        file_pairing_accuracy[target_version] = get_file_pairing_accuracy(report, target_version, baseline_version, baseline_collection)
-        file_classification_results[target_version] = get_triage_results(report, target_version, baseline_version)
+        end_time = time.time()
+        report_times[target_version] = end_time - start_time
+        
+        file_pairing_accuracy[target_version] = get_file_pairing_accuracy(
+            report, target_version, baseline_version, baseline_collection)
+        file_classification_results[target_version] = get_triage_results(
+            report, target_version, baseline_version)
 
         baseline_version = target_version
         baseline_collection = target_collection
@@ -470,7 +480,8 @@ def compare_collections_series(args, opts):
     # Dump the dictionaries to CSV files.
     time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     dump_to_csv(file_classification_results, f'csv_reports/series/{time_stamp}/file_classification_results.csv')
-    dump_to_csv(file_pairing_accuracy,    f'csv_reports/series/{time_stamp}/file_pairing_accuracy.csv')
+    dump_to_csv(file_pairing_accuracy, f'csv_reports/series/{time_stamp}/file_pairing_accuracy.csv')
+    dump_to_csv(report_times, f'csv_reports/series/{time_stamp}/report_times.csv')
 
 def import_product(args, opts):
     dir_path = args[0]
@@ -625,7 +636,7 @@ def get_collections(args=None, opts=None):
 
 def split_collection(input_string):
     # Split the string on the rightmost occurrence of '-'
-    parts = input_string.rsplit('-', maxsplit=1)
+    parts = input_string.rsplit('-v', maxsplit=1)
     
     # Check if the delimiter was found and return both parts
     if len(parts) == 2:
@@ -641,18 +652,25 @@ def dump_to_csv(data_dict, filename):
     if not data_dict:
         print(f"No data to dump for {filename}")
         return
+
+    # Check if the first value is a dict or not
+    first_value = next(iter(data_dict.values()))
+    if isinstance(first_value, dict):
+        headers = list(first_value.keys())
+        rows = list(data_dict.values())
+    else:
+        # For simple values, use 'key' and 'value' as headers
+        headers = ['key', 'value']
+        rows = [{'key': k, 'value': v} for k, v in data_dict.items()]
     
-    # Make sure the directory structure in the file path exists
+    # Ensure directory exists
     os.makedirs(os.path.dirname(filename), exist_ok=True)
-    
-    # Assume each inner dictionary has the same keys; get headers from the first entry
-    headers = list(next(iter(data_dict.values())).keys())
     
     with open(filename, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=headers)
         writer.writeheader()
-        for row in data_dict.values():
-            writer.writerow(row)
+        writer.writerows(rows)
+
 
 def get_file_pairing_accuracy(files_report, target_version, baseline_version, baseline_collection, output_dir="csv_reports"):
     os.makedirs(output_dir, exist_ok=True)
@@ -749,22 +767,22 @@ def get_triage_results(report, target_version, baseline_version):
 
     results = {}
     
-    for file, results in report['UNMATCHED_EXECUTABLES'].items():
-        num_functions = results.get("Num_functions", 0)
+    for file, file_results in report['UNMATCHED_EXECUTABLES'].items():
+        num_functions = file_results.get("Num_functions", 0)
         unmatched += num_functions
 
-    for file, results in report['MODIFIED_EXECUTABLES'].items():
-        matched_function += len(results['matched_funcs'])
-        lifted_matched_function += len(results['lifted_matched_funcs'])
-        structurally_modified += len(results['structurally_modified_funcs'])
-        modified_operand += len(results['operand_modified_funcs'])
-        unmatched += len(results['unmatched_funcs'])
+    for file, file_results in report['MODIFIED_EXECUTABLES'].items():
+        matched_function += len(file_results['matched_funcs'])
+        lifted_matched_function += len(file_results['lifted_matched_funcs'])
+        structurally_modified += len(file_results['structurally_modified_funcs'])
+        modified_operand += len(file_results['operand_modified_funcs'])
+        unmatched += len(file_results['unmatched_funcs'])
 
-        total_funcs += len(results['matched_funcs'])
-        total_funcs += len(results['lifted_matched_funcs'])
-        total_funcs += len(results['structurally_modified_funcs'])
-        total_funcs += len(results['operand_modified_funcs'])
-        total_funcs += len(results['unmatched_funcs'])
+        total_funcs += len(file_results['matched_funcs'])
+        total_funcs += len(file_results['lifted_matched_funcs'])
+        total_funcs += len(file_results['structurally_modified_funcs'])
+        total_funcs += len(file_results['operand_modified_funcs'])
+        total_funcs += len(file_results['unmatched_funcs'])
 
     results = {
             'Target': target_version,
@@ -782,6 +800,20 @@ def get_triage_results(report, target_version, baseline_version):
             'Unmatched Functions': unmatched,
             'Total Functions': total_funcs
         }
+
+    return results
+
+def get_triage_function_results(report):
+    results = {}
+
+    for file, file_results in report['MODIFIED_EXECUTABLES'].items():
+        results[file] = {}
+        results[file]['File'] = file
+        results[file]['Matched'] = len(file_results['matched_funcs'])
+        results[file]['Lifted-Matched'] = len(file_results['lifted_matched_funcs'])
+        results[file]['Structurally-Modified'] = len(file_results['structurally_modified_funcs'])
+        results[file]['Operand-Modified'] = len(file_results['operand_modified_funcs'])
+        results[file]['Unmatched'] = len(file_results['unmatched_funcs'])
 
     return results
 

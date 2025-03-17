@@ -37,12 +37,28 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     result = {}
 
+    matched_funcs = {}
+    matched_A = []
+    matched_B = []
+
+    lifted_matched_funcs = {}
+    lifted_matched_A = []
+    lifted_matched_B = []
+
+    modified_funcs = {}
+    unmatched_funcs = {}
+    unmatched_baseline_funcs = {}
+
     # Retrieve ACFGs for both files
     fileA = oid_list[0]
     fileA_acfg = api.retrieve("acfg", fileA)
+    if fileA_acfg is None:
+        fileA_acfg = {}
 
     fileB = oid_list[1]
     fileB_acfg = api.retrieve("acfg", fileB)
+    if fileB_acfg is None:
+        fileB_acfg = {}
 
     A_unique_funcs = get_unique_functions(fileA)
     B_unique_funcs = get_unique_functions(fileB)
@@ -50,7 +66,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     A_unique_lifted_funcs = get_unique_lifted_functions(fileA)
     B_unique_lifted_funcs = get_unique_lifted_functions(fileB)
 
-    matched_funcs, matched_A, matched_B = pair_matched_functions(A_unique_funcs, B_unique_funcs)
+    if A_unique_funcs and B_unique_funcs:
+        matched_funcs, matched_A, matched_B = pair_matched_functions(A_unique_funcs, B_unique_funcs)
 
     for a in matched_A:
         if a in A_unique_lifted_funcs:
@@ -59,7 +76,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         if b in B_unique_lifted_funcs:
             del B_unique_lifted_funcs[b]
 
-    lifted_matched_funcs, lifted_matched_A, lifted_matched_B = pair_matched_functions(A_unique_lifted_funcs, B_unique_lifted_funcs)
+    if A_unique_lifted_funcs and B_unique_lifted_funcs:
+        lifted_matched_funcs, lifted_matched_A, lifted_matched_B = pair_matched_functions(A_unique_lifted_funcs, B_unique_lifted_funcs)
 
     for i in list(fileA_acfg):
         if i not in A_unique_lifted_funcs or i in lifted_matched_A or i in matched_A:
@@ -71,11 +89,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     if len(fileA_acfg) > 0 and len(fileB_acfg) > 0:
         modified_funcs, unmatched_funcs, unmatched_baseline_funcs = pair_modified_functions(fileA, fileA_acfg, fileB, fileB_acfg)
-    else:
-        modified_funcs = {}
-        unmatched_funcs = {}
-        unmatched_baseline_funcs = {}
-        # Probably need to fix this at somepoint
 
     result = {
         'matched_funcs': matched_funcs,
@@ -94,7 +107,7 @@ def get_unique_lifted_functions(file):
     lifted_funcs = api.retrieve("function_representations", file, {"lift_addrs": True})
     lifted_func_hashes = {}
 
-    if lifted_funcs is None: return None, None
+    if lifted_funcs is None: return None
 
     for f in lifted_funcs:
         hash_val = lifted_funcs[f].get('hash')
@@ -115,7 +128,7 @@ def get_unique_functions(file):
     funcs = api.retrieve("function_representations", file, {"lift_addrs": False})
     func_hashes = {}
 
-    if funcs is None: return None, None
+    if funcs is None: return None
 
     for f in funcs:
         hash_val = funcs[f].get('hash')
@@ -136,7 +149,12 @@ def pair_matched_functions(A_unique_funcs, B_unique_funcs):
 
     B_hashes = {}
     for func in B_unique_funcs:
-        B_hashes[B_unique_funcs[func]['hash']] = func
+        if B_unique_funcs[func] is None:  # Ensure it's not None
+            continue  # Skip invalid entries
+
+        hash_val = B_unique_funcs[func].get('hash')  # Use .get() to avoid KeyError
+        if hash_val is not None:  # Ensure hash is not None
+            B_hashes[hash_val] = func
 
     # Pair functions only if the hash is unique in both files.
     for func in A_unique_funcs:
@@ -209,8 +227,8 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
     # Step 5: Apply Hungarian Matching
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
-    unmacthed_A = set()
-    unmatched_B = set()
+    unmacthed_A = {}
+    unmatched_B = {}
 
     # Step 7: Filter Matches
     for i, j in zip(row_ind, col_ind):
@@ -225,8 +243,9 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
                 "baseline_file": fileB,
                 "baseline_func_name": B_funcs.get(int(funcB), {}).get('name', 'Unknown')
             }
-        else:
-            unmacthed_A.add(funcA)
-            unmatched_B.add(funcB)
+        elif "DUMMY" not in funcA:
+            unmacthed_A[funcA] = A_funcs.get(int(funcA), {}).get('name', 'Unknown')
+        elif "DUMMY" not in funcB:
+            unmatched_B[funcB] = B_funcs.get(int(funcB), {}).get('name', 'Unknown')
 
     return paired_functions, unmacthed_A, unmatched_B
