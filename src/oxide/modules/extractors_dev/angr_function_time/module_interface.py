@@ -5,6 +5,7 @@ DESC="Time how long a function takes to run in angr"
 from oxide.core import api
 import logging
 from angrProgress import angrProgress
+import re
 
 logger = logging.getLogger(NAME)
 opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"}}
@@ -30,7 +31,16 @@ def process(oid, opts):
         logger.error(f"Error with function extract for {oid}")
         return False
     for fun in g_d:
-        f_name = g_d[fun]["name"]
+        f_name = g_d[fun]["name"]        
+        signature = g_d[fun]["signature"]
+        #have to remove stuff that ghidra adds to signature, like "__stdcall"
+        signature = re.sub(r'\b__\w+\b',"",signature)
+        #skipping anything with "undefined" in the function signature
+        #undefined is ghidra saying it doesn't know the signature properly
+        #and if we don't know the signature properly its best to move on
+        if "undefined" in signature:
+            prog.tick()
+            continue
         #skipping _start as it doesn't ret and will run until it times out
         #also skipping other libc things and things that don't have any basic blocks
         if g_d[fun]["blocks"] == [] or f_name in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0", "__libc_start_main",
@@ -58,9 +68,10 @@ def process(oid, opts):
             f_dict[f_name]["summary"] = function_summary[f_name]
             f_dict[f_name]["instructions"] = function_extract[f_name]["instructions"]
             f_dict[f_name]["angr seconds"] = ""
+            #logger.info(f"Function signature {signature}")
             with angrManager() as angrmanager:
                 angrproj = angrmanager.angr_project(oid)
-                ftime_result = angrproj.timed_underconstrained_function_run(fun,opts["timeout"])
+                ftime_result = angrproj.timed_underconstrained_function_run(fun,opts["timeout"],signature)
                 if type(ftime_result) is tuple:
                     ftime = ftime_result[0]
                     stopped_early = ftime_result[1]
@@ -77,7 +88,7 @@ def process(oid, opts):
             if "stopped early for" in f_dict[f_name] and f_dict[f_name]["stopped early for"] == "low memory" and float(f_dict[f_name]["angr seconds"].split(" ")[0]) < 0.01:
                 with angrManager() as angrmanager:
                     angrproj = angrmanager.angr_project(oid)
-                    ftime_result = angrproj.timed_underconstrained_function_run(fun,opts["timeout"])
+                    ftime_result = angrproj.timed_underconstrained_function_run(fun,opts["timeout"],signature)
                     if type(ftime_result) is tuple:
                         ftime = ftime_result[0]
                         stopped_early = ftime_result[1]

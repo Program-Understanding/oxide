@@ -5,7 +5,7 @@ remaking angr utils as i find that the existing one needs some maintenance,
 but i'd like to free it and also rewrite it over time without breaking things
 """
 from multiprocessing.managers import BaseManager, BaseProxy
-
+import traceback
 import logging
 #add silly libraries that want to talk here
 for lib in ["angr", "claripy","cle"]:
@@ -58,7 +58,7 @@ class angrTherapy:
         self._proj = angr.Project(fff)
         self._opts = angr.options
 
-    def timed_underconstrained_function_run(self,function_offset: int,timeout:int=600)->tuple | bool:
+    def timed_underconstrained_function_run(self,function_offset: int,timeout:int=600, prototype:str="")->tuple | bool:
         from time import time
         #first run the analysis that'll make simprocedures for all other function calls
         #self._proj.analyses.CalleeCleanupFinder()
@@ -67,7 +67,16 @@ class angrTherapy:
         if angr_fun_addr > self._proj.loader.max_addr:
             return False
         #add the option to run the call state w/o following calls
-        fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS})
+        if prototype:
+            try:
+                fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS},prototype=prototype)
+            except Exception as e:
+                logger.error("Something wrong w/ using prototype... Making call state without prototype")
+                logger.error(f"Protoype was {prototype}")
+                logger.error(traceback.format_exc())
+                fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS})
+        else:
+            fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS})
         simgr = self._proj.factory.simgr(fun_call_state)
         start_time = time()
         try:
@@ -151,8 +160,8 @@ class angrTherapy:
 
 class angrManagerProxy(BaseProxy):
     _exposed_ = ("timed_underconstrained_function_run","function_constraints")
-    def timed_underconstrained_function_run(self, function_offset: int,timeout=600):
-        return self._callmethod("timed_underconstrained_function_run",(function_offset,timeout))
+    def timed_underconstrained_function_run(self, function_offset: int,timeout=600,prototype:str=""):
+        return self._callmethod("timed_underconstrained_function_run",(function_offset,timeout,prototype))
     def function_constraints(self,function_offset:int,registers:list[str]=[],timeout:int=600):
         return self._callmethod("function_constraints",(function_offset,registers,timeout))
 
