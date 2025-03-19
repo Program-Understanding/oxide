@@ -164,7 +164,7 @@ def user_data_directory():
     else:
         path = os.getenv('XDG_DATA_HOME', Path("~/.local/share").expanduser())
         if APPLICATION:
-            path = path / APPLICATION
+            path = path = Path(path) / APPLICATION
     return path
 
 def set_application_directories() -> None:
