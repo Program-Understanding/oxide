@@ -154,7 +154,7 @@ def disassemble_wcap(file_size, data, header, tool_insns) -> Optional[dict]:
             mode = capstone.CS_MODE_ARM
         else:
             return None
-    elif header.machine in ("x86", "x86_64"):
+    elif header.machine in ("x86", "x86_64") or header.type == "PE":
         machine = capstone.CS_ARCH_X86
         if header.insn_mode == 32:
             mode = capstone.CS_MODE_32
@@ -195,7 +195,7 @@ def disassemble_wcap(file_size, data, header, tool_insns) -> Optional[dict]:
                 continue
 
         if insn.id == 0:
-            logger.info("insn id 0 at %s".format(addr))
+            # logger.info("insn id 0 at %s".format(addr))
             continue
 
         instruction = {}
