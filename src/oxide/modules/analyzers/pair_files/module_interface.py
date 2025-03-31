@@ -69,38 +69,60 @@ def results(collection_list: List[str], opts: dict) -> Dict[str, dict]:
 
     return result
 
+
 def pair_modified_functions(oid, modified_target_exes):
     """
     Identify modified functions by comparing them with baseline functions and 
     classify them based on their match scores.
     """
-    baseline_oid = modified_target_exes[oid]['baseline_oid']
+    # Get the target exe details and its associated baseline OID
+    target_exe = modified_target_exes[oid]
+    baseline_oid = target_exe['baseline_oid']
 
+    # Retrieve function pairing results between the target and baseline
     pair_results = api.retrieve("pair_functions", [oid, baseline_oid])
     modified_funcs = pair_results['modified_funcs']
+    lifted_matched = pair_results['lifted_matched_funcs']
 
-    modified_target_exes[oid]['matched_funcs'] = pair_results['matched_funcs']
-    modified_target_exes[oid]['lifted_matched_funcs'] = pair_results['lifted_matched_funcs']
-    modified_target_exes[oid]['structurally_modified_funcs'] = {}
-    modified_target_exes[oid]['operand_modified_funcs'] = {}
-    modified_target_exes[oid]['unmatched_funcs'] = pair_results['unmatched_funcs']
-    modified_target_exes[oid]['unmatched_baseline_funcs'] = pair_results['unmatched_baseline_funcs']
+    # Initialize keys in the target exe dictionary
+    target_exe.update({
+        'matched_funcs': pair_results['matched_funcs'],
+        'lifted_matched_funcs': {},
+        'structurally_modified_funcs': {},
+        'operand_modified_funcs': {},
+        'unmatched_funcs': pair_results['unmatched_funcs'],
+        'unmatched_baseline_funcs': pair_results['unmatched_baseline_funcs']
+    })
 
-    for func_addr, func in modified_funcs.items():
+    # Helper to add function info along with its diff features into a target dictionary.
+    def add_func_info(target_dict, func_addr, func, diff_features):
+        target_dict[func_addr] = {
+            **diff_features,
+            'func_name': func['func_name'],
+            'baseline_func_name': func['baseline_func_name'],
+            'similarity': func['similarity'],
+            'baseline_file': func['baseline_file']
+        }
+
+    # Process lifted matched functions
+    for func_addr, func in lifted_matched.items():
         diff_features = api.retrieve("function_diff_features", [oid, baseline_oid], {"functionA": func['func_name'], "functionB": func['baseline_func_name']})
-        if all(feature_value == 0 for feature, feature_value in diff_features.items() if feature != 'modified_operand_instr'):
-            modified_target_exes[oid]['operand_modified_funcs'][func_addr] = diff_features
-            modified_target_exes[oid]['operand_modified_funcs'][func_addr]['func_name'] = func['func_name']
-            modified_target_exes[oid]['operand_modified_funcs'][func_addr]['baseline_func_name'] = func['baseline_func_name']
-            modified_target_exes[oid]['operand_modified_funcs'][func_addr]['similarity'] = func['similarity']
-            modified_target_exes[oid]['operand_modified_funcs'][func_addr]['baseline_file'] = func['baseline_file']
-            
+        # If all diff features are zero, consider the match as lifted
+        if all(value == 0 for value in diff_features.values()):
+            target_exe['lifted_matched_funcs'][func_addr] = func
         else:
-            modified_target_exes[oid]['structurally_modified_funcs'][func_addr] = diff_features
-            modified_target_exes[oid]['structurally_modified_funcs'][func_addr]['func_name'] = func['func_name']
-            modified_target_exes[oid]['structurally_modified_funcs'][func_addr]['baseline_func_name'] = func['baseline_func_name']
-            modified_target_exes[oid]['structurally_modified_funcs'][func_addr]['similarity'] = func['similarity']
-            modified_target_exes[oid]['structurally_modified_funcs'][func_addr]['baseline_file'] = func['baseline_file']
+            # NOTE: In the original code, func was wrapped in a list. Here we assume a dict is expected.
+            modified_funcs[func_addr] = func
+
+    # Process modified functions to classify them into operand or structurally modified.
+    for func_addr, func in modified_funcs.items():
+        diff_features = api.retrieve("function_diff_features", [oid, baseline_oid],{"functionA": func['func_name'], "functionB": func['baseline_func_name']})
+        # If all differences (except for 'modified_operand_instr') are zero, classify as operand modified.
+        if all(value == 0 for key, value in diff_features.items() if key != 'modified_operand_instr'):
+            add_func_info(target_exe['operand_modified_funcs'], func_addr, func, diff_features)
+        else:
+            add_func_info(target_exe['structurally_modified_funcs'], func_addr, func, diff_features)
+
     return modified_target_exes
 
 def get_all_functions(oids):
@@ -286,12 +308,25 @@ def separate_oids(oids):
             non_executables.add(oid)
     return executables, non_executables
 
+# def get_num_funcs(oids):
+#     results = {}
+#     for oid in oids:
+#         functions = api.get_field('ghidra_disasm', oid, "functions")
+#         if functions:
+#             results[oid] = {'Num_functions': len(functions)}
+#         else:
+#             results[oid] = {'Num_functions': 0}
+#     return results
+
+
 def get_num_funcs(oids):
     results = {}
     for oid in oids:
-        functions = api.get_field('ghidra_disasm', oid, "functions")
-        if functions:
-            results[oid] = {'Num_functions': len(functions)}
-        else:
-            results[oid] = {'Num_functions': 0}
+        num_funcs = 0
+        funcs = api.retrieve("function_representations", oid)
+        if funcs:
+            for func in funcs:
+                if funcs[func]['tlsh hash'] != None:
+                    num_funcs += 1
+        results[oid] = {'Num_functions': num_funcs}
     return results

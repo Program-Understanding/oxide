@@ -5,7 +5,7 @@ def retrieve_function_instructions(file, func):
     """
     Retrieve function instructions for a specific function by its name.
     """
-    function_data = api.retrieve('function_representations', file, {'lfit_addrs': True})
+    function_data = api.retrieve('function_representations', file, {'lift_addrs': True})
     for func_id, details in function_data.items():
         if details.get('name') == func:
             return details.get('modified_fun_instructions', None)
@@ -17,15 +17,11 @@ def diff_features(target_file, target_func_name, target_func_insts, baseline_fil
     basic_blocks = 0
     func_calls = 0
 
-    # Control Flow
-    num_target_func_bb, num_target_func_calls = _get_bb(target_file, target_func_name)
-    num_baseline_func_bb, num_baseline_func_calls = _get_bb(baseline_file, baseline_func_name)
-
-    if num_target_func_bb - num_baseline_func_bb != 0:
-        basic_blocks = num_target_func_bb - num_baseline_func_bb
-
-    if num_target_func_calls - num_baseline_func_calls != 0:
-        func_calls = num_target_func_calls - num_baseline_func_calls
+    num_target_func_calls, num_target_func_bb = _get_bb(target_file, target_func_name)
+    num_baseline_func_calls, num_baseline_func_bb = _get_bb(baseline_file, baseline_func_name)
+    
+    basic_blocks = num_target_func_bb - num_baseline_func_bb
+    func_calls = num_target_func_calls - num_baseline_func_calls
 
     added_instr, removed_instr, opcode_modifications, operand_modifications = _instruction_changes(target_func_insts, baseline_func_insts)
     return added_instr, removed_instr, opcode_modifications, operand_modifications, basic_blocks, func_calls
@@ -58,7 +54,7 @@ def parse_instruction(line):
     return opcode, operands
 
 def _instruction_changes(func_insts, ref_func_insts):
-    u_diff = unified_diff(func_insts, ref_func_insts, n=0)
+    u_diff = unified_diff(ref_func_insts, func_insts, n=0)
 
     # High-level counters
     total_lines_added = 0

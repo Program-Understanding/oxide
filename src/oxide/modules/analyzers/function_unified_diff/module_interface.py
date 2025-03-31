@@ -36,7 +36,7 @@ logger = logging.getLogger(NAME)
 logger.debug("init")
 
 opts_doc = {"function": {"type": str, "mangle": True, "default": "None"},
-            "ref_function": {"type": str, "mangle": True, "default": "None"}
+            "baseline_function": {"type": str, "mangle": True, "default": "None"}
 }
 
 
@@ -63,23 +63,23 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     func = opts['function']
     func_insts = retrieve_function_instructions(oid, func)
 
-    ref_oid = oid_list[1]
-    ref_func = opts['function']
-    ref_func_insts = retrieve_function_instructions(ref_oid, ref_func)
-
-    if func_insts and ref_func_insts:
-        u_diff = unified_diff(func_insts, ref_func_insts, n=0)
+    baseline_oid = oid_list[1]
+    baseline_func = opts['baseline_function']
+    baseline_func_insts = retrieve_function_instructions(baseline_oid, baseline_func)
+    
+    if func_insts and baseline_func_insts:
+        u_diff = unified_diff(baseline_func_insts, func_insts, n=3)
+    else:
+        u_diff = None
     
     unified_diff_result = []
-    for line in u_diff:
-        unified_diff_result.append(line)
+    if u_diff:
+        for line in u_diff:
+            unified_diff_result.append(line)
 
     results = {
         'unified_diff': unified_diff_result
     }
-
-    api.store(NAME, oid, results, opts)
-
     return results
 
 def retrieve_function_instructions(file, func):

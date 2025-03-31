@@ -17,56 +17,65 @@ from oxide.core import progress, api
 
 info = """
 =============================
-DRIFT Plugin
+DRIFT Plugin for Oxide
 =============================
 
-This plugin provides a series of commands that perform analyze and compare 
-collections (and the files within them) in the Oxide framework.
+This plugin provides a suite of commands for importing, analyzing, and comparing 
+collections within the Oxide reverse engineering framework. It is specifically 
+designed to triage a firmware sample against a baseline firmware sample at both the file and function level.
 
-COMMANDS:
+AVAILABLE COMMANDS
 --------------------------------------------------------------------------------
 compare_collections
 --------------------------------------------------------------------------------
-- Compares two collections.
-- Generates or retrieves a DRIFT_DATA report detailing stats, new files,
-  modified files, and failed files.
-- Common Usage:
-    - compare_collections &collection &baseline_collection
-    - compare_collections &collection &baseline_collection --view=modified
-    - compare_collections &collection &baseline_collection file --view=modified
-    - compare_collections &collection &baseline_collection file --function=function_name
-- Notable Options:
-    - force: "COMPARE" re-runs the comparison if data already exists
-    - view: "stats", "new", "modified", "failed"
-    - function: Allows drilling down to a specific function comparison
+Compare two collections and generate or retrieve a DRIFT_DATA report capturing:
+  - File-level matches, modifications, and failures
+  - Function-level matches, modifications (structural and operand), and unmatched functions
+
+Usage Examples:
+  - compare_collections &target &baseline
+  - compare_collections &target &baseline --view=modified
+  - compare_collections &target &baseline file --view=modified
+  - compare_collections &target &baseline file --function=function_name
+
+Options:
+  --view=<mode>     View mode: stats | unmatched | modified | failed
+  --function=<name> Compare a specific function (requires a file)
+  --force           Re-run comparison even if report already exists
+
+Output:
+  - Summary statistics
+  - Unified diffs for selected functions
+  - CSV reports written to `drift_reports/compare_collections/`
+
+--------------------------------------------------------------------------------
+compare_collections_series
+--------------------------------------------------------------------------------
+Compare a time-ordered sequence of collections for a given product. Reports:
+  - File pairing accuracy (Precision, Recall, F1)
+  - Function-level triage summaries
+  - Elapsed time per comparison
+
+Usage:
+  - compare_collections_series --filter=<product_prefix>
+
+Output:
+  - CSV reports written to `drift_reports/compare_collections_series/`
 
 --------------------------------------------------------------------------------
 import_product
 --------------------------------------------------------------------------------
-- Imports a directory structure (e.g., firmware images) for a single product. 
-  Each subdirectory/file is imported as its own collection named 
-  "parent_directory---sample_name".
-- Common Usage:
-    - import_product "/path/to/product_directory"
+Import multiple firmware samples for a single product. Each subdirectory is treated 
+as a versioned sample and stored as an Oxide collection.
 
---------------------------------------------------------------------------------
-import_dataset
---------------------------------------------------------------------------------
-- Similar to import_product, but designed for multiple products. Each product 
-  directory can have multiple versions/subdirectories.
-- Common Usage:
-    - import_dataset "/path/to/dataset_root"
+Usage:
+  - import_product "/path/to/product_dir"
 
---------------------------------------------------------------------------------
-analyze_collections
---------------------------------------------------------------------------------
-- Performs the pre-processing and analysis pass for the given collections.
-- Common Usage:
-    - analyze_collections
-    - analyze_collections &collection
-- Notable Options:
-    - force: Re-analyzes or re-tags as specified.
+Naming:
+  - Collection names follow the format: <product>-v<sample_name>
 """
+print(info)
+
 print(info)
 
 pp = pprint.PrettyPrinter()
@@ -162,7 +171,7 @@ def print_category_w_baseline(report):
             print_unmatched_funcs(report)
         print("\n")
 
-def save_csv_report(report, output_dir="csv_reports"):
+def save_csv_report(report, output_dir="drift_reports"):
     os.makedirs(output_dir, exist_ok=True)
     
     # Lists to store data for each report type
@@ -182,7 +191,7 @@ def save_csv_report(report, output_dir="csv_reports"):
         # Retrieve file names (assumes api.get_names_from_oid exists)
         file_names = list(api.get_names_from_oid(file_id))
         if len(file_names) > 1:
-            file_name_info = f"{len(file_names)} Associated File Names"
+            file_name_info = f"{len(file_names)} Associated Target File Names"
         else:
             file_name_info = file_names[0] if file_names else "Unknown"
 
@@ -287,7 +296,7 @@ def print_structurally_modified_features(report):
     df.sort_values(by="Total", ascending=False, inplace=True)
     df.drop(columns="Total", inplace=True)
 
-    print(f"{len(report['structurally_modified_funcs'])} Modified Functions:")
+    print(f"{len(report['structurally_modified_funcs'])} Structurally-Modified Functions:")
     print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
 
 def print_operand_modified_features(report):
@@ -416,11 +425,11 @@ def compare_collections(args, opts):
     triage_results = {}
     triage_results[target_collection] = get_triage_results(report, target_collection, baseline_collection)
     time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    dump_to_csv(triage_results , f'csv_reports/{target_collection}/{time_stamp}/file_classification_results.csv')
+    dump_to_csv(triage_results , f'drift_reports/compare_collections/{target_collection}/{time_stamp}/triage_results.csv')
 
     triage_function_results = {}
     triage_function_results = get_triage_function_results(report)
-    dump_to_csv(triage_function_results, f'csv_reports/{target_collection}/{time_stamp}/function_classification_results.csv')
+    dump_to_csv(triage_function_results, f'drift_reports/compare_collections/{target_collection}/{time_stamp}/function_triage_results.csv')
 
     # Calculate statistics
     # stats = calculate_statistics(report, api.expand_oids(target_collection))
@@ -453,9 +462,8 @@ def compare_collections_series(args, opts):
     parsed_collections.sort(key=lambda x: x[3])
     baseline_collection = None
 
-    file_classification_results = {}
+    triage_results = {}
     file_pairing_accuracy = {}
-    report_times = {}  # Dictionary to record report times
 
     # Keep track of the baseline version
     baseline_version = None
@@ -466,12 +474,13 @@ def compare_collections_series(args, opts):
         start_time = time.time()
         report = get_report(target_collection, baseline_collection)
         end_time = time.time()
-        report_times[target_version] = end_time - start_time
         
         file_pairing_accuracy[target_version] = get_file_pairing_accuracy(
             report, target_version, baseline_version, baseline_collection)
-        file_classification_results[target_version] = get_triage_results(
+        triage_results[target_version] = get_triage_results(
             report, target_version, baseline_version)
+        
+        triage_results[target_version]['time(s)'] = end_time - start_time
 
         baseline_version = target_version
         baseline_collection = target_collection
@@ -479,9 +488,8 @@ def compare_collections_series(args, opts):
     
     # Dump the dictionaries to CSV files.
     time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    dump_to_csv(file_classification_results, f'csv_reports/series/{time_stamp}/file_classification_results.csv')
-    dump_to_csv(file_pairing_accuracy, f'csv_reports/series/{time_stamp}/file_pairing_accuracy.csv')
-    dump_to_csv(report_times, f'csv_reports/series/{time_stamp}/report_times.csv')
+    dump_to_csv(triage_results, f'drift_reports/compare_collections_series/{time_stamp}/triage_results.csv')
+    dump_to_csv(file_pairing_accuracy, f'drift_reports/compare_collections_series/{time_stamp}/file_pairing_accuracy.csv')
 
 def import_product(args, opts):
     dir_path = args[0]
@@ -505,86 +513,12 @@ def import_product(args, opts):
     for sample in os.listdir(dir_path):
         sample_path = os.path.join(dir_path, sample)
         # Create the sample_name as "parent_directory-directory_name"
-        sample_name = f"{sample}"
+        sample_name = f"{parent_directory_name}-v{sample}"
         import_sample(sample_name, sample_path)
-
-def import_dataset(args, opts):
-    dir_path = args[0]
-
-    # Check if the provided path is a valid directory
-    if not os.path.isdir(dir_path):
-        raise ShellSyntaxError("Enter a valid directory with firmware from devices")
-    
-    results = {}
-
-    def import_sample(sample_name, sample_path):
-        """Helper function to import a directory or file and create a collection."""
-        oids, new_files = (
-            api.import_directory(sample_path) if os.path.isdir(sample_path)
-            else api.import_file(sample_path)
-        )
-        result = api.create_collection(sample_name, oids, oids)
-        results[sample_name] = result
-
-    # Iterate over product directories in the given directory
-    for product in os.listdir(dir_path):
-        product_path = os.path.join(dir_path, product)
-
-        # Skip if it's not a directory
-        if not os.path.isdir(product_path):
-            continue
-
-        # Iterate over versions or samples within the product directory
-        for sample in os.listdir(product_path):
-            sample_path = os.path.join(product_path, sample)
-
-            # Create the sample_name as "product_name-version_name"
-            sample_name = f"{product}---{sample}"
-            import_sample(sample_name, sample_path)
-
-def import_data(args, opts):
-    # Check if the provided path is a valid directory
-    dir_path = args[0]
-    collection_name = args[1]
-    if not os.path.isdir(dir_path):
-        return {"error": f"Target directory {dir_path} does not exist!"}
-
-    # Check if binwalk is installed
-    if not shutil.which("binwalk"):
-        return {"error": "binwalk is not installed. Please install it and try again."}
-
-    extracted_files = []
-
-    for root, _, files in os.walk(dir_path):
-        for file in files:
-            file_path = os.path.join(root, file)
-
-            try:
-                subprocess.run(["binwalk", "-e", file_path], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-                # Binwalk extracts to a folder called _<filename>.extracted
-                extracted_dir = os.path.join(root, f"_{file}.extracted")
-                if os.path.isdir(extracted_dir):
-                    extracted_files.append(extracted_dir)
-
-            except subprocess.CalledProcessError as e:
-                print(f"  Extraction failed for {file_path}: {e}")
-
-    if not extracted_files:
-        return {"message": "No extracted files found."}
-    try:
-        for extracted_dir in extracted_files:
-            oids, new_files = api.import_directory(extracted_dir)
-            api.create_collection(collection_name, oids, oids)
-    except Exception as e:
-        return {"error": f"Failed to import extracted files: {e}"}
-
-    return {"message": f"Extraction and import complete for collection {collection_name}"}
 
 exports = [
     compare_collections, 
     import_product, 
-    import_dataset, 
     compare_collections_series]
 
 ############################
@@ -672,7 +606,7 @@ def dump_to_csv(data_dict, filename):
         writer.writerows(rows)
 
 
-def get_file_pairing_accuracy(files_report, target_version, baseline_version, baseline_collection, output_dir="csv_reports"):
+def get_file_pairing_accuracy(files_report, target_version, baseline_version, baseline_collection, output_dir="drift_reports"):
     os.makedirs(output_dir, exist_ok=True)
 
     result = {}
@@ -763,13 +697,16 @@ def get_triage_results(report, target_version, baseline_version):
     structurally_modified = 0
     modified_operand = 0
     unmatched = 0
+    matched_file = 0
     total_funcs = 0
 
     results = {}
+
+    for file, file_results in report['MATCHED_EXECUTABLES'].items():
+        matched_file += file_results.get("Num_functions", 0)
     
     for file, file_results in report['UNMATCHED_EXECUTABLES'].items():
-        num_functions = file_results.get("Num_functions", 0)
-        unmatched += num_functions
+        unmatched += file_results.get("Num_functions", 0)
 
     for file, file_results in report['MODIFIED_EXECUTABLES'].items():
         matched_function += len(file_results['matched_funcs'])
@@ -777,12 +714,6 @@ def get_triage_results(report, target_version, baseline_version):
         structurally_modified += len(file_results['structurally_modified_funcs'])
         modified_operand += len(file_results['operand_modified_funcs'])
         unmatched += len(file_results['unmatched_funcs'])
-
-        total_funcs += len(file_results['matched_funcs'])
-        total_funcs += len(file_results['lifted_matched_funcs'])
-        total_funcs += len(file_results['structurally_modified_funcs'])
-        total_funcs += len(file_results['operand_modified_funcs'])
-        total_funcs += len(file_results['unmatched_funcs'])
 
     results = {
             'Target': target_version,
@@ -793,12 +724,12 @@ def get_triage_results(report, target_version, baseline_version):
             'Unmatched Executables': len(report['UNMATCHED_EXECUTABLES']),
             'Unmatched Non-Executables': len(report['UNMATCHED_NON_EXECUTABLES']),
             'Failed Executables': len(report['FAILED_EXECUTABLES']),
+            'File-Matched Functions': matched_file,
             'Matched Functions': matched_function,
-            'Lifted Matched Function': lifted_matched_function,
-            'Structuraly Modified Functions': structurally_modified,
+            'Lifted-Matched Function': lifted_matched_function,
             'Operand Modified Functions': modified_operand,
+            'Structuraly Modified Functions': structurally_modified,
             'Unmatched Functions': unmatched,
-            'Total Functions': total_funcs
         }
 
     return results
@@ -811,8 +742,8 @@ def get_triage_function_results(report):
         results[file]['File'] = file
         results[file]['Matched'] = len(file_results['matched_funcs'])
         results[file]['Lifted-Matched'] = len(file_results['lifted_matched_funcs'])
-        results[file]['Structurally-Modified'] = len(file_results['structurally_modified_funcs'])
         results[file]['Operand-Modified'] = len(file_results['operand_modified_funcs'])
+        results[file]['Structurally-Modified'] = len(file_results['structurally_modified_funcs'])   
         results[file]['Unmatched'] = len(file_results['unmatched_funcs'])
 
     return results

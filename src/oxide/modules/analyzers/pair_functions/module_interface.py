@@ -67,7 +67,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     B_unique_lifted_funcs = get_unique_lifted_functions(fileB)
 
     if A_unique_funcs and B_unique_funcs:
-        matched_funcs, matched_A, matched_B = pair_matched_functions(A_unique_funcs, B_unique_funcs)
+        matched_funcs, matched_A, matched_B = pair_matched_functions(fileA, A_unique_funcs, fileB, B_unique_funcs)
 
     for a in matched_A:
         if a in A_unique_lifted_funcs:
@@ -77,7 +77,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
             del B_unique_lifted_funcs[b]
 
     if A_unique_lifted_funcs and B_unique_lifted_funcs:
-        lifted_matched_funcs, lifted_matched_A, lifted_matched_B = pair_matched_functions(A_unique_lifted_funcs, B_unique_lifted_funcs)
+        lifted_matched_funcs, lifted_matched_A, lifted_matched_B = pair_matched_functions(fileA, A_unique_lifted_funcs, fileB, B_unique_lifted_funcs)
 
     for i in list(fileA_acfg):
         if i not in A_unique_lifted_funcs or i in lifted_matched_A or i in matched_A:
@@ -142,7 +142,7 @@ def get_unique_functions(file):
 
     return unique_funcs
 
-def pair_matched_functions(A_unique_funcs, B_unique_funcs):
+def pair_matched_functions(fileA, A_unique_funcs, fileB, B_unique_funcs):
     results = {}
     matched_A = []
     matched_B = []
@@ -165,7 +165,9 @@ def pair_matched_functions(A_unique_funcs, B_unique_funcs):
             B_data = B_unique_funcs[B_addr]
             results[A_addr] = {
                 'func_name': A_data.get('name'),
-                'baseline_func_name': B_data.get('name')
+                'baseline_func_name': B_data.get('name'),
+                'similarity': 1,
+                'baseline_file': fileB
             }
             matched_A.append(A_addr)
             matched_B.append(B_addr)
