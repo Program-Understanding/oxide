@@ -1,15 +1,11 @@
 
 from oxide.core.oxide import api
-import pprint
 import csv
 import os 
-import subprocess
-import shutil
 from tabulate import tabulate
 import csv
 import pandas as pd
 import os
-import pandas as pd
 import datetime
 import time
 
@@ -75,10 +71,6 @@ Naming:
   - Collection names follow the format: <product>-v<sample_name>
 """
 print(info)
-
-print(info)
-
-pp = pprint.PrettyPrinter()
 
 def calculate_statistics(report, target_oids):
     """Calculate statistics for each category in the report."""

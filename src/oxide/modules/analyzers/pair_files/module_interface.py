@@ -308,17 +308,6 @@ def separate_oids(oids):
             non_executables.add(oid)
     return executables, non_executables
 
-# def get_num_funcs(oids):
-#     results = {}
-#     for oid in oids:
-#         functions = api.get_field('ghidra_disasm', oid, "functions")
-#         if functions:
-#             results[oid] = {'Num_functions': len(functions)}
-#         else:
-#             results[oid] = {'Num_functions': 0}
-#     return results
-
-
 def get_num_funcs(oids):
     results = {}
     for oid in oids:
