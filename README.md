@@ -13,7 +13,7 @@ Capstone is an open-source, multi-platform, multi-architecture decoder.
 
 Installation is accomplished through pip
 
-```
+```shell
 pip install capstone
 ```
 
@@ -24,7 +24,7 @@ XED is intel's reference x86 instruction decoder.
 XED has python bindings mantained here:
     * https://github.com/huku-/pyxed
 
-```
+```shell
 python3 setup.py build
 python3 setup.py install
 
@@ -35,12 +35,16 @@ python3
 # Disassemblers
 
 ## How to get Ghidra to work
+
 Ghidra is an open-source software RE tool designed to disassemble many different architectures and extensible through tweaking or creating sleigh files that define ABI of architecture.
 
+1. Download and unzip Ghidra  
 https://github.com/NationalSecurityAgency/ghidra/releases
 
-Ghidra runs in Java and requires Java JDK 11, *https://jdk.java.net/*
+2. Add Ghidra's Path to Oxide's .config file:
+```~/.config/oxide/.config.txt``` by default
 
+Ghidra runs in Java and requires Java JDK 11, *https://jdk.java.net/*
 
 ## How to get IDA to work
 
@@ -48,6 +52,7 @@ IDAPro is one of the most prevalent disassemblers, with the Hex-Rays decompilers
 market. Once purchased the IDAPATH must be set in the configuration file.
 
 ## How to get Radare2
+
 Radare is a command line software reverse engineering tool, with capstone backend.
 
 Installation is accomplished through running install script from within the radare directory. Furthermore, a python interface is required.
@@ -66,18 +71,17 @@ built on this such as disassembly and OOAnalyzer.
 
 Assuming docker is configured and installed. The easiest interface is the pre-built docker image.
 
-```
+```shell
 docker pull seipharos/pharos
 ```
 
 ....
 
-
 ## How to get angr to work
 
 angr is a symbolic execution and program analysis open source project from UCSB under Vigna and Kruegel.
 
-```
+```shell
 pip3 install angr
 ```
 
@@ -85,7 +89,7 @@ pip3 install angr
 
 Capa is an open source tool used to analyze executable files and provide a list of capabilities.
 
-```
+```shell
 pip install flare-capa
 ```
 
@@ -95,14 +99,14 @@ Binary Ninja is an interactive disassembler, decompiler, and reverse engineering
 
 This requires a commercial license or headless license of binary ninja.
 
-```
+```shell
 python3 <binary ninja home>/scripts/install_api.py
 ```
-
 
 # Miscellaneous Packages in Modules/Plugins
 
 pip3 install
+
 * Termcolor
 * Networkx
 * numpy
@@ -120,7 +124,6 @@ With Brew, `brew install binutils` and symlink `gobjdump` to `/usr/local/bin/gob
 
 If you are using **linux** and want to print a call graph, you may need to install 'python3-tk'
 .....
-
 
 # Remote Shell
 
