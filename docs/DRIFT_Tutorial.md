@@ -7,6 +7,8 @@ DRIFT is an Automated Firmware Analysis Tool that ...
 
 DRIFT was created as a plugin for oxide, so it depends on oxide's core functionality
 
+### Install and Configure Oxide
+
 1. **Download Oxide**  
 ```git clone https://github.com/Program-Understanding/oxide.git```
 
@@ -21,6 +23,7 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
     DRIFT relies on existing tools to perform it's analysis, including various python packages and [Ghidra](https://github.com/NationalSecurityAgency/ghidra)  
 
     **Python Packages**  
+    ```pip install flare-capa```  
     ```pip3 install Termcolor Networkx numpy graphviz pydot matplotlib scipy pytlsh pyahocorasick opencv-python prettytable```  
 
     **Ghidra**  
@@ -30,7 +33,7 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
 
     3. Ensure Ghidra works by navigating to ghidra's directory and starting the program with ```./ghidraRun```
 
-4. **Test Oxide**  
+4. **Initialize Oxide**  
     After all dependancies are installed:  
 
     navigate to the oxide directory with your virtual
@@ -45,4 +48,32 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
 
     2. navigate to the line "ghidra_path" and add the path to the ***directory*** containing ghidraRun
 
-6. **Add files to Oxide's datastore**
+        *It should look something like this:*
+        ```/home/user/ghidra_11.3.1_PUBLIC_20250219/ghidra_11.3.1_PUBLIC```
+
+        Please avoid having any spaces in your filepath
+
+### Using Oxide
+
+1. **Add files to Oxide's datastore**  
+    By default, oxide's datastore is in the following directory:  
+    ```/home/(current_user)/.local/share/oxide```
+
+    1. Add your desired set of files to the "datasets" directory.
+
+    2. With oxide running, import your dataset with:  
+    ```import path/to/dataset```  
+
+        This imports a "collection" in oxide. Collections can be listed with the command ```show collections```
+
+        You can list the file contents of a collection with  
+        ```show &(collection) --verbose```
+
+    3. Test ghidra disasm with a file oid:
+    ```run ghidra_disasm %(oid)```
+
+    If these commands don't throw any errors, you have successfully installed and configured oxide with ghidra.
+
+## Running DRIFT
+
+DRIFT is a plugin in oxide, so it is run from within the oxide interactive shell.
