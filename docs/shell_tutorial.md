@@ -189,7 +189,8 @@ So it can be loaded if we exit and restart the shell
   - Context saved to file .context.save
 oxide > exit
 ```
-```
+
+```text
 $ ./oxide.sh
  --------   Oxide   --------
  oxide > context load
@@ -565,7 +566,7 @@ Let's look at bin_tools.
   --------------------------------------
 ```
 
-### Run a Plugin
+## Strings
 
 Strings will show all of the strings in a file with the associated offsets.
 
