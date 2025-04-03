@@ -23,8 +23,20 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
     DRIFT relies on existing tools to perform it's analysis, including various python packages and [Ghidra](https://github.com/NationalSecurityAgency/ghidra)  
 
     **Python Packages**  
-    ```pip install flare-capa```  
-    ```pip3 install Termcolor Networkx numpy graphviz pydot matplotlib scipy pytlsh pyahocorasick opencv-python prettytable```  
+
+    ```shell
+    pip install flare-capa
+    ```  
+
+    ```shell
+    pip3 install Termcolor Networkx numpy graphviz pydot matplotlib scipy pyahocorasick opencv-python prettytable tabulate pandas
+    ```  
+
+    *pytlsh is required, but sometimes fails to install properly, for easier debugging install it seperately*
+
+    ```shell
+    pip3 install pytlsh
+    ```
 
     **Ghidra**  
     1. Install Ghidra's [Latest Release](https://github.com/NationalSecurityAgency/ghidra/releases)
@@ -77,3 +89,43 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
 ## Running DRIFT
 
 DRIFT is a plugin in oxide, so it is run from within the oxide interactive shell.
+
+1. **Download and Install Datasets**  
+    Dataset I: OpenWRT  
+    Dataset II: Commercial Firmware  
+    Dataset III: Backdoored vs. Normal OpenWRT
+
+2. **Load DRIFT Into Oxide**  
+    Usethe command ```plugin drift`` to load the drift plugin into oxide
+
+3. **Run DRIFT**  
+Drift has three possible commands:
+
+    1. **import_product:**  
+    imports every firmware image for a given product into oxide as collections.  
+
+        Each Firmware version is imported as it's own collection.
+
+        Usage:  
+        ```import_product /path/to/product```
+
+    2. **compare_collections:**  
+    Compares two specified collections  
+
+        Usage:  
+
+        ```text
+        compare_collections &target &baseline
+        compare_collections &target &baseline --view=modified
+        compare_collections &target &baseline file --view=modified
+        compare_collections &target &baseline file --function=function_name
+        ```
+
+        *Remember, you can see all of the collections in Oxide with*  
+        ```show collections```
+
+    3. **compare_collections_series:**  
+    Iterates through and compares every collection that shares the specified product name
+
+        Usage:  
+    ```compare_collections_series --filter=<product_prefix>```
