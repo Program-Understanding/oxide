@@ -224,7 +224,7 @@ def process(oid, opts):
                 break_time = False
                 #check other blocks
                 for o_block in blocks:
-                    if blocks[o_block]["offset"] == dest:
+                    if blocks[o_block]["offset"] == dest and o_block in funs:
                         blocks[block]["label"] += f"CALLS {funs[o_block]['name']}"
                         blocks[block]["dest_blocks"].remove(dest)
                         break_time = True
@@ -233,7 +233,7 @@ def process(oid, opts):
                     break
                 for fun in funs:
                     fun_blocks = funs[fun]["blocks"]
-                    if dest in fun_blocks:
+                    if dest in fun_blocks and dest in funs:
                         blocks[block]["label"] += f"CALLS {funs[dest]['name']}"
                         blocks[block]["dest_blocks"].remove(dest)
                         break_time = True

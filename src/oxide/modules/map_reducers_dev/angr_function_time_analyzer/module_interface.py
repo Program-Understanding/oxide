@@ -7,21 +7,30 @@ import logging
 import statistics
 from time import sleep
 import numpy
+from typing import Any, TypedDict
+import pandas as pd
 from output_assistant import output_data, analyze_dataframe
 
 logger = logging.getLogger(NAME)
 opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
-            "summaries": {"type":bool, "mangle":False,"default":True,"description":"Include function summaries from function summary module as well"},
             "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"},
-            "filter":{"type":bool,"mangle":False,"default":True,"Description":"Get rid of some of the less useful fields in the output"},
-            "data-path":{"type":str,"mangle":False,"default":"","Description":"Path toa directory to output a csv file and some graphs to"},
+            "data-path":{"type":str,"mangle":False,"default":"","Description":"Path to a directory to output a csv file and some graphs to"},
             "allow-missing-ret":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results that don't have a ret instruction"},
             "allow-low-memory":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results which ran into memory issues within angr"}}
 
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
 
-def find_bin_key(bins,time,timeout):
+class Summary(TypedDict):
+    offset: int
+    signature: str
+    num_insns: int
+    complexity: int
+    complexity_desc: str
+    operands: dict[str,int]
+    params: list[tuple[int,str]]
+    
+def find_bin_key(bins : list[int] ,time:float,timeout:int) -> str:
     for i in range(len(bins)):
         bn = bins[i]
         if i == 0:
@@ -64,11 +73,11 @@ def opcode_mapper(all_opcodes,df_opcodes,data_dict):
         data_dict["*xor*"].append(xor_star)
         data_dict["cmov*"].append(cmov_star)
 
-def mapper(oid, opts, jobid=False):
+def mapper(oid:str, opts: dict[str,Any], jobid=False):
     if api.exists(NAME,oid,opts):
         return oid
-    if not opts["summaries"]:
-        logger.error("module w/o summary is not implemented yet")
+    if not opts["data-path"]:
+        logger.error("Need a data path to output to!")
         return False
     if opts["bins"] < 3:
         logger.error("Not enough bins! Probably should use at least 3")
@@ -91,7 +100,7 @@ def mapper(oid, opts, jobid=False):
         sleep(1)
     return oid
 
-def reducer(intermediate_output, opts, jobid):
+def reducer(intermediate_output : list[str], opts : dict[str,bool|int|str], jobid):
     #gathering results into a dict to analyze
     complexity_vs_time = {}
     bins_w_time = {}
@@ -102,21 +111,20 @@ def reducer(intermediate_output, opts, jobid):
     total_functions = 0
     functions_analyzed = 0
     functions_w_memory_issues = 0
-    if opts["data-path"]:
-        import pandas as pd
-        df_time = []
-        df_bin = []
-        df_cyclo_complexity_level = []
-        df_cyclo_complexity_int = []
-        df_instructions = []
-        df_imm = []
-        df_mem = []
-        df_reg = []
-        df_index = []
-        df_opcodes = []
-        df_O = []
-        df_O_degree = []
-        all_opcodes = set()
+    df_time = []
+    df_bin = []
+    df_cyclo_complexity_level = []
+    df_cyclo_complexity_int = []
+    df_instructions = []
+    df_imm = []
+    df_mem = []
+    df_reg = []
+    df_index = []
+    df_opcodes = []
+    df_O = []
+    df_O_degree = []
+    all_opcodes = set()
+    df_num_params = []
     for complexity in ["simple", "moderate", "needs refactor", "complex"]:
         complexity_vs_time[complexity] = {"times":[],
                                           "instructions": [],
@@ -128,7 +136,7 @@ def reducer(intermediate_output, opts, jobid):
                                           "interesting":{}}
 
     #binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
-    binkeys = [round(i,1) for i in numpy.logspace(numpy.log10(0.3),numpy.log10(600),num=opts["bins"]-1)]
+    binkeys : list[int] = [round(i,1) for i in numpy.logspace(numpy.log10(0.3),numpy.log10(600),num=opts["bins"]-1)]
     binkeys[-1] = opts["timeout"]
     for i in range(len(binkeys)):
         bn = binkeys[i]
@@ -147,7 +155,8 @@ def reducer(intermediate_output, opts, jobid):
                                 "needs refactor": 0,
                                 "complex": 0
                             },
-                            "num instructions": []
+                            "num instructions": [],
+                            "num params": []
                             }
     bins_w_time[f"> {opts['timeout']}"] = {"opcodes": {},
                                            "operands": {
@@ -160,7 +169,8 @@ def reducer(intermediate_output, opts, jobid):
                                                "needs refactor": 0,
                                                "complex": 0
                                            },
-                                           "num instructions": []
+                                           "num instructions": [],
+                                           "num params": []
                                            }
     if opts["allow-low-memory"]:
         bins_w_time["low memory"] = {"opcodes": {},
@@ -174,20 +184,21 @@ def reducer(intermediate_output, opts, jobid):
                                          "needs refactor": 0,
                                          "complex": 0
                                      },
-                                     "num instructions": []
+                                     "num instructions": [],
+                                     "num params": []
                                      }
     for oid in intermediate_output:
         if oid:
-            time_result = api.get_field(NAME,oid,"time_result",opts)
-            opcode_by_func = api.get_field(NAME,oid,"opcode_by_func",opts)
-            complexitys = api.get_field(NAME,oid,"path_complexity",opts)
-            if time_result is None or opcode_by_func is None:
+            time_result : dict[int, dict[str,Summary|int]] | None = api.get_field(NAME,oid,"time_result",opts)
+            opcode_by_func : dict[str, Any] | None  = api.get_field(NAME,oid,"opcode_by_func",opts)
+            complexitys : dict[str, Any] | None = api.get_field(NAME,oid,"path_complexity",opts)
+            if time_result is None or opcode_by_func is None or complexitys is None:
                 logger.warning(f"None result for {oid}")
                 oids_w_angr_errors += 1
                 continue
             for fun in time_result:
                 total_functions += 1
-                f_dict = time_result[fun]
+                f_dict : dict[str,Summary|int] = time_result[fun]
                 if "error" in f_dict["angr seconds"]:
                     functions_w_angr_errors += 1
                     logger.info(f"Function has error in angr seconds and complexity {complexitys[fun]['O']}")
@@ -198,6 +209,7 @@ def reducer(intermediate_output, opts, jobid):
                     continue
                 #need to assess whether we have a ret in the function or if we should skip it
                 opcodes = opcode_by_func[fun]
+                num_params = len(f_dict["summary"]["params"])
                 #count the occurrence of opcodes
                 mncs = {}
                 for opcode in opcodes:
@@ -219,11 +231,20 @@ def reducer(intermediate_output, opts, jobid):
                     if not opts["allow-missing-ret"]:
                         continue
                 #add the unique opcodes to our list of all opcodes
-                if opts["data-path"]:
-                    for opcode in mncs:
-                        all_opcodes.add(opcode)
-                time = float(f_dict["angr seconds"].split(" ")[0])
-                f_bin = find_bin_key(binkeys,time,opts["timeout"])
+                for opcode in mncs:
+                    all_opcodes.add(opcode)
+                #check if we have less than 10 instructions and no jump,
+                #we should just skip these kinds of functions
+                if f_dict["summary"]["num_insns"] < 10:
+                    intersting = False
+                    for opcode in fun_opcodes:
+                        if opcode.startswith("j"):
+                            intersting = True
+                            break
+                    if intersting:
+                        continue
+                time : float = float(f_dict["angr seconds"].split(" ")[0])
+                f_bin: str = find_bin_key(binkeys,time,opts["timeout"])
                 if "stopped early for" in f_dict and f_dict["stopped early for"] != "timed out":
                     functions_w_memory_issues += 1
                     if not opts["allow-low-memory"]:
@@ -251,44 +272,42 @@ def reducer(intermediate_output, opts, jobid):
                                                                                 "from": oid,
                                                                                 "complexity": f_dict["summary"]["complexity"]}
                 num_insns = f_dict["summary"]["num_insns"]
-                if opts["data-path"]:
-                    df_time.append(time)
-                    df_bin.append(f_bin)
-                    df_cyclo_complexity_level.append(complexity_level)
-                    df_cyclo_complexity_int.append(cyclomatic_complexity)
-                    df_instructions.append(num_insns)
-                    df_opcodes.append(fun_opcodes)
-                    big_o = complexitys[fun]["O"]
-                    if "n**" in big_o:
-                        big_o_degree = int(big_o[5:].strip(")"))
-                        big_o = "O(n**x)"
-                    elif "O(0" in big_o:
-                        big_o = "Error"
-                        big_o_degree = None
-                    elif "O(1" in big_o:
-                        big_o_degree = 0
-                    elif "O(n)" in big_o:
-                        big_o_degree = 1
-                    else:
-                        big_o_degree = None
-                    df_O.append(big_o)
-                    df_O_degree.append(big_o_degree)
+                df_time.append(time)
+                df_bin.append(f_bin)
+                df_cyclo_complexity_level.append(complexity_level)
+                df_cyclo_complexity_int.append(cyclomatic_complexity)
+                df_instructions.append(num_insns)
+                df_opcodes.append(fun_opcodes)
+                df_num_params.append(num_params)
+                big_o = complexitys[fun]["O"]
+                if "n**" in big_o:
+                    big_o_degree = int(big_o[5:].strip(")"))
+                    big_o = "O(n**x)"
+                elif "O(0" in big_o:
+                    big_o = "Error"
+                    big_o_degree = None
+                elif "O(1" in big_o:
+                    big_o_degree = 0
+                elif "O(n)" in big_o:
+                    big_o_degree = 1
+                else:
+                    big_o_degree = None
+                df_O.append(big_o)
+                df_O_degree.append(big_o_degree)
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
                 bins_w_time[f_bin]["num instructions"].append(num_insns)
                 operands = f_dict["summary"]["operands"]
                 for op_type in ["imm", "reg", "mem"]:
                     complexity_vs_time[complexity_level]["operands"][op_type].append(operands[op_type])
                     bins_w_time[f_bin]["operands"][op_type].append(operands[op_type])
-                    if opts["data-path"]:
-                        match op_type:
-                            case "imm":
-                                df_imm.append(operands[op_type])
-                            case "mem":
-                                df_mem.append(operands[op_type])
-                            case "reg":
-                                df_reg.append(operands[op_type])
-                if opts["data-path"]:
-                    df_index.append(f"{oid}{fun}")
+                    match op_type:
+                        case "imm":
+                            df_imm.append(operands[op_type])
+                        case "mem":
+                            df_mem.append(operands[op_type])
+                        case "reg":
+                            df_reg.append(operands[op_type])
+                df_index.append(f"{oid}{fun}")
                 functions_analyzed+=1
     #eliminate empty bins
     for bn in bins_w_time:
@@ -316,70 +335,60 @@ def reducer(intermediate_output, opts, jobid):
                        "std dev": statistics.stdev(bins_w_time[bn]["operands"][op_type]),
                        "median": statistics.median(bins_w_time[bn]["operands"][op_type])
                    }
-    if opts["data-path"]:
-        data_dict = {"time":df_time,
-                     "bin":df_bin,
-                     "cyclomatic complexity": df_cyclo_complexity_int,
-                     "cyclomatic complexity level":df_cyclo_complexity_level,
-                     "Big O": df_O,
-                     "Big O degree": df_O_degree,
-                     "instructions":df_instructions,
-                     "imms":df_imm,
-                     "mems":df_mem,
-                     "regs":df_reg
-                     }
-        opcode_mapper(all_opcodes,df_opcodes,data_dict)
-        dataframe = pd.DataFrame(data_dict,
-                                 index=df_index)
-        from pathlib import Path
-        outpath = Path(opts["data-path"])
-        if not output_data(outpath,dataframe,list(bins_w_time.keys())):
-            logger.error(f"Unable to save data to {outpath}!")
+    data_dict = {"time":df_time,
+                 "bin":df_bin,
+                 "cyclomatic complexity": df_cyclo_complexity_int,
+                 "cyclomatic complexity level":df_cyclo_complexity_level,
+                 "Big O": df_O,
+                 "Big O degree": df_O_degree,
+                 "instructions":df_instructions,
+                 "imms":df_imm,
+                 "mems":df_mem,
+                 "regs":df_reg,
+                 "num params": df_num_params
+                 }
+    opcode_mapper(all_opcodes,df_opcodes,data_dict)
+    dataframe = pd.DataFrame(data_dict,
+                             index=df_index)
+    from pathlib import Path
+    outpath = Path(opts["data-path"])
+    if not output_data(outpath,dataframe,list(bins_w_time.keys())):
+        logger.error(f"Unable to save data to {outpath}!")
+    else:
+        logger.info(f"Data saved to {outpath} directory")
+        analyze_dataframe(outpath,dataframe,list(all_opcodes))
+        logger.info(f"Analysis saved to {outpath} directory")
+
+    filtered_bins_w_time = {}
+    for bn in bins_w_time:
+        if bins_w_time[bn] is None: continue
+        filtered_bins_w_time[bn]={}
+        for key in list(bins_w_time[bn].keys()):
+            if "stats" in key:
+                if "opcode" in key:
+                    if not "opcodes" in filtered_bins_w_time[bn]: filtered_bins_w_time[bn]["opcodes"]={}
+                    opcode : str = key.split(" ")[1]
+                    filtered_bins_w_time[bn]["opcodes"][opcode] = bins_w_time[bn][key]
+                elif "operand" in key:
+                    if not "operands" in filtered_bins_w_time[bn]: filtered_bins_w_time[bn]["operands"]={}
+                    operand = key.split(" ")[2]
+                    filtered_bins_w_time[bn]["operands"][operand] = bins_w_time[bn][key]
+                else:
+                    filtered_bins_w_time[bn][key] = bins_w_time[bn][key]
+        filtered_bins_w_time[bn]["number of functions"] = len(bins_w_time[bn]["num instructions"])
+    filtered_complexity_vs_time = {}
+    for complexity in ["simple", "moderate", "needs refactor", "complex"]:
+        if len(complexity_vs_time[complexity]["instructions"]) > 1:
+            filtered_complexity_vs_time[complexity] = {"instructions": {"mean": statistics.mean(complexity_vs_time[complexity]["instructions"]),
+                                                                        "std dev": statistics.stdev(complexity_vs_time[complexity]["instructions"]),
+                                                                        "median": statistics.median(complexity_vs_time[complexity]["instructions"])},
+                                                       "times": {"mean": statistics.mean(complexity_vs_time[complexity]["times"]),
+                                                                 "std dev": statistics.stdev(complexity_vs_time[complexity]["times"]),
+                                                                 "median": statistics.median(complexity_vs_time[complexity]["times"])}}
         else:
-            logger.info(f"Data saved to {outpath} directory")
-            analyze_dataframe(outpath,dataframe,list(all_opcodes))
-            logger.info(f"Analysis saved to {outpath} directory")
-    if opts["filter"]:
-        filtered_bins_w_time = {}
-        for bn in bins_w_time:
-            if bins_w_time[bn] is None: continue
-            filtered_bins_w_time[bn]={}
-            for key in list(bins_w_time[bn].keys()):
-                if "stats" in key:
-                    if "opcode" in key:
-                        if not "opcodes" in filtered_bins_w_time[bn]: filtered_bins_w_time[bn]["opcodes"]={}
-                        opcode : str = key.split(" ")[1]
-                        filtered_bins_w_time[bn]["opcodes"][opcode] = bins_w_time[bn][key]
-                    elif "operand" in key:
-                        if not "operands" in filtered_bins_w_time[bn]: filtered_bins_w_time[bn]["operands"]={}
-                        operand = key.split(" ")[2]
-                        filtered_bins_w_time[bn]["operands"][operand] = bins_w_time[bn][key]
-                    else:
-                        filtered_bins_w_time[bn][key] = bins_w_time[bn][key]
-            filtered_bins_w_time[bn]["number of functions"] = len(bins_w_time[bn]["num instructions"])
-        filtered_complexity_vs_time = {}
-        for complexity in ["simple", "moderate", "needs refactor", "complex"]:
-            if len(complexity_vs_time[complexity]["instructions"]) > 1:
-                filtered_complexity_vs_time[complexity] = {"instructions": {"mean": statistics.mean(complexity_vs_time[complexity]["instructions"]),
-                                                                            "std dev": statistics.stdev(complexity_vs_time[complexity]["instructions"]),
-                                                                            "median": statistics.median(complexity_vs_time[complexity]["instructions"])},
-                                                           "times": {"mean": statistics.mean(complexity_vs_time[complexity]["times"]),
-                                                                     "std dev": statistics.stdev(complexity_vs_time[complexity]["times"]),
-                                                                     "median": statistics.median(complexity_vs_time[complexity]["times"])}}
-            else:
-                filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
-                                                           "times": complexity_vs_time[complexity]["times"]}
+            filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
+                                                       "times": complexity_vs_time[complexity]["times"]}
         if opts["data-path"]:
             return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed":functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}
         else:
             return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}
-    else:
-        if opts["data-path"]:
-            return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
-                "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors,\
-                    "functions without ret instruction":functions_w_no_ret,\
-                    "dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}
-        else:
-            return {"bins_w_time": bins_w_time, "complexity_vs_time": complexity_vs_time,\
-                "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors,\
-                    "functions without ret instruction":functions_w_no_ret, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}

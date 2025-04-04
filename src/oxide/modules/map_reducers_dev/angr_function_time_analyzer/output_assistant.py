@@ -19,7 +19,7 @@ def spearmanr_pval(x,y):
 def pearsonr_pval(x,y):
     return pearsonr(x,y)[1]
 
-def output_data(outpath, dataframe : pd.DataFrame,binkeys):
+def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     try:
         outpath.mkdir(parents=True,exist_ok=True)
     except:
@@ -43,6 +43,8 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys):
     mod = []
     needs_ref = []
     cmplx = []
+    #number of parameters
+    num_params = []
     #O
     unsorted_different_O = list(dataframe["Big O"].unique())
     different_O = []
@@ -92,8 +94,11 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys):
             mod.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["cyclomatic complexity level"]=="moderate")].index))
             needs_ref.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["cyclomatic complexity level"]=="needs refactor")].index))
             cmplx.append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["cyclomatic complexity level"]=="moderate")].index))
+            #asymptotic complexity
             for O in different_O:
                 big_o[O].append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["Big O"]==O)]))
+            #number of parameters
+            num_params.append(dataframe.loc[dataframe["bin"] == bn, "num params"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
         else:
             jmps_by_bin.append(0)
             movs_by_bin.append(0)
@@ -117,35 +122,36 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys):
                        "*xor*":xors_by_bin},index=binkeys)
     df.plot.bar(rot=0)
     plt.xticks(rotation=45)
-    #plt.title("Average instructions matching j*/mov*/cmov*/*xor* per function sorted by bin")
+    plt.title("Average instructions (matching j*/mov*/cmov*/*xor*) per function by bin")
     plt.ylabel("Average instructions per function")
-    plt.xlabel("Time range")
+    plt.xlabel("Time range in seconds")
     plt.tight_layout()
-    plt.savefig(outpath / "jmps_movs_cmovs_xors_by_bin.png",dpi=1000)
+    plt.savefig(outpath / "jmps_movs_cmovs_xors_by_bin.png",dpi=1200)
     plt.clf()
     #instructions and functions
     df = pd.DataFrame({"functions": functions},index=binkeys)
     df.plot.bar(rot=0)
     plt.xticks(rotation=45)
-    #plt.title("Average instructions per function and total functions per bin")
-    plt.ylabel("Total functions per bin")
+    plt.title("Total functions per bin")
+    plt.ylabel("Functions")
     plt.xlabel("Time range")
     plt.yscale('log')
     plt.tight_layout()
-    plt.savefig(outpath / "instructions_functions_by_bin.png",dpi=1000)
+    plt.savefig(outpath / "instructions_functions_by_bin.png",dpi=1200)
     plt.clf()
-    #imms, mems, regs per bin        
+    #imms, mems, regs per bin and the number of parameters, too
     df = pd.DataFrame({"imms": imms,
                        "mems": mems,
                        "regs": regs,
+                       "num params": num_params,
                        }, index = binkeys)
     df.plot.bar(rot=0)
     plt.xticks(rotation=45)
-    #plt.title("Average imms, mems, regs per function sorted by bin")
+    plt.title("Average operand type per function sorted by bin")
     plt.ylabel("Average occurrence of type per function")
-    plt.xlabel("Time range")
+    plt.xlabel("Time range in seconds")
     plt.tight_layout()
-    plt.savefig(outpath / "imms_mems_regs_by_bin.png",dpi=1000)
+    plt.savefig(outpath / "imms_mems_regs_by_bin.png",dpi=1200)
     plt.clf()
     #path complexity by bin
     df = pd.DataFrame({"simple": simple,
@@ -154,12 +160,12 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys):
                        "needs refactor": needs_ref}, index = binkeys)
     df.plot.bar(rot=0)
     plt.xticks(rotation=45)
-    #plt.title("Cyclomatic complexity of functions per bin")
+    plt.title("Cyclomatic complexity of functions per bin")
     plt.ylabel("Occurrence of complexity")
-    plt.xlabel("Time range")
+    plt.xlabel("Time range in seconds")
     plt.yscale('log')
     plt.tight_layout()
-    plt.savefig(outpath / "cyclomatic_complexity_by_bin.png",dpi=1000)
+    plt.savefig(outpath / "cyclomatic_complexity_by_bin.png",dpi=1200)
     plt.clf()
     #apc plot
     if len(different_O):
@@ -167,12 +173,12 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys):
         print(f"apc dataframe:\n{df}")
         df.plot.bar(rot=0)
         plt.xticks(rotation=45)
-        #plt.title("Big O of functions per bin")
-        plt.ylabel("Occurrence of Complexity")
-        plt.xlabel("Time range")
+        plt.title("Asymptotic path complexity of functions per bin")
+        plt.ylabel("Occurrence of complexity")
+        plt.xlabel("Time range in seconds")
         plt.yscale('log')
         plt.tight_layout()
-        plt.savefig(outpath / "path_complexity_by_bin.png",dpi=1000)
+        plt.savefig(outpath / "path_complexity_by_bin.png",dpi=1200)
         plt.clf()
     #pi plots
     pi_df = df#.transpose()
@@ -184,13 +190,13 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys):
             #plt.legend('',frameon=False)
             plt.tight_layout()
             if "1" in O:
-                plt.savefig(outpath / "path_complexity_pie_plot_constant.png",dpi=1000)
+                plt.savefig(outpath / "path_complexity_pie_plot_constant.png",dpi=1200)
             elif "**" in O:
-                plt.savefig(outpath / "path_complexity_pie_plot_exponential.png",dpi=1000)
+                plt.savefig(outpath / "path_complexity_pie_plot_exponential.png",dpi=1200)
             elif "n" in O:
-                plt.savefig(outpath / "path_complexity_pie_plot_linear.png",dpi=1000)
+                plt.savefig(outpath / "path_complexity_pie_plot_linear.png",dpi=1200)
             else:
-                plt.savefig(outpath / f"path_complexity_pie_plot_{O}.png",dpi=1000)
+                plt.savefig(outpath / f"path_complexity_pie_plot_{O}.png",dpi=1200)
             plt.clf()
         ax_arr = pi_df.plot(kind="pie",subplots=True,labeldistance=None,layout=(2,3))
         handles, labels = ax_arr[0][0].get_legend_handles_labels()
@@ -216,11 +222,11 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys):
         plt.subplots_adjust(wspace=0.2,hspace=0.2)
         plt.tight_layout()
         #fig.suptitle("angr Bin per Metrinome Asymptotic Path Complexity Level")
-        plt.savefig(outpath / "path_complexity_pie_plots.png",dpi=1000)
+        plt.savefig(outpath / "path_complexity_pie_plots.png",dpi=1200)
         plt.clf()
     return True
 
-def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes):
+def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> None:
     #this function is to be called after output_data() so no need to verify
     #that the outpath is valid and stuff or this fucntion wouldn't be called
     # print out stats to the screen that don't necessarily need to be returned
@@ -243,30 +249,32 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes):
     with open(outpath / "pearson_corr_matrix.csv","w") as f:
         corr_mat.to_csv(f)
     sns.heatmap(corr_mat,annot = True,fmt=".2f")
+    plt.title("Pearson Correlation Matrix")
     plt.xticks(rotation=90)
     plt.tight_layout()
-    plt.savefig(outpath / "pearson_correlation_matrix_heatmap.png",dpi=1000)
+    plt.savefig(outpath / "pearson_correlation_matrix_heatmap.png",dpi=1200)
     plt.clf()
     corr_mat = df.corr(min_periods=0,numeric_only=True,method="spearman")
     with open(outpath / "spearman_corr_matrix.csv","w") as f:
         corr_mat.to_csv(f)
     sns.heatmap(corr_mat,annot = True,fmt=".2f")
+    plt.title("Spearman Correlation Matrix")
     plt.tight_layout()
-    plt.savefig(outpath / "spearman_correlation_matrix_heatmap.png",dpi=1000)
+    plt.savefig(outpath / "spearman_correlation_matrix_heatmap.png",dpi=1200)
     plt.clf()
     corr_mat = df.corr(min_periods=0,numeric_only=True,method=spearmanr_pval)
     with open(outpath / "spearman_p-val_corr_matrix.csv","w") as f:
         corr_mat.to_csv(f)
     sns.heatmap(corr_mat,annot = True,fmt=".2f")
     plt.tight_layout()
-    plt.savefig(outpath / "spearman_p-val_correlation_matrix_heatmap.png",dpi=1000)
+    plt.savefig(outpath / "spearman_p-val_correlation_matrix_heatmap.png",dpi=1200)
     plt.clf()
     corr_mat = df.corr(min_periods=0,numeric_only=True,method=pearsonr_pval)
     with open(outpath / "pearson_p-val_corr_matrix.csv","w") as f:
         corr_mat.to_csv(f)
     sns.heatmap(corr_mat,annot = True,fmt=".2f")
     plt.tight_layout()
-    plt.savefig(outpath / "pearson_p-val_correlation_matrix_heatmap.png",dpi=1000)
+    plt.savefig(outpath / "pearson_p-val_correlation_matrix_heatmap.png",dpi=1200)
     plt.clf()
     #pca
     pca = PCA(n_components=df.shape[1])
@@ -297,5 +305,5 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes):
     print(f"r2: {r2}")
     plot_tree(forest.estimators_[0], feature_names=indep.columns, class_names=df["time"].unique(), filled=True, rounded=True)
     plt.tight_layout()
-    plt.savefig(outpath / "random_forest_predictor_tree.png",dpi=1000)
+    plt.savefig(outpath / "random_forest_predictor_tree.png",dpi=1200)
     plt.clf()

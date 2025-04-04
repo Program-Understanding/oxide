@@ -71,14 +71,18 @@ def process(oid, opts):
             #logger.info(f"Function signature {signature}")
             with angrManager() as angrmanager:
                 angrproj = angrmanager.angr_project(oid)
-                ftime_result = angrproj.timed_underconstrained_function_run(fun,opts["timeout"],signature)
-                if type(ftime_result) is tuple:
-                    ftime = ftime_result[0]
-                    stopped_early = ftime_result[1]
-                    f_dict[f_name]["angr seconds"] = f"{ftime} seconds"
-                    if stopped_early:
-                        f_dict[f_name]["stopped early for"] = stopped_early
-                else:
+                try:
+                    ftime_result = angrproj.timed_underconstrained_function_run(fun,opts["timeout"],signature)
+                    if type(ftime_result) is tuple:
+                        ftime = ftime_result[0]
+                        stopped_early = ftime_result[1]
+                        f_dict[f_name]["angr seconds"] = f"{ftime} seconds"
+                        if stopped_early:
+                            f_dict[f_name]["stopped early for"] = stopped_early
+                    else:
+                        f_dict[f_name]["angr seconds"] = "angr error"
+                except EOFError as e:
+                    logger.error(f"function {f_name} in oid {oid} had an eof error, treating it as an angr error...")
                     f_dict[f_name]["angr seconds"] = "angr error"
             #checking to see if we stopped early immediately due to low memory
             #this seems to happen sometimes, maybe due to multiprocessing...
