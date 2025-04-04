@@ -96,7 +96,7 @@ DRIFT is a plugin in oxide, so it is run from within the oxide interactive shell
     Dataset III: Backdoored vs. Normal OpenWRT
 
 2. **Load DRIFT Into Oxide**  
-    Usethe command ```plugin drift`` to load the drift plugin into oxide
+    Usethe command ```plugin drift``` to load the drift plugin into oxide
 
 3. **Run DRIFT**  
 Drift has three possible commands:
