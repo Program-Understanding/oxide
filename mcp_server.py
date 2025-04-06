@@ -18,6 +18,10 @@
 # without involving any LLM calls:
 # > mcp-cli cmd --config-file <PATH TO YOUR SERVERS JSON FILE> --server oxide --tool file_stats --tool-args '{"oid" : "6c4c20fb54c83c6283b9085dfd6725ceb6dd8eee"}'
 # NOTE: replace the OID with one from a binary file in your own collections
+#
+# To run mcp-cli in an interactive chat, you can use this command line:
+# > mcp-cli chat --config-file <PATH TO YOUR SERVERS JSON FILE> --server oxide --provider openai --model gpt-4o-mini
+# NOTE: Depending on the provider and model, ensure your API keys are set in the environment or whatever is needed.
 
 # DGB NOTE: I added complicated code below to import Oxide instead of this simple import statement.
 # It parses the command line to learn the desired Oxide path and internally modifies the Python path.
