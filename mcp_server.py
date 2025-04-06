@@ -1,9 +1,52 @@
-from oxide.core import oxide as oxide
+# Oxide MCP Server
+#
+# Add the "oxide" dictionary in the JSON snippet below to the servers JSON file
+# that you configure in your chosen MCP Client.
+#   {
+#     "mcpServers": {
+#       "oxide": {
+#         "command": "python",
+#         "args": [
+#           "<YOUR PATH TO OXIDE>/oxide/mcp_server.py",
+#           "--oxidepath=<YOUR PATH TO OXIDE>/"
+#         ]
+#       }
+#     }
+#   }
+#
+# If you are using mcp-cli you can use this command line to test the MCP server
+# without involving any LLM calls:
+# > mcp-cli cmd --config-file <PATH TO YOUR SERVERS JSON FILE> --server oxide --tool file_stats --tool-args '{"oid" : "6c4c20fb54c83c6283b9085dfd6725ceb6dd8eee"}'
+# NOTE: replace the OID with one from a binary file in your own collections
+
+# DGB NOTE: I added complicated code below to import Oxide instead of this simple import statement.
+# It parses the command line to learn the desired Oxide path and internally modifies the Python path.
+# Too clunky? You'd rather modify the PYTHON_PATH OS environment variable? Or maybe there is
+# an even smarter way to do this? Then PLEASE improve this code and document it. But until then
+# it won't work (for just me?) without my clunky code.
+# from oxide.core import oxide as oxide
+
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("oxide mcp server")
 from mcp.server.fastmcp import FastMCP
 from typing import Any, Literal
+import argparse
+import sys
+
+# Parse command line args
+parser = argparse.ArgumentParser('oxide MCP server')
+parser.add_argument("--oxidepath", type=str, help="Path to active Oxide installation.", required=False, default="./")
+parser.add_argument("--caparulespath", type=str, help="Path to Capa rules files.", required=False, default="./datasets/capa-rules/")
+args = parser.parse_args()
+print(f'oxide path: {args.oxidepath}')
+print(f'capa rules path: {args.caparulespath}')
+
+# Import Oxide 
+sys.path.append(args.oxidepath+'/src')
+sys.path.append(args.oxidepath+'/src/oxide')
+from oxide.core import oxide as oxide
+
 
 mcp = FastMCP("oxide")
 
