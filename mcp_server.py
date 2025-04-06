@@ -37,6 +37,7 @@ from mcp.server.fastmcp import FastMCP
 from typing import Any, Literal
 import argparse
 import sys
+import json
 
 # Parse command line args
 parser = argparse.ArgumentParser('oxide MCP server')
@@ -50,7 +51,6 @@ print(f'capa rules path: {args.caparulespath}')
 sys.path.append(args.oxidepath+'/src')
 sys.path.append(args.oxidepath+'/src/oxide')
 from oxide.core import oxide as oxide
-
 
 mcp = FastMCP("oxide")
 
@@ -127,21 +127,97 @@ async def ghidra_decmap(oid:str, org_by_func: bool) -> dict[Any,Any] | Literal[F
         logger.error("Failed to retrieve ghidra decompilation mapping")
         return False
 
+# @mcp.tool()
+# async def disassemble_function(oid:str, function_name:str) -> str | Literal[False]:
+#     """
+#     Return the disassembly for a specified function as a string. 
+
+#     Args:
+#         oid: the ID of the binary file containing the desired function
+#         function_name: the name of the desired function
+#     """
+#     result = oxide.retrieve("disassembly", [oid])
+#     if result:
+#         logger.info("Retrieved disassembly successfully!")
+#         return_str = ''
+#         return return_str
+
+#     else:
+#         logger.error("Failed to retrieve ghidra decompilation mapping")
+#         return False
+
 @mcp.tool()
-async def get_oids() -> dict[Any,Any] | Literal[False]:
+async def decompile_function(oid:str, function_name:str) -> str | Literal[False]:
     """
-    Given a name, be able to get an OID back which corresponds to the name
+    Return the decompilation for a specified function as a string. 
 
     Args:
-    No args
+        oid: the ID of the binary file containing the desired function
+        function_name: the name of the desired function
     """
-    result = oxide.get_oids_with_name("test")
+    result = oxide.retrieve("ghidra_decmap", [oid], {"org_by_func": True})
     if result:
-        logger.info("Got oids with names")
-        return result
+        logger.info("Retrieved ghidra decompilation mapping successfully!")
+
+        # Find object for this function
+        functions_dict = result['decompile']
+        # for function_name, func_item in functionsDict.items():
+        #     print(function_name, file=sys.stderr)
+        if (function_name not in functions_dict.keys()):
+            return False        
+        function_dict = functions_dict[function_name] 
+
+        # Gather the decompilation lines into a map (they will not be returned in order)
+        decomp_map = {}
+        for offset_key, offset_value in function_dict.items():
+            # print(f"OFFSET {offset_key}", file=sys.stderr)
+            # For this offset, walk through the lines to add to the decomp line map
+            for line_str in offset_value['line']:
+                print(line_str, file=sys.stderr)
+                # Extract the line number and code text 
+                split = line_str.find(": ")
+                line_no_str = line_str[:split]
+                line_no = int(line_no_str)
+                code = line_str[split + 2:]
+                # Find the decomp line for this line number. Create it if not existing.
+                decomp_line = decomp_map.get(line_no, None)
+                if not decomp_line:
+                    decomp_map[line_no] = code
+
+        # Generate a string with all the decompilation line in order
+        return_str = ''
+        indent_level = 0
+        for line_num in sorted(decomp_map.keys()):
+            # print(line_num, file=sys.stderr)
+            code = str(decomp_map[line_num])
+            # print(code, file=sys.stderr)
+            if '}' in code:
+                indent_level -= 1
+            return_str += (('    ' * indent_level) + code + '\n')
+            if '{' in code:
+                indent_level += 1
+        # print(return_str, file=sys.stderr)
+        return return_str
+
     else:
-        logger.error(f"Couldn't get oids and names")
+        logger.error("Failed to retrieve ghidra decompilation mapping")
         return False
+
+# @mcp.tool()
+# async def get_oids() -> dict[Any,Any] | Literal[False]:
+#     """
+#     Given a name, be able to get an OID back which corresponds to the name
+
+#     Args:
+#     No args
+#     """
+#     result = oxide.get_oids_with_name("test")
+#     if result:
+#         logger.info("Got oids with names")
+#         return result
+#     else:
+#         logger.error(f"Couldn't get oids and names")
+#         return False
     
 if __name__ == "__main__":
     mcp.run(transport="stdio")
