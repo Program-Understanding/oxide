@@ -1,7 +1,7 @@
 
 # DRIFT Tutorial
 
-DRIFT is an Automated Firmware Analysis Tool that ...
+DRIFT is a tool for automated firmware triaging that identifies matched, modified, and unmatched components across firmware versions.
 
 ## Getting Started with OXIDE
 
@@ -9,8 +9,11 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
 
 ### Install and Configure Oxide
 
-1. **Download Oxide**  
-```git clone https://github.com/Program-Understanding/oxide.git```
+1. **Download Oxide**
+
+    ```text
+    git clone https://github.com/Program-Understanding/oxide.git
+    ```
 
 2. **Set up a new virtual Environment** ***(Recommended)***
     1. Navigate into oxide directory
@@ -63,7 +66,7 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
         *It should look something like this:*
         ```/home/user/ghidra_11.3.1_PUBLIC_20250219/ghidra_11.3.1_PUBLIC```
 
-        Please avoid having any spaces in your filepath
+        Try to avoid having any spaces in your filepath
 
 ### Using Oxide
 
@@ -90,13 +93,13 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
 
 DRIFT is a plugin in oxide, so it is run from within the oxide interactive shell.
 
-1. **Download and Install Datasets**  
+1. **Download and Install [Dataset(s)](https://github.com/Program-Understanding/Firmware-Dataset)**  
     Dataset I: OpenWRT  
     Dataset II: Commercial Firmware  
     Dataset III: Backdoored vs. Normal OpenWRT
 
 2. **Load DRIFT Into Oxide**  
-    Usethe command ```plugin drift``` to load the drift plugin into oxide
+    Use the command ```plugin drift``` to load the drift plugin into oxide
 
 3. **Run DRIFT**  
 Drift has three possible commands:
