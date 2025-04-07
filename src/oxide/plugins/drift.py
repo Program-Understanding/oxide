@@ -485,6 +485,10 @@ def compare_collections_series(args, opts):
 
 def import_product(args, opts):
     dir_path = args[0]
+    if args[1]:
+        product_name = args[1]
+    else:
+        product_name = None
 
     # Check if the provided path is a valid directory
     if not os.path.isdir(dir_path):
@@ -505,7 +509,10 @@ def import_product(args, opts):
     for sample in os.listdir(dir_path):
         sample_path = os.path.join(dir_path, sample)
         # Create the sample_name as "parent_directory-directory_name"
-        sample_name = f"{parent_directory_name}-v{sample}"
+        if product_name:
+            sample_name = f"{parent_directory_name}-v{sample}"
+        else:
+            sample_name = sample
         import_sample(sample_name, sample_path)
 
 exports = [

@@ -201,7 +201,7 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
     # Step 1: Normalize Vectors
     scaler = RobustScaler()
     A_matrix = scaler.fit_transform(A_matrix)
-    B_matrix = scaler.transform(B_matrix)  # Transform (not fit) B to prevent data leakage
+    B_matrix = scaler.fit_transform(B_matrix)
 
     A_matrix = normalize(A_matrix, norm="l2")
     B_matrix = normalize(B_matrix, norm="l2")
@@ -224,7 +224,7 @@ def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
         B_keys += tuple(f"DUMMY_B_{i}" for i in range(max_size - len_B))
 
     # Step 4: Convert to Cost Matrix
-    cost_matrix = np.where(sim_matrix >= 0, 1 - sim_matrix, 1000)  # Ensure high penalties for unmatched cases
+    cost_matrix = np.where(sim_matrix >= 0, 1 - sim_matrix, 9999)  # Ensure high penalties for unmatched cases
 
     # Step 5: Apply Hungarian Matching
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
