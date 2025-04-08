@@ -319,7 +319,7 @@ async def decompile_function(oid:str, function_name:str) -> str | Literal[False]
             # print(f"OFFSET {offset_key}", file=sys.stderr)
             # For this offset, walk through the lines to add to the decomp line map
             for line_str in offset_value['line']:
-                print(line_str, file=sys.stderr)
+                # print(line_str, file=sys.stderr)
                 # Extract the line number and code text 
                 split = line_str.find(": ")
                 line_no_str = line_str[:split]
