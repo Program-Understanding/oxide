@@ -8,6 +8,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.tree import plot_tree
 from scipy.stats import spearmanr, pearsonr
+from typing import Literal
 #import numpy as np
 
 def spearmanr_pval(x,y):
@@ -85,6 +86,8 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             imms.append(dataframe.loc[dataframe["bin"] == bn, "imms"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             mems.append(dataframe.loc[dataframe["bin"] == bn, "mems"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             regs.append(dataframe.loc[dataframe["bin"] == bn, "regs"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            #number of parameters
+            num_params.append(dataframe.loc[dataframe["bin"] == bn, "num params"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #complexity
             # simple.append(100*(len(dataframe[(dataframe["bin"] == bn) & (dataframe["cyclomatic complexity level"] == "simple")].index)/len(dataframe.loc[dataframe["bin"] == bn].index)))
             # mod.append(100*(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["cyclomatic complexity level"]=="moderate")].index)/len(dataframe.loc[dataframe["bin"] == bn].index)))
@@ -97,8 +100,6 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             #asymptotic complexity
             for O in different_O:
                 big_o[O].append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["Big O"]==O)]))
-            #number of parameters
-            num_params.append(dataframe.loc[dataframe["bin"] == bn, "num params"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
         else:
             jmps_by_bin.append(0)
             movs_by_bin.append(0)
@@ -109,6 +110,7 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             imms.append(0)
             mems.append(0)
             regs.append(0)
+            num_params.append(0)
             simple.append(0)
             mod.append(0)
             needs_ref.append(0)
@@ -170,7 +172,6 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     #apc plot
     if len(different_O):
         df = pd.DataFrame(big_o,index = binkeys)
-        print(f"apc dataframe:\n{df}")
         df.plot.bar(rot=0)
         plt.xticks(rotation=45)
         plt.title("Asymptotic path complexity of functions per bin")
@@ -226,16 +227,13 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
         plt.clf()
     return True
 
-def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> None:
+def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> pd.DataFrame:
     #this function is to be called after output_data() so no need to verify
     #that the outpath is valid and stuff or this fucntion wouldn't be called
     # print out stats to the screen that don't necessarily need to be returned
     num_funs_exponential = dataframe[(dataframe["Big O"] == "O(n**x)")].count()
     num_funs_linear = dataframe[(dataframe["Big O"] == "O(n)")].count()
     num_funs_constant = dataframe[(dataframe["Big O"] == "O(1)")].count()
-    print(f"number of funs with exponential apc: {num_funs_exponential}")
-    print(f"number of funs with linear apc: {num_funs_linear}")
-    print(f"number of funs with constant apc: {num_funs_constant}")
     #need to transform the dataframe to be able to be analyzed
     #it can't have strings
     columns_to_drop = ['bin', 'cyclomatic complexity level', 'Big O'] + opcodes
@@ -277,11 +275,14 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> None:
     plt.savefig(outpath / "pearson_p-val_correlation_matrix_heatmap.png",dpi=1200)
     plt.clf()
     #pca
-    pca = PCA(n_components=df.shape[1])
-    pca.fit(df)
-    components_dataframe = pd.DataFrame(pca.components_,columns=[f"PC{pc}" for pc in range(len(df.columns))],index=df.columns)
-    with open(outpath / "pca_components.csv","w") as f:
-        components_dataframe.to_csv(f)
+    try:
+        pca = PCA(n_components=df.shape[1])
+        pca.fit(df)
+        components_dataframe = pd.DataFrame(pca.components_,columns=[f"PC{pc}" for pc in range(len(df.columns))],index=df.columns)
+        with open(outpath / "pca_components.csv","w") as f:
+            components_dataframe.to_csv(f)
+    except Exception as e:
+        print(f"Couldn't make PCA due to {e}")
     #multiple regression
     dep=pd.DataFrame(df["time"])
     indep=df[[column for column in df.columns if column != "time"]]
@@ -293,8 +294,6 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> None:
     #random forest
     # dep = np.array(df["time"].values)
     # indep = np.array(indep.values)
-    print(dep)
-    print(indep)
     feats_training, feats_testing, target_training, target_testing = train_test_split(indep,dep,test_size=0.3,random_state=100)
     forest = RandomForestRegressor(n_estimators=100, random_state=100,max_depth=3)
     forest.fit(feats_training, target_training)
@@ -307,3 +306,4 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> None:
     plt.tight_layout()
     plt.savefig(outpath / "random_forest_predictor_tree.png",dpi=1200)
     plt.clf()
+    return df

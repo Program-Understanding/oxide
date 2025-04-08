@@ -21,6 +21,42 @@ opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"ti
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
 
+class OperandsDict(TypedDict):
+    imm : list[int]
+    mem : list[int]
+    reg : list[int]
+
+ComplexityDict = TypedDict(
+    "ComplexityDict",
+    {
+        "simple": int,
+        "moderate" : int,
+        "needs refactor": int,
+        "complex": int
+    }
+    )
+Bins_w_time = TypedDict(
+    "Bins_w_time",
+    {
+        "opcodes": dict[str,int],
+        "operands": OperandsDict,
+        "complexity": ComplexityDict,
+        "num instructions": list[int],
+        "num params": list[int]
+    }
+)
+
+Opts = TypedDict(
+    "Opts",
+    {
+        "timeout": int,
+        "bins": int,
+        "data-path": str,
+        "allow-missing-ret": bool,
+        "allow-low-memory": bool,
+    }
+)
+
 class Summary(TypedDict):
     offset: int
     signature: str
@@ -29,6 +65,16 @@ class Summary(TypedDict):
     complexity_desc: str
     operands: dict[str,int]
     params: list[tuple[int,str]]
+
+F_Dict = TypedDict(
+    "F_Dict",
+    {
+        "summary": Summary,
+        "angr seconds": str,
+        "instructions": dict[int,str]
+        
+    }
+)    
     
 def find_bin_key(bins : list[int] ,time:float,timeout:int) -> str:
     for i in range(len(bins)):
@@ -100,10 +146,10 @@ def mapper(oid:str, opts: dict[str,Any], jobid=False):
         sleep(1)
     return oid
 
-def reducer(intermediate_output : list[str], opts : dict[str,bool|int|str], jobid):
+def reducer(intermediate_output : list[str], opts : Opts, jobid):
     #gathering results into a dict to analyze
     complexity_vs_time = {}
-    bins_w_time = {}
+    bins_w_time : dict[str,Bins_w_time | None] = {}
     functions_w_angr_errors = 0
     oids_w_angr_errors = 0
     functions_w_no_ret = 0
@@ -189,8 +235,8 @@ def reducer(intermediate_output : list[str], opts : dict[str,bool|int|str], jobi
                                      }
     for oid in intermediate_output:
         if oid:
-            time_result : dict[int, dict[str,Summary|int]] | None = api.get_field(NAME,oid,"time_result",opts)
-            opcode_by_func : dict[str, Any] | None  = api.get_field(NAME,oid,"opcode_by_func",opts)
+            time_result : dict[int, F_Dict] | None = api.get_field(NAME,oid,"time_result",opts)
+            opcode_by_func : dict[int, dict[str,str]] | None  = api.get_field(NAME,oid,"opcode_by_func",opts)
             complexitys : dict[str, Any] | None = api.get_field(NAME,oid,"path_complexity",opts)
             if time_result is None or opcode_by_func is None or complexitys is None:
                 logger.warning(f"None result for {oid}")
@@ -198,7 +244,7 @@ def reducer(intermediate_output : list[str], opts : dict[str,bool|int|str], jobi
                 continue
             for fun in time_result:
                 total_functions += 1
-                f_dict : dict[str,Summary|int] = time_result[fun]
+                f_dict : F_Dict = time_result[fun]
                 if "error" in f_dict["angr seconds"]:
                     functions_w_angr_errors += 1
                     logger.info(f"Function has error in angr seconds and complexity {complexitys[fun]['O']}")
@@ -208,10 +254,10 @@ def reducer(intermediate_output : list[str], opts : dict[str,bool|int|str], jobi
                     functions_w_none_complexity += 1
                     continue
                 #need to assess whether we have a ret in the function or if we should skip it
-                opcodes = opcode_by_func[fun]
+                opcodes : dict[str, str] = opcode_by_func[fun]
                 num_params = len(f_dict["summary"]["params"])
                 #count the occurrence of opcodes
-                mncs = {}
+                mncs : dict[str, int] = {}
                 for opcode in opcodes:
                     opcode = opcodes[opcode]
                     if not opcode in mncs:
@@ -356,10 +402,11 @@ def reducer(intermediate_output : list[str], opts : dict[str,bool|int|str], jobi
         logger.error(f"Unable to save data to {outpath}!")
     else:
         logger.info(f"Data saved to {outpath} directory")
-        analyze_dataframe(outpath,dataframe,list(all_opcodes))
+        df = analyze_dataframe(outpath,dataframe,list(all_opcodes))
+        dataframe = df
         logger.info(f"Analysis saved to {outpath} directory")
 
-    filtered_bins_w_time = {}
+    filtered_bins_w_time : dict[str,dict[str,dict[str,float]]] = {}
     for bn in bins_w_time:
         if bins_w_time[bn] is None: continue
         filtered_bins_w_time[bn]={}
@@ -371,12 +418,12 @@ def reducer(intermediate_output : list[str], opts : dict[str,bool|int|str], jobi
                     filtered_bins_w_time[bn]["opcodes"][opcode] = bins_w_time[bn][key]
                 elif "operand" in key:
                     if not "operands" in filtered_bins_w_time[bn]: filtered_bins_w_time[bn]["operands"]={}
-                    operand = key.split(" ")[2]
+                    operand : str = key.split(" ")[2]
                     filtered_bins_w_time[bn]["operands"][operand] = bins_w_time[bn][key]
                 else:
                     filtered_bins_w_time[bn][key] = bins_w_time[bn][key]
         filtered_bins_w_time[bn]["number of functions"] = len(bins_w_time[bn]["num instructions"])
-    filtered_complexity_vs_time = {}
+    filtered_complexity_vs_time : dict[str,dict[str, dict[str, float]]] = {}
     for complexity in ["simple", "moderate", "needs refactor", "complex"]:
         if len(complexity_vs_time[complexity]["instructions"]) > 1:
             filtered_complexity_vs_time[complexity] = {"instructions": {"mean": statistics.mean(complexity_vs_time[complexity]["instructions"]),
