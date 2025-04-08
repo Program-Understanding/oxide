@@ -61,14 +61,14 @@ def get_colname_from_oid(oid: str) -> Set[str]:
 # def get_field(mod_name: str, oid: str, field: str,
 #               opts: dict = {}, dir_override: Optional[str] = None) -> Optional[Any]:
 #     ...
-def get_field(mod_name: str, oid: str, field: str,
-              opts: dict = {}, dir_override: Optional[str] = None) -> Optional[Any]:
+def get_field(mod_name: str, oid: str|list[str], field: str,
+              opts: dict[Any,Any] = {}, dir_override: Optional[str] = None) -> Optional[Any]:
     """
     Given a module name, oid and a field return the value of that field
 
     Args:
     mod_name (str): The name of the module
-    oid (str): OID to query
+    oid | oid_list (str | list[str]): OID or list of OIDs to query
     field (str): The field to search for from the module's return dict
     opts (dict): The options to pass the module
     dir_override(Optional[str])
