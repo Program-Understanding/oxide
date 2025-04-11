@@ -110,6 +110,51 @@ async def function_summary(oid: str) -> dict[Any,Any] | Literal[False]:
     else:
         logger.error("Failed to retrieve summary")
         return False
+    
+@mcp.tool()
+async def control_flow_graph(oid: str, function_name: str) -> dict[Any, Any] | Literal[False]:
+    """
+    Retrieve the Control Flow Graph (CFG) for a given function name in a binary.
+
+    **Inputs:**
+      - oid: The object ID of the binary to be analyzed.
+      - function_name: The name of the specific function whose CFG should be returned.
+
+    **Returns:**
+      - dict: A JSON-compatible dictionary representing the CFG(s). For each function, the CFG is formatted as:
+        
+            {
+                "name": FUNCTION_NAME,
+                "nodes": {
+                    "NODE_OFFSET_1": {
+                        "INSTR_OFFSET_1": "INSTRUCTION 1",
+                        "INSTR_OFFSET_2": "INSTRUCTION 2",
+                        ...
+                    },
+                    ...
+                },
+                "edges": {
+                    "NODE_OFFSET_SOURCE_1": ["NODE_OFFSET_TARGET_1", "NODE_OFFSET_TARGET_2", ...],
+                    ...
+                }
+            }
+
+            where:
+              - **Nodes**: Each key in the "nodes" dictionary represents a basic block (identified by its node offset).
+                The associated value is a dictionary mapping instruction offsets to their corresponding instructions within that block.
+              - **Edges**: Each key in the "edges" dictionary is the offset of a source basic block.
+                Its corresponding value is a list of target basic block offsets, representing the control flow transitions from the source to each target.
+      
+      - Literal[False]: Returns False if the CFG cannot be retrieved.
+    """
+
+    result = oxide.retrieve("nx_control_flow_graph", [oid], {"function_name": function_name})
+    if result:
+        logger.info("Retrieved control flow graph successfully!")
+        return result
+    else:
+        logger.error("Failed to retrieve control flow graph")
+        return False
 
 @mcp.tool()
 async def call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
@@ -153,20 +198,27 @@ async def call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
 @mcp.tool()
 async def call_mapping(oid: str) -> dict[Any,Any] | Literal[False]:
     """
-    Retrieve a mapping for each function giving the offsets of calls to it and from it.
-    
-    Returns: A JSON dictionary mapping functions to the offsets they call or are called by.
-    The dictionary key is function offset, not name. Use function_summary to find
-    the offsets for all functions. The dictionary value and the value is
-    another dictionary containing two more dicitonaries: calls to this function (calls_to) 
-    and calls from this function (calls_from). In both calls_to and calls_from dictionaries, 
-    the keys are the offsets of where the calls are going to or coming from.
+    Retrieve a mapping of call relationships for each function in the binary.
+
+    This function returns a JSON-compatible dictionary where each key is a function's offset 
+    (used to identify functions; use function_summary to match offsets to names). For each function, 
+    the returned value is a dictionary containing two dictionaries:
+
+    - "calls_to": Maps the offset of a target function (i.e., a function that is called by the given function) 
+        to its virtual address (vaddr).
+        
+    - "calls_from": Maps the offset of a calling function (i.e., a function that calls the given function) 
+        to its virtual address (vaddr).
+
+    In both cases, the key represents the function offset and the value represents the corresponding 
+    virtual address for that same function.
+
     Example:
     {
         "4096": {
             "calls_to": {
                 "20520": "00105028"
-            }, 
+            },
             "calls_from": {
                 "5904": "00101710"
             }
@@ -174,8 +226,13 @@ async def call_mapping(oid: str) -> dict[Any,Any] | Literal[False]:
     }
 
     Args:
-    oid: the object id of the binary we are interested in
+        oid (str): The object ID of the binary to be analyzed.
+
+    Returns:
+        dict: A JSON dictionary mapping function offsets to their call relationships, as described above.
     """
+
+
     result = oxide.retrieve("call_mapping", [oid])
     if result:
         logger.info("Retrieved call mapping successfully!")
