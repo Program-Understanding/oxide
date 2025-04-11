@@ -74,6 +74,67 @@ mcp = FastMCP("oxide")
 #         return False
 
 @mcp.tool()
+async def function_offset(oid: str, function_name: str) -> dict[Any,Any] | Literal[False]:
+    """
+    Retrieve the offset for a specific function in a binary.
+
+    **Inputs:**
+    - oid (str): The object ID of the binary to be analyzed.
+    - function_name (str): The name of the function for which the offset should be retrieved.
+
+    **Returns:**
+    - dict: A JSON-compatible dictionary mapping the function name to its offset, as obtained from the function summary.
+    - Literal[False]: Returns False if the function summary cannot be retrieved.
+
+    Example:
+    {
+        "FUNCTION_NAME": FUNCTION_OFFSET
+    }
+    """
+    result = oxide.retrieve("function_summary", [oid])
+    if result:
+        logger.info("Retrieved summary successfully!")
+        result = result[oid]
+        result = {function_name: result[function_name]['offset']}
+        return result
+    else:
+        logger.error("Failed to retrieve summary")
+        return False  
+
+@mcp.tool()
+async def function_name(oid: str, function_offset: str) -> dict[Any,Any] | Literal[False]:
+    """
+    Retrieve the function name corresponding to a specified function offset.
+
+    **Inputs:**
+      - oid (str): The object ID of the binary to be analyzed.
+      - function_offset (str): The offset of the function whose name should be retrieved.
+
+    **Returns:**
+      - dict: A JSON-compatible dictionary mapping the given function offset to its corresponding function name,
+              as found in the function summary. For example, if a function "my_function" has an offset "4096",
+              the return value would be { "4096": "my_function" }.
+      - Literal[False]: Returns False if the function summary cannot be retrieved.
+
+    Example:
+    {
+        FUNCTION_OFFSET: "FUNCTION_NAME"
+    }
+    """
+    result = oxide.retrieve("function_summary", [oid])
+    if result:
+        logger.info("Retrieved summary successfully!")
+        result = result[oid]
+        for func_name in result:
+            if result[func_name]['offset'] == function_offset:
+                result = {function_offset: func_name}
+                break
+        return result
+    else:
+        logger.error("Failed to retrieve summary")
+        return False  
+
+@mcp.tool()
 async def function_summary(oid: str) -> dict[Any,Any] | Literal[False]:
     """
     Retrieve summaries of functions for a binary file.
@@ -148,7 +209,7 @@ async def control_flow_graph(oid: str, function_name: str) -> dict[Any, Any] | L
       - Literal[False]: Returns False if the CFG cannot be retrieved.
     """
 
-    result = oxide.retrieve("nx_control_flow_graph", [oid], {"function_name": function_name})
+    result = oxide.retrieve("mcp_control_flow_graph", [oid], {"function_name": function_name})
     if result:
         logger.info("Retrieved control flow graph successfully!")
         return result
@@ -215,14 +276,17 @@ async def call_mapping(oid: str) -> dict[Any,Any] | Literal[False]:
 
     Example:
     {
-        "4096": {
+        "FUNCTION_OFFSET": {
             "calls_to": {
-                "20520": "00105028"
+                "TARGET_FUNCTION_OFFSET": "TARGET_FUNCTION_VADDR"
+                ...
             },
             "calls_from": {
-                "5904": "00101710"
+                "CALLING_FUNCTION_OFFSET": "CALLING_FUNCTION_VADDR"
+                ...
             }
         }
+        ...
     }
 
     Args:

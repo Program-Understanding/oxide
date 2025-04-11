@@ -1,5 +1,5 @@
 DESC = ""
-NAME = "control_flow_graph"
+NAME = "mcp_control_flow_graph"
 CATEGORY = ""
 
 import logging
