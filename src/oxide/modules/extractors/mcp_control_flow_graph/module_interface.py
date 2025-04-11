@@ -15,8 +15,7 @@ from collections import defaultdict
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {'function_name': {'type': str, 'mangle': True, 'default': 'None'},
-            'function_offset': {'type': str, 'mangle': True, 'default': 'None'}}
+opts_doc = {}
 
 def documentation() -> Dict[str, Any]:
     return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
@@ -29,36 +28,12 @@ def process(oid: str, opts: dict) -> bool:
 
     if functions is None: return False
 
-    function_name = opts['function_name']
-    function_offset = opts['function_offset']
-
-    if function_offset != 'None':
-        func_addr = function_offset
-        func_data = functions[func_addr]
-        func_name = func_data['name']
-        cfg = get_func_cfg(oid, func_addr)
+    for func_addr, func_data in functions.items():
         # Get the CFG for the function; skip if not available.
+        cfg = get_func_cfg(oid, func_addr)
         if cfg:
-            cfg = cfg_to_llm_json(cfg, func_name)
-            result = cfg
-
-    elif function_name != 'None':
-        for func_addr, func_data in functions.items():
-            if func_data['name'] == function_name:
-                func_name = func_data['name']
-                cfg = get_func_cfg(oid, func_addr)
-                # Get the CFG for the function; skip if not available.
-                if cfg:
-                    cfg = cfg_to_llm_json(cfg, func_name)
-                    result = cfg
-    
-    else:
-        for func_addr, func_data in functions.items():
-            # Get the CFG for the function; skip if not available.
-            cfg = get_func_cfg(oid, func_addr)
-            if cfg:
-                cfg = cfg_to_llm_json(cfg, func_name=str(func_addr))
-                result[func_addr] = cfg
+            cfg = cfg_to_llm_json(cfg, func_name=func_data['name'])
+            result[func_addr] = cfg
     
     if not result:
         return False
@@ -84,7 +59,7 @@ def cfg_to_llm_json(bb_graph: nx.DiGraph, func_name: str = "unknown_function") -
         targets_by_source[u].append(str(v))
     data["edges"] = targets_by_source
     
-    return json.dumps(data, indent=5)
+    return data
 
 
 def cfg_to_networkx(block_map: dict, bb_features: dict = None) -> nx.DiGraph:

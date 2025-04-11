@@ -74,65 +74,90 @@ mcp = FastMCP("oxide")
 #         return False
 
 @mcp.tool()
-async def function_offset(oid: str, function_name: str) -> dict[Any,Any] | Literal[False]:
+async def get_function_offset(oid: str, function_names: list[str]) -> dict[Any, Any] | Literal[False]:
     """
-    Retrieve the offset for a specific function in a binary.
-
-    **Inputs:**
-    - oid (str): The object ID of the binary to be analyzed.
-    - function_name (str): The name of the function for which the offset should be retrieved.
-
-    **Returns:**
-    - dict: A JSON-compatible dictionary mapping the function name to its offset, as obtained from the function summary.
-    - Literal[False]: Returns False if the function summary cannot be retrieved.
-
-    Example:
-    {
-        "FUNCTION_NAME": FUNCTION_OFFSET
-    }
-    """
-    result = oxide.retrieve("function_summary", [oid])
-    if result:
-        logger.info("Retrieved summary successfully!")
-        result = result[oid]
-        result = {function_name: result[function_name]['offset']}
-        return result
-    else:
-        logger.error("Failed to retrieve summary")
-        return False  
-
-@mcp.tool()
-async def function_name(oid: str, function_offset: str) -> dict[Any,Any] | Literal[False]:
-    """
-    Retrieve the function name corresponding to a specified function offset.
+    Retrieve the offsets for specific functions in a binary.
 
     **Inputs:**
       - oid (str): The object ID of the binary to be analyzed.
-      - function_offset (str): The offset of the function whose name should be retrieved.
+      - function_names (list[str]): A list of function names for which the offsets should be retrieved.
 
     **Returns:**
-      - dict: A JSON-compatible dictionary mapping the given function offset to its corresponding function name,
-              as found in the function summary. For example, if a function "my_function" has an offset "4096",
-              the return value would be { "4096": "my_function" }.
+      - dict: A JSON-compatible dictionary mapping each function name (from the input list) to its corresponding offset,
+              as obtained from the function summary. For example, if "my_function" has an offset of 4096, an entry would be:
+              { "my_function": 4096 }.
       - Literal[False]: Returns False if the function summary cannot be retrieved.
 
     Example:
-    {
-        FUNCTION_OFFSET: "FUNCTION_NAME"
-    }
+      Given a binary with a function summary where "my_function" has an offset 4096 and "another_function" has an offset 8192,
+      calling:
+      
+          await get_function_offset("binary_oid", ["my_function", "another_function"])
+      
+      would return:
+      
+          {
+              "my_function": 4096,
+              "another_function": 8192
+          }
+    """
+    result = oxide.retrieve("function_summary", [oid])
+    if result:
+        logger.info("Retrieved summary successfully!")
+        summary = result[oid]
+        mapping = {}
+        for function_name in function_names:
+            if function_name in summary:
+                mapping[function_name] = summary[function_name]['offset']
+        return mapping
+    else:
+        logger.error("Failed to retrieve summary")
+        return False
+
+
+@mcp.tool()
+async def get_function_name(oid: str, function_offsets: list[int]) -> dict[Any, Any] | Literal[False]:
+    """
+    Retrieve the function names corresponding to the specified function offsets.
+
+    **Inputs:**
+      - oid (str): The object ID of the binary to be analyzed.
+      - function_offsets (list[int]): A list of function offsets for which the corresponding function names should be retrieved.
+
+    **Returns:**
+      - dict: A JSON-compatible dictionary mapping each function offset (from the input list) to its corresponding function name,
+              as found in the function summary. For example, if a function "my_function" has an offset 4096, an entry in the return
+              value would be { 4096: "my_function" }.
+      - Literal[False]: Returns False if the function summary cannot be retrieved.
+
+    Example:
+      Given a binary where the function summary includes:
+      
+          "my_function" with offset 4096 and "another_function" with offset 8192
+      
+      Calling:
+          await get_function_name("binary_oid", [4096, 8192])
+      
+      Would return:
+          {
+              4096: "my_function",
+              8192: "another_function"
+          }
     """
     result = oxide.retrieve("function_summary", [oid])
     if result:
         logger.info("Retrieved summary successfully!")
         result = result[oid]
-        for func_name in result:
-            if result[func_name]['offset'] == function_offset:
-                result = {function_offset: func_name}
-                break
-        return result
+        mapping = {}
+        for func_name, details in result.items():
+            offset_val = details['offset']
+            if offset_val in function_offsets:
+                mapping[offset_val] = func_name
+        return mapping
     else:
         logger.error("Failed to retrieve summary")
-        return False  
+        return False
+
 
 @mcp.tool()
 async def function_summary(oid: str) -> dict[Any,Any] | Literal[False]:
@@ -163,27 +188,29 @@ async def function_summary(oid: str) -> dict[Any,Any] | Literal[False]:
     Args:
     oid: the object id of the binary we are interested in
     """
-    result = oxide.retrieve("function_summary", [oid])
+    result = oxide.get_field("function_summary", [oid], oid)
     if result:
         logger.info("Retrieved summary successfully!")
-        result = result[oid]  # Return only information for this oid
         return result
     else:
         logger.error("Failed to retrieve summary")
         return False
     
 @mcp.tool()
-async def control_flow_graph(oid: str, function_name: str) -> dict[Any, Any] | Literal[False]:
+async def control_flow_graph(oid: str, function_name: str = None, function_offset:int = None) -> dict[Any, Any] | Literal[False]:
     """
-    Retrieve the Control Flow Graph (CFG) for a given function name in a binary.
+    Retrieve the Control Flow Graph (CFG) for functions in a binary, optionally filtering by function name or function offset.
 
     **Inputs:**
-      - oid: The object ID of the binary to be analyzed.
-      - function_name: The name of the specific function whose CFG should be returned.
+      - oid (str): The object ID of the binary to be analyzed.
+      - function_name (str, optional): The name of the specific function whose CFG should be retrieved.
+      - function_offset (int, optional): The offset of the specific function whose CFG should be retrieved.
+
+    If neither function_name nor function_offset is provided, the function returns the CFGs for all functions in the binary.
 
     **Returns:**
-      - dict: A JSON-compatible dictionary representing the CFG(s). For each function, the CFG is formatted as:
-        
+      - dict: A JSON-compatible dictionary representing the CFG(s). For each function, the CFG is formatted as follows:
+
             {
                 "name": FUNCTION_NAME,
                 "nodes": {
@@ -201,16 +228,22 @@ async def control_flow_graph(oid: str, function_name: str) -> dict[Any, Any] | L
             }
 
             where:
-              - **Nodes**: Each key in the "nodes" dictionary represents a basic block (identified by its node offset).
-                The associated value is a dictionary mapping instruction offsets to their corresponding instructions within that block.
-              - **Edges**: Each key in the "edges" dictionary is the offset of a source basic block.
-                Its corresponding value is a list of target basic block offsets, representing the control flow transitions from the source to each target.
-      
+              - **Nodes**: Each key in the "nodes" dictionary represents a basic block (identified by its node offset). The value is a dictionary mapping instruction offsets to their corresponding instructions within that block.
+              - **Edges**: Each key in the "edges" dictionary is a source basic block offset. The associated value is a list of target basic block offsets, representing the control flow transitions between these basic blocks.
+
       - Literal[False]: Returns False if the CFG cannot be retrieved.
     """
-
-    result = oxide.retrieve("mcp_control_flow_graph", [oid], {"function_name": function_name})
-    if result:
+    cfgs = oxide.retrieve("mcp_control_flow_graph", [oid])
+    if cfgs:
+        if function_name:
+            for f in cfgs:
+                if cfgs[f]["name"] == function_name:
+                    result = cfgs[f]
+                    break
+        elif function_offset:
+            result = cfgs[function_offset]
+        else:
+            result = cfgs
         logger.info("Retrieved control flow graph successfully!")
         return result
     else:
@@ -257,50 +290,47 @@ async def call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
         return False
 
 @mcp.tool()
-async def call_mapping(oid: str) -> dict[Any,Any] | Literal[False]:
+async def call_mapping(oid: str, function_offset: int = None) -> dict[Any, Any] | Literal[False]:
     """
-    Retrieve a mapping of call relationships for each function in the binary.
+    Retrieve a mapping of call relationships for functions in a binary, with an option to filter by a specific function offset.
 
-    This function returns a JSON-compatible dictionary where each key is a function's offset 
-    (used to identify functions; use function_summary to match offsets to names). For each function, 
-    the returned value is a dictionary containing two dictionaries:
+    **Inputs:**
+      - oid (str): The object ID of the binary to be analyzed.
+      - function_offset (int, optional): The specific function offset for which to return the call mapping.
+          If provided, only the call mapping for that function offset will be returned; otherwise, the mapping for all functions is returned.
 
-    - "calls_to": Maps the offset of a target function (i.e., a function that is called by the given function) 
-        to its virtual address (vaddr).
-        
-    - "calls_from": Maps the offset of a calling function (i.e., a function that calls the given function) 
-        to its virtual address (vaddr).
+    **Returns:**
+      - dict: A JSON-compatible dictionary representing the call relationships. Each key is a function offset, and its value is a dictionary containing:
+          - "calls_to": A list of dictionaries mapping the offset of a target function (i.e., a function called by the given function) to its virtual address (vaddr).
+          - "calls_from": A list of dictionaries mapping the offset of a calling function (i.e., a function that calls the given function) to its virtual address (vaddr).
+          
+          If a function_offset is provided, the function returns the call mapping for that specific function offset.
+      
+      - Literal[False]: Returns False if the call mapping cannot be retrieved.
 
-    In both cases, the key represents the function offset and the value represents the corresponding 
-    virtual address for that same function.
+    **Example:**
+      Full mapping:
+          {
+              GIVEN_FUNC_OFFSET: {
+                  "calls_to": [ TARGET_FUNC_OFFSET: TARGET_FUNC_VADDR, ... },
+                  "calls_from": [ CALLING_FUNCT_OFFSET: CALLING_FUNCT_VADDR, ... } 
+              },
+              ...
+          }
 
-    Example:
-    {
-        "FUNCTION_OFFSET": {
-            "calls_to": {
-                "TARGET_FUNCTION_OFFSET": "TARGET_FUNCTION_VADDR"
-                ...
-            },
-            "calls_from": {
-                "CALLING_FUNCTION_OFFSET": "CALLING_FUNCTION_VADDR"
-                ...
-            }
-        }
-        ...
-    }
-
-    Args:
-        oid (str): The object ID of the binary to be analyzed.
-
-    Returns:
-        dict: A JSON dictionary mapping function offsets to their call relationships, as described above.
+      Specific mapping (e.g., for function offset GIVEN_FUNC_OFFSET):
+          {
+              "calls_to": [ TARGET_FUNC_OFFSET: TARGET_FUNC_VADDR, ... ],
+              "calls_from": [ CALLING_FUNCT_OFFSET: CALLING_FUNCT_VADDR, ... ]
+          }
     """
-
-
     result = oxide.retrieve("call_mapping", [oid])
     if result:
         logger.info("Retrieved call mapping successfully!")
-        return result
+        if function_offset:
+            return result.get(function_offset, {})
+        else:
+            return result
     else:
         logger.error("Failed to retrieve call mapping")
         return False
