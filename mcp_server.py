@@ -143,12 +143,17 @@ async def get_function_name(oid: str, function_offsets: list[int]) -> dict[Any, 
 
 
 @mcp.tool()
-async def get_function_summaries(oid: str) -> dict[Any,Any] | Literal[False]:
+async def get_function_summaries(oid: str, function_names: list[str] = None, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
     """
-    Retrieve summaries of all functions in a binary file.
+    Retrieve summaries of all functions in a binary file, with optional filtering by function names or offsets.
     
     Inputs:
-        oid: the object id of the binary we are interested in
+      - oid (str): The object ID of the binary to be analyzed.
+      - function_names (list[str], optional): A list of function names to filter the results.
+          Only the functions whose names appear in this list will be included.
+      - function_offsets (list[int], optional): A list of function offsets to filter the results.
+          Only the functions with an offset present in this list will be included.
+          (Note: This filter is applied only if function_names is not provided.)
 
     Returns: 
         JSON with summary information about each function in the binary file 
@@ -173,22 +178,33 @@ async def get_function_summaries(oid: str) -> dict[Any,Any] | Literal[False]:
         }
     """
     result = oxide.get_field("function_summary", [oid], oid)
-    if result:
-        logger.info("Retrieved summary successfully!")
-        return result
-    else:
+    if not result:
         logger.error("Failed to retrieve summary")
         return False
+
+    # Filter by function names if provided, else filter by function offsets if provided.
+    if function_names:
+        mapping = {fn: result[fn] for fn in function_names if fn in result}
+    elif function_offsets:
+        offsets = set(function_offsets)
+        mapping = {fn: info for fn, info in result.items() if info.get('offset') in offsets}
+    else:
+        mapping = result
+
+    logger.info("Retrieved summary successfully!")
+    return mapping
     
 @mcp.tool()
-async def get_control_flow_graph(oid: str, function_name: str = None, function_offset:int = None) -> dict[Any, Any] | Literal[False]:
+async def get_control_flow_graph(oid: str, function_names: list[str] = None, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
     """
     Get the Control Flow Graph (CFG) for functions in a binary, optionally filtering by function name or function offset.
 
     **Inputs:**
       - oid (str): The object ID of the binary to be analyzed.
-      - function_name (str, optional): The name of the specific function whose CFG should be retrieved.
-      - function_offset (int, optional): The offset of the specific function whose CFG should be retrieved.
+      - function_name (list[str], optional): A list of function names to filter the results.
+          Only the functions whose names appear in this list will be included.
+      - function_offset (list[int], optional): A list of function offsets to filter the results.
+          Only the functions with an offset present in this list will be included.
 
     If neither function_name nor function_offset is provided, the function returns the CFGs for all functions in the binary.
 
@@ -218,21 +234,21 @@ async def get_control_flow_graph(oid: str, function_name: str = None, function_o
       - Literal[False]: Returns False if the CFG cannot be retrieved.
     """
     cfgs = oxide.retrieve("mcp_control_flow_graph", [oid])
-    if cfgs:
-        if function_name:
-            for f in cfgs:
-                if cfgs[f]["name"] == function_name:
-                    result = cfgs[f]
-                    break
-        elif function_offset:
-            result = cfgs[function_offset]
-        else:
-            result = cfgs
-        logger.info("Retrieved control flow graph successfully!")
-        return result
-    else:
+    if not cfgs:
         logger.error("Failed to retrieve control flow graph")
         return False
+
+    if function_names:
+        # Filter CFGs by function names using a dictionary comprehension.
+        results = {f: cfg for f, cfg in cfgs.items() if cfg.get("name") in function_names}
+    elif function_offsets:
+        # Filter CFGs by function offsets using a dictionary comprehension.
+        results = {fo: cfgs[fo] for fo in function_offsets if fo in cfgs}
+    else:
+        results = cfgs
+
+    logger.info("Retrieved control flow graph successfully!")
+    return results
 
 @mcp.tool()
 async def get_call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
@@ -275,7 +291,7 @@ async def get_call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
         return False
 
 @mcp.tool()
-async def get_call_mapping(oid: str, function_offset: int = None) -> dict[Any, Any] | Literal[False]:
+async def get_call_mapping(oid: str, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
     """
     Get a mapping of call relationships for functions in a binary, with an option to filter by a specific function offset.
 
@@ -309,16 +325,17 @@ async def get_call_mapping(oid: str, function_offset: int = None) -> dict[Any, A
               "calls_from": [ CALLING_FUNCT_OFFSET: CALLING_FUNCT_VADDR, ... ]
           }
     """
-    result = oxide.retrieve("call_mapping", [oid])
-    if result:
-        logger.info("Retrieved call mapping successfully!")
-        if function_offset:
-            return result.get(function_offset, {})
-        else:
-            return result
-    else:
+    mapping_data = oxide.retrieve("call_mapping", [oid])
+    if not mapping_data:
         logger.error("Failed to retrieve call mapping")
         return False
+
+    logger.info("Retrieved call mapping successfully!")
+    if function_offsets:
+        filtered_results = {fo: mapping_data[fo] for fo in function_offsets if fo in mapping_data}
+        return filtered_results
+    else:
+        return mapping_data
 
 @mcp.tool()
 async def get_file_stats(oid: str) -> dict[Any,Any] | Literal[False]:
@@ -541,6 +558,29 @@ async def get_source_for_function(oid:str, function_name:str) -> str | Literal[F
     else:
         logger.error("Failed to retrieve ghidra decompilation mapping")
         return False
+    
+@mcp.tool()
+async def compare_function_disasm(target_oid: str, target_func_name: str, baseline_oid: str, baseline_func_name: str):
+    """
+    Generate a unified diff comparing two functions from two different binaries.
+
+    **Inputs:**
+      - target_oid (str): The object ID of the target binary containing the function to be compared.
+      - target_func_name (str): The name of the function in the target binary for which the diff is generated.
+      - baseline_oid (str): The object ID of the baseline binary containing the function to compare against.
+      - baseline_func_name (str): The name of the function in the baseline binary to be compared.
+
+    **Returns:**
+      - A unified diff that highlights the differences between the target function and the baseline function.
+      - If the diff cannot be retrieved, the function will return the result from the retrieval operation (which may indicate a failure).
+    """
+    function_diff = oxide.retrieve("function_unified_diff", [target_oid, baseline_oid], {"function": target_func_name, "baseline_function": baseline_func_name})
+    if function_diff:
+        logger.info("Retrieved function diff successfully!")
+        return function_diff
+    else:
+        logger.error("Failed to retrieve function diff")
+        return function_diff
     
 if __name__ == "__main__":
     mcp.run(transport="stdio")

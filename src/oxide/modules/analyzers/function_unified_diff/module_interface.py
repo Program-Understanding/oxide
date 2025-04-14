@@ -68,7 +68,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     baseline_func_insts = retrieve_function_instructions(baseline_oid, baseline_func)
     
     if func_insts and baseline_func_insts:
-        u_diff = unified_diff(baseline_func_insts, func_insts, n=3)
+        max_context = max(len(baseline_func_insts), len(func_insts))
+        u_diff = unified_diff(baseline_func_insts, func_insts, n=max_context)
     else:
         u_diff = None
     
