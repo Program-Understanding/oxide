@@ -38,6 +38,7 @@ from typing import Any, Literal
 import argparse
 import sys
 import json
+import os
 import networkx as nx
 from networkx.readwrite import json_graph
 
@@ -581,6 +582,45 @@ async def compare_function_disasm(target_oid: str, target_func_name: str, baseli
     else:
         logger.error("Failed to retrieve function diff")
         return function_diff
+    
+@mcp.tool()
+async def import_collection(collection_name: str, collection_path: str):
+    """
+    Import a file or directory as a new collection.
+
+    Inputs:
+      - collection_name (str): The name to assign to the new collection.
+      - collection_path (str): The file system path of the file or directory to import.
+          If a directory is provided, all files within that directory will be imported.
+          If a file is provided, only that file will be imported.
+
+    Returns:
+      - None. The function creates a new collection using the imported object IDs.
+    """
+    if os.path.isdir(collection_path):
+        oids, new_files = oxide.import_directory(collection_path)
+    else:
+        oids, new_files = oxide.import_file(collection_path)
+
+    oxide.create_collection(collection_name, oids, oids)
+
+# @mcp.tool()
+# async def run_drift(target_sample: str, baseline_sample: str):
+#     """
+#     Uses DRIFT to compare two firmware samples each of which is contained in a collection.
+
+#     Inputs:
+#         - target_collection (str): The collection we are interested in
+#         - baseline_collection (str): The collection we are triaging the target_collection against
+
+#     Returns:
+#         - Results of DRIFT
+#     """
+#     oxide.plugin("drift")
+#     result = oxide.drift("compare_collection", f"${target_sample}", f"${baseline_sample}")
+#     print(result, file=sys.stderr)
+
+#     return result
     
 if __name__ == "__main__":
     mcp.run(transport="stdio")
