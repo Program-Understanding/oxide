@@ -57,7 +57,7 @@ from oxide.core import oxide as oxide
 mcp = FastMCP("oxide")
 
 @mcp.tool()
-async def get_function_offset(oid: str, function_names: list[str]) -> dict[Any, Any] | Literal[False]:
+async def function_offset(oid: str, function_names: list[str]) -> dict[Any, Any] | Literal[False]:
     """
     Retrieve the offsets for specific functions in a binary.
 
@@ -99,7 +99,7 @@ async def get_function_offset(oid: str, function_names: list[str]) -> dict[Any, 
 
 
 @mcp.tool()
-async def get_function_name(oid: str, function_offsets: list[int]) -> dict[Any, Any] | Literal[False]:
+async def function_name(oid: str, function_offsets: list[int]) -> dict[Any, Any] | Literal[False]:
     """
     Retrieve the function names corresponding to the specified function offsets.
 
@@ -143,7 +143,7 @@ async def get_function_name(oid: str, function_offsets: list[int]) -> dict[Any, 
 
 
 @mcp.tool()
-async def get_function_summaries(oid: str, function_names: list[str] = None, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
+async def function_summaries(oid: str, function_names: list[str] = None, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
     """
     Retrieve summaries of all functions in a binary file, with optional filtering by function names or offsets.
     
@@ -195,7 +195,7 @@ async def get_function_summaries(oid: str, function_names: list[str] = None, fun
     return mapping
     
 @mcp.tool()
-async def get_control_flow_graph(oid: str, function_names: list[str] = None, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
+async def control_flow_graph(oid: str, function_names: list[str] = None, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
     """
     Get the Control Flow Graph (CFG) for functions in a binary, optionally filtering by function name or function offset.
 
@@ -251,7 +251,7 @@ async def get_control_flow_graph(oid: str, function_names: list[str] = None, fun
     return results
 
 @mcp.tool()
-async def get_call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
+async def call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
     """
     Get a call graph for a binary file to know how functions call each other.
     
@@ -291,7 +291,7 @@ async def get_call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
         return False
 
 @mcp.tool()
-async def get_call_mapping(oid: str, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
+async def call_mapping(oid: str, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
     """
     Get a mapping of call relationships for functions in a binary, with an option to filter by a specific function offset.
 
@@ -338,7 +338,7 @@ async def get_call_mapping(oid: str, function_offsets: list[int] = None) -> dict
         return mapping_data
 
 @mcp.tool()
-async def get_file_stats(oid: str) -> dict[Any,Any] | Literal[False]:
+async def file_stats(oid: str) -> dict[Any,Any] | Literal[False]:
     """
     Get general file stats for a binary file
     
@@ -365,7 +365,7 @@ async def get_file_stats(oid: str) -> dict[Any,Any] | Literal[False]:
         return False
 
 @mcp.tool()
-async def get_strings(oid: str) -> dict[Any,Any] | Literal[False]:
+async def strings(oid: str) -> dict[Any,Any] | Literal[False]:
     """
     Get ASCII strings contained in a binary file
 
@@ -391,7 +391,7 @@ async def get_strings(oid: str) -> dict[Any,Any] | Literal[False]:
         return False
 
 @mcp.tool()
-async def get_disassembly_for_file(oid: str) -> dict[Any,Any] | Literal[False]:
+async def disasm_for_file(oid: str) -> dict[Any,Any] | Literal[False]:
     """
     Get disassembly of an entire binary file. WARNING: The size of the result is likely to
     exceed the context window of most LLMs. Use get_details_and_disassembly_for_function to extract
@@ -414,9 +414,9 @@ async def get_disassembly_for_file(oid: str) -> dict[Any,Any] | Literal[False]:
         return False
 
 @mcp.tool()
-async def get_details_and_disassembly_for_function(oid:str, function_name:str) -> str | Literal[False]:
+async def disasm_and_info_for_func(oid:str, function_name:str) -> str | Literal[False]:
     """
-    Get the details and disassembly for a specified function. 
+    Get the disassembly and details for a specified function. 
 
     Inputs:
         oid: the ID of the binary file containing the desired function
@@ -475,7 +475,7 @@ async def get_details_and_disassembly_for_function(oid:str, function_name:str) -
         return False
 
 @mcp.tool()
-async def get_decompilation_mapping_for_file(oid:str, org_by_func: bool) -> dict[Any,Any] | Literal[False]:
+async def decmap_for_file(oid:str, org_by_func: bool) -> dict[Any,Any] | Literal[False]:
     """
     Get ghidra decompilation mapping, optionally organized by function.
     WARNING: The size of the result is likely to
@@ -500,7 +500,7 @@ async def get_decompilation_mapping_for_file(oid:str, org_by_func: bool) -> dict
         return False
 
 @mcp.tool()
-async def get_source_for_function(oid:str, function_name:str) -> str | Literal[False]:
+async def source_for_func(oid:str, function_name:str) -> str | Literal[False]:
     """
     Get the C source code (reconstructed through decompilation) for a specified function as a string. 
 
