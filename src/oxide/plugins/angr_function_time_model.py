@@ -108,7 +108,7 @@ def test(args : list[str], opts : Test_opts):
     """
     Test the model after training. Can provide a number of tests.
     
-    Usage: test [--tests=<int>] 
+    Usage: test [--tests=<int>] &<collection> | show
     """
     res = api.local_retrieve("angr_function_time_model","model")
     if res is None: return False
@@ -123,11 +123,20 @@ def test(args : list[str], opts : Test_opts):
     if res is None: return False
     columns : list[str] = res
     givens : dict[str, float] = {}
-    test, truth = random.choice(test_samples)
-    prediction : torch.Tensor = model(test)
-    for i in range(len(columns)):
-        givens[columns[i]] = test.tolist()[i]
-    results : dict[str, float | dict[str, float]] = {"prediction": prediction.tolist()[0], "reality": truth.tolist()[0], "givens": givens}
+    if "tests" in opts:
+        results = []
+        for _ in range(opts["tests"]):
+            test, truth = random.choice(test_samples)
+            prediction : torch.Tensor = model(test)
+            for i in range(len(columns)):
+                givens[columns[i]] = test.tolist()[i]
+            results.append({"prediction": prediction.tolist()[0], "reality": truth.tolist()[0], "givens": givens})
+    else:
+        test, truth = random.choice(test_samples)
+        prediction : torch.Tensor = model(test)
+        for i in range(len(columns)):
+            givens[columns[i]] = test.tolist()[i]
+        results = {"prediction": prediction.tolist()[0], "reality": truth.tolist()[0], "givens": givens}
     return results if "results" in locals() else False
 
 def evaluate(args : list[str], opts : Opts):
