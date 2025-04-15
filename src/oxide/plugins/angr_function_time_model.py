@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import torch
 from typing import TypedDict, Literal
+import random
 
 Opts = TypedDict(
     "Opts",
@@ -96,9 +97,18 @@ def train(args : list[str], opts : Opts):
     api.local_store("angr_function_time_model", "dataframe_columns", columns)
     return True
 
-def test(args, opts):
+Test_opts = TypedDict(
+    "Test_opts",
+    {
+        "tests": int,
+    }
+)
+
+def test(args : list[str], opts : Test_opts):
     """
-    Test the model after training. Can use same arguments as call to train.
+    Test the model after training. Can provide a number of tests.
+    
+    Usage: test [--tests=<int>] 
     """
     res = api.local_retrieve("angr_function_time_model","model")
     if res is None: return False
@@ -113,15 +123,14 @@ def test(args, opts):
     if res is None: return False
     columns : list[str] = res
     givens : dict[str, float] = {}
-    for test, truth in test_samples:
-        prediction : torch.Tensor = model(test)
-        for i in range(len(columns)):
-            givens[columns[i]] = test.tolist()[i]
-        results = {"prediction": prediction.tolist()[0], "reality": truth.tolist()[0], "givens": givens}
-        break
+    test, truth = random.choice(test_samples)
+    prediction : torch.Tensor = model(test)
+    for i in range(len(columns)):
+        givens[columns[i]] = test.tolist()[i]
+    results : dict[str, float | dict[str, float]] = {"prediction": prediction.tolist()[0], "reality": truth.tolist()[0], "givens": givens}
     return results if "results" in locals() else False
 
-def evaluate(args, opts):
+def evaluate(args : list[str], opts : Opts):
     """
     Evaluate the angr function time analyzer model against a differnet collection that wasn't use to train the model.
     Not recommended to use against data used to train the model as this can result in training data being used in testing.
@@ -152,11 +161,12 @@ def evaluate(args, opts):
     if res is None: return False
     columns : list[str] = res
     givens : dict[str, float] = {}
-    for test, truth in evaluating_loader:
-        prediction : torch.Tensor = model(test)
-        for i in range(len(columns)):
-            givens[columns[i]] = test.tolist()[i]
-        results = {"prediction": prediction.tolist()[0], "reality": truth.tolist()[0], "givens": givens}
-        break
+    test, truth = random.choice(evaluating_loader)
+    prediction : torch.Tensor = model(test)
+    for i in range(len(columns)):
+        givens[columns[i]] = test.tolist()[i]
+    results : dict[str, float | dict[str, float]] = {"prediction": prediction.tolist()[0], "reality": truth.tolist()[0], "givens": givens}
     return results if "results" in locals() else False
+
+#plugin's exports to the shell (functions the shell can use)
 exports = [train,test,evaluate]
