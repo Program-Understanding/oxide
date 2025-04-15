@@ -76,7 +76,7 @@ async def function_offset(oid: str, function_names: list[str]) -> dict[Any, Any]
       Given a binary with a function summary where "my_function" has an offset 4096 and "another_function" has an offset 8192,
       calling:
       
-          await get_function_offset("binary_oid", ["my_function", "another_function"])
+          function_offset("binary_oid", ["my_function", "another_function"])
       
       would return:
       
@@ -120,7 +120,7 @@ async def function_name(oid: str, function_offsets: list[int]) -> dict[Any, Any]
           "my_function" with offset 4096 and "another_function" with offset 8192
       
       Calling:
-          await get_function_name("binary_oid", [4096, 8192])
+          function_name("binary_oid", [4096, 8192])
       
       Would return:
           {
@@ -260,21 +260,17 @@ async def call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
         oid: the object id of the binary we are interested in
 
     Returns: 
-        A JSON dictionary with two entries: nodes and links. Nodes is a list of dictionaries
-        providing the id for each nodes, which are function offsets and not function names. 
-        Links is a list of dictionaries providing the offsets of the source and target functions
-        for each call. 
+        A JSON dictionary with two entries: nodes and edge. 
+        - nodes is a list of function names.  
+        - edges is a list of dictionaries providing the source and target function name for each edge.
+
         Example:
         {
-            "nodes": [
-                {"id": 4096}, 
-                {"id": 20520}, 
-                {"id": 4288},
-                {"id": 20512} 
-            ], 
+            "nodes": [ "_init", "main", "part2d", "part1d", "part1a", "puts"], 
             "links": [
-                {"source": 4096, "target": 20520}, 
-                {"source": 4288, "target": 20512}
+                {"source": "main", "target": "part1d"}, 
+                {"source": "main", "target": "part2d"},
+                {"source": "part1a", "target": "puts"}
             ]
         }
     """
@@ -284,9 +280,26 @@ async def call_graph(oid: str) -> dict[Any,Any] | Literal[False]:
         result = result[oid]  # Return only information for this oid
         # print(str(result), file=sys.stderr)
         result_dict = nx.node_link_data(result)
-        # Simplify the result so that it's just nodes and links
-        result_dict = { "nodes" : result_dict["nodes"], "links" : result_dict["links"] }
-        return result_dict
+
+        # Get function (node) names. If name not known, use offset as a string.
+        offsets = [item["id"] for item in result_dict["nodes"]]
+        function_name_dict = await function_name(oid, offsets)
+        nodes = [function_name_dict.get(offset, f"{offset}") for offset in offsets]
+        # print(str(nodes), file=sys.stderr)
+
+        # Get edges with function names instead of offsets
+        edges = [
+            {
+                "source": function_name_dict.get(link["source"], f"{link['source']}"),
+                "target": function_name_dict.get(link["target"], f"{link['target']}")
+            }
+            for link in result_dict["links"]
+        ]
+
+        # Return the lists of nodes and edges in a dict
+        graph_dict = { "nodes" : nodes, "edges" : edges }
+        # print(str(graph_dict), file=sys.stderr)
+        return graph_dict
     else:
         logger.error("Failed to retrieve call graph")
         return False
