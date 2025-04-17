@@ -35,6 +35,9 @@ def flush_oid(oid: str) -> None:
     ...
 def flush_module(mod_name: str) -> None:
     ...
+def flush_oid_for_module(oid: str, mod_name: str) -> None:
+    """ Given an oid and module, clears out the data for that oid """
+    ...
 def get_cid_from_oid_list(oid_list):
     ...
 def get_cid_from_name(col_name):
@@ -168,8 +171,8 @@ ghidra_project = ""
 pharos_image = ""
 def source(oid: str, dir_override: Optional[str] = None) -> Optional[str]:
     ...
-def store(mod_name: str, oid: str, data: Dict[str|int,Any], opts: dict = {},
-          block: bool = True, dir_override: Optional[str] = None)->bool:
+def store(mod_name: str, oid: str, data: dict[object,object], opts: dict[str,object] = {},
+          block: bool = True, dir_override: str|None = None)->bool:
     """
     Store the results of a module in the datastore
 

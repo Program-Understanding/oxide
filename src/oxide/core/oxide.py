@@ -437,12 +437,15 @@ def flush_oid(oid: str) -> None:
         for mod_name in modules_available[module_type]:
             datastore.delete_oid_data(mod_name, oid)
 
-
 def flush_module(mod_name: str) -> None:
     """ Clears data for module (drop table)
     """
     logger.warning("Flushing data for module %s", mod_name)
     datastore.delete_module_data(mod_name)
+
+def flush_oid_for_module(oid: str, mod_name: str) -> None:
+    """ Given an oid and module, clears out the data for that oid """
+    logger.warning(f"Deleting data of {oid} from {mod_name}")
 
 
 # ------------------- MODULES RELATED FUNCTIONS --------------------------------------------------
@@ -1079,6 +1082,7 @@ def wire_api():
     api.valid_oids            = valid_oids
     api.flush_module          = flush_module
     api.flush_oid             = flush_oid
+    api.flush_oid_for_module  = flush_oid_for_module
 
     api.local_store                = local_store
     api.local_retrieve             = local_retrieve
