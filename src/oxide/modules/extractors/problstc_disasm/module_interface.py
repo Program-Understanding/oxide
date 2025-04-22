@@ -327,7 +327,6 @@ def _back_propagation(disasm, code_prob, data_prob, preds):
 def _hint_one(offset, prev_list, disasm):
     """ Implements Control Flow Convergence hint. If multiple branches land at a given offset, tage each predecessor branch with 1rel (short jump) or 1near (long jump)
     Will tell likely hood instructions are real if they converge at a given offset"""
-    print("Hint 1")
     branches = [prev for prev in prev_list if set(disasm[prev]["groups"]) & BRANCH_GROUPS]
     for branch in branches:
         RH[branch].add(("1rel" if disasm[branch]["size"] == 2 else "1near", offset))
@@ -335,7 +334,6 @@ def _hint_one(offset, prev_list, disasm):
 @_log_fun_time
 def _hint_two(offset, prev_list, disasm):
     """ Implements Control Flow Crossing hint. Captures unconditional branches that cross over other branch targets indicating unlikely. Tagged 2rel or 2 near"""
-    print("Hint 2")
     branches = [prev for prev in prev_list if set(disasm[prev]["groups"]) & BRANCH_GROUPS]
     if branches:
         for size, label in [(2, "2rel"), (5, "2near")]:
@@ -349,7 +347,6 @@ def _hint_two(offset, prev_list, disasm):
 def _hint_three(offset, prev_list, disasm):
     """ Implements Register Define-Use Relation hint. Links any predecessor that writes a register later read by the current instruction. If multiple instructions read it,
     after a value was set, likely code. """
-    print("Hint 3")
     if offset not in disasm:
         logger.debug(f"Offset {offset} not in disasm")
         return
@@ -361,23 +358,6 @@ def _hint_three(offset, prev_list, disasm):
             RH[offset].add(("3orig", prev))
 
 
-# @_log_fun_time
-# def _hint_four(offset, prev_list, disasm):
-#     """ Implements Alignment Property  """
-
-#     text_section_start = min(list(disasm.keys()))
-#     text_section_end = max(list(disasm.keys()))
-#     max_sweep_range = 30
-
-#     boundary_occur_count = {i: 0 for i in range(text_section_start, text_section_end)}
-
-#     for byte_offset, inst_info in disasm.items():
-#         if byte_offset != inst_info['address']:
-#             # Log detailed information for debugging
-#             print(f"Mismatch detected: byte_offset={byte_offset}, inst_info['address']={inst_info['address']}")
-#             print(f"Instruction details: {inst_info}")
-#             # print(byte_offset, inst_info, '\n')
-#             inst_info = None
 @_log_fun_time
 def _hint_four(offset, prev_list, disasm):
     """
@@ -387,7 +367,6 @@ def _hint_four(offset, prev_list, disasm):
     This helps link instructions in a probable flow.
     """
 
-    print("Hint 4")
     if offset not in disasm:
         return
 
