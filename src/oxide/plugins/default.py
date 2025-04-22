@@ -396,6 +396,17 @@ def export_file(args, opts, directory = None):
     else:
         export_files(oids, opts, directory = directory)
 
+def print_disasm(args: List[str], opts:dict):
+    for arg in args:
+        if isinstance(arg, list):
+            arg = arg[0]
+        if isinstance(arg, (dict, defaultdict)):
+            if "instructions" not in arg:
+                arg = arg[list(arg.keys())[0]]
+            if "instructions" in arg:
+                print("---------------------------------------------")
+                for address in arg["instructions"]:
+                    print(address, ": ", arg["instructions"][address]["str"])
 
 def cat(args: List[str], opts: dict) -> None:
     """
@@ -651,7 +662,7 @@ def extension_filter(args, opts):
 
 exports = [random_sample, random_shuffle, top_n, count, expand, clean, file_io, membership, select,
            extract_field, export_file, intersection, cat, summarize, size_filter, name_filter,
-           byte_filter, type_filter, key_filter, extension_filter, symbol_filter]
+           byte_filter, type_filter, key_filter, extension_filter, symbol_filter, print_disasm]
 
 
 # ---------------------------- UTILS -------------------------------------------------------------
