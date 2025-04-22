@@ -35,6 +35,9 @@ def flush_oid(oid: str) -> None:
     ...
 def flush_module(mod_name: str) -> None:
     ...
+def flush_oid_for_module(oid: str, mod_name: str) -> None:
+    """ Given an oid and module, clears out the data for that oid """
+    ...
 def get_cid_from_oid_list(oid_list):
     ...
 def get_cid_from_name(col_name):
@@ -61,14 +64,14 @@ def get_colname_from_oid(oid: str) -> Set[str]:
 # def get_field(mod_name: str, oid: str, field: str,
 #               opts: dict = {}, dir_override: Optional[str] = None) -> Optional[Any]:
 #     ...
-def get_field(mod_name: str, oid: str, field: str,
-              opts: dict = {}, dir_override: Optional[str] = None) -> Optional[Any]:
+def get_field(mod_name: str, oid: str|list[str], field: str,
+              opts: dict[Any,Any] = {}, dir_override: Optional[str] = None) -> Optional[Any]:
     """
     Given a module name, oid and a field return the value of that field
 
     Args:
     mod_name (str): The name of the module
-    oid (str): OID to query
+    oid | oid_list (str | list[str]): OID or list of OIDs to query
     field (str): The field to search for from the module's return dict
     opts (dict): The options to pass the module
     dir_override(Optional[str])
@@ -168,8 +171,8 @@ ghidra_project = ""
 pharos_image = ""
 def source(oid: str, dir_override: Optional[str] = None) -> Optional[str]:
     ...
-def store(mod_name: str, oid: str, data: Dict[str|int,Any], opts: dict = {},
-          block: bool = True, dir_override: Optional[str] = None)->bool:
+def store(mod_name: str, oid: str, data: dict[object,object], opts: dict[str,object] = {},
+          block: bool = True, dir_override: str|None = None)->bool:
     """
     Store the results of a module in the datastore
 

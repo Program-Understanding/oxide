@@ -8,6 +8,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.tree import plot_tree
 from scipy.stats import spearmanr, pearsonr
+from typing import Literal
 #import numpy as np
 
 def spearmanr_pval(x,y):
@@ -31,6 +32,7 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     movs_by_bin = []
     cmovs_by_bin = []
     xors_by_bin = []
+    leas_by_bin = []
     #track instructions and functions per bin
     instructions = []
     functions = []
@@ -45,6 +47,13 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     cmplx = []
     #number of parameters
     num_params = []
+    #number of self references in the code
+    num_self_refs = []
+    #number of strides or dereferences
+    num_derefs = []
+    num_strides = []
+    #number of comparisons followed immediately by jumps
+    num_cmp_jumps = []
     #O
     unsorted_different_O = list(dataframe["Big O"].unique())
     different_O = []
@@ -73,11 +82,12 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
         big_o[O] = []
     for bn in binkeys:
         if len(dataframe.loc[dataframe["bin"] == bn].index) > 0:
-            #jumps/movs/cmovs/xors per bin
+            #jumps/movs/cmovs/xors/leas per bin
             jmps_by_bin.append(dataframe.loc[dataframe["bin"] == bn, "j*"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             movs_by_bin.append(dataframe.loc[dataframe["bin"] == bn, "mov*"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             cmovs_by_bin.append(dataframe.loc[dataframe["bin"] == bn, "cmov*"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             xors_by_bin.append(dataframe.loc[dataframe["bin"] == bn, "*xor*"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            leas_by_bin.append(dataframe.loc[dataframe["bin"] == bn, "lea"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #instructions and functions
             instructions.append(dataframe.loc[dataframe["bin"] == bn, "instructions"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             functions.append(len(dataframe.loc[dataframe["bin"] == bn].index))
@@ -85,6 +95,15 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             imms.append(dataframe.loc[dataframe["bin"] == bn, "imms"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             mems.append(dataframe.loc[dataframe["bin"] == bn, "mems"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             regs.append(dataframe.loc[dataframe["bin"] == bn, "regs"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            #number of parameters
+            num_params.append(dataframe.loc[dataframe["bin"] == bn, "num params"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            #number of self references
+            num_self_refs.append(dataframe.loc[dataframe["bin"] == bn, "num self-references"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            #number of strided accesses or dereferences
+            num_derefs.append(dataframe.loc[dataframe["bin"] == bn, "num dereferences"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            num_strides.append(dataframe.loc[dataframe["bin"] == bn, "num strides"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            #number of cmps followed by jumps
+            num_cmp_jumps.append(dataframe.loc[dataframe["bin"] == bn, "num cmp-jumps stride 2"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #complexity
             # simple.append(100*(len(dataframe[(dataframe["bin"] == bn) & (dataframe["cyclomatic complexity level"] == "simple")].index)/len(dataframe.loc[dataframe["bin"] == bn].index)))
             # mod.append(100*(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["cyclomatic complexity level"]=="moderate")].index)/len(dataframe.loc[dataframe["bin"] == bn].index)))
@@ -97,36 +116,61 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             #asymptotic complexity
             for O in different_O:
                 big_o[O].append(len(dataframe.loc[(dataframe["bin"] == bn) & (dataframe["Big O"]==O)]))
-            #number of parameters
-            num_params.append(dataframe.loc[dataframe["bin"] == bn, "num params"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
         else:
             jmps_by_bin.append(0)
             movs_by_bin.append(0)
             xors_by_bin.append(0)
             cmovs_by_bin.append(0)
+            leas_by_bin.append(0)
             instructions.append(0)
             functions.append(0)
             imms.append(0)
             mems.append(0)
             regs.append(0)
+            num_params.append(0)
+            num_self_refs.append(0)
+            num_strides.append(0)
+            num_derefs.append(0)
+            num_cmp_jumps.append(0)
             simple.append(0)
             mod.append(0)
             needs_ref.append(0)
             cmplx.append(0)
             for O in different_O:
                 big_o[O].append(0)
-    #matched j*/mov*/cmov*/*xor*
+    #matched j*/mov*/cmov*/*xor*/lea
     df = pd.DataFrame({"j*" :jmps_by_bin,
                        "mov*":movs_by_bin,
                        "cmov*":cmovs_by_bin,
-                       "*xor*":xors_by_bin},index=binkeys)
+                       "*xor*":xors_by_bin,
+                       "lea*": leas_by_bin},index=binkeys)
     df.plot.bar(rot=0)
     plt.xticks(rotation=45)
-    plt.title("Average instructions (matching j*/mov*/cmov*/*xor*) per function by bin")
+    plt.title("Average instructions (matching j*/mov*/cmov*/*xor*/lea*) per function by bin")
     plt.ylabel("Average instructions per function")
     plt.xlabel("Time range in seconds")
     plt.tight_layout()
-    plt.savefig(outpath / "jmps_movs_cmovs_xors_by_bin.png",dpi=1200)
+    plt.savefig(outpath / "jmps_movs_cmovs_xors_leas_by_bin.png",dpi=1200)
+    plt.clf()
+    #number of self references
+    df = pd.DataFrame({"num self-references" :num_self_refs},index=binkeys)
+    df.plot.bar(rot=0)
+    plt.xticks(rotation=45)
+    plt.title("Average number of self-references per function by bin")
+    plt.ylabel("Average self-references per function")
+    plt.xlabel("Time range in seconds")
+    plt.tight_layout()
+    plt.savefig(outpath / "self_references_by_bin.png",dpi=1200)
+    plt.clf()
+    #number of self references and comparisons then jumps
+    df = pd.DataFrame({"num strides" :num_strides, "num dereferences":num_derefs, "num cmp-jumps stride 2" : num_cmp_jumps},index=binkeys)
+    df.plot.bar(rot=0)
+    plt.xticks(rotation=45)
+    plt.title("Average deref/stride/cmp-then-jmps per function by bin")
+    plt.ylabel("Average per function")
+    plt.xlabel("Time range in seconds")
+    plt.tight_layout()
+    plt.savefig(outpath / "dereferences_cmp_jmps_by_bin.png",dpi=1200)
     plt.clf()
     #instructions and functions
     df = pd.DataFrame({"functions": functions},index=binkeys)
@@ -137,7 +181,7 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     plt.xlabel("Time range")
     plt.yscale('log')
     plt.tight_layout()
-    plt.savefig(outpath / "instructions_functions_by_bin.png",dpi=1200)
+    plt.savefig(outpath / "functions_by_bin.png",dpi=1200)
     plt.clf()
     #imms, mems, regs per bin and the number of parameters, too
     df = pd.DataFrame({"imms": imms,
@@ -151,7 +195,7 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     plt.ylabel("Average occurrence of type per function")
     plt.xlabel("Time range in seconds")
     plt.tight_layout()
-    plt.savefig(outpath / "imms_mems_regs_by_bin.png",dpi=1200)
+    plt.savefig(outpath / "imms_mems_regs_average_num_params_by_bin.png",dpi=1200)
     plt.clf()
     #path complexity by bin
     df = pd.DataFrame({"simple": simple,
@@ -170,7 +214,6 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     #apc plot
     if len(different_O):
         df = pd.DataFrame(big_o,index = binkeys)
-        print(f"apc dataframe:\n{df}")
         df.plot.bar(rot=0)
         plt.xticks(rotation=45)
         plt.title("Asymptotic path complexity of functions per bin")
@@ -226,19 +269,16 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
         plt.clf()
     return True
 
-def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> None:
+def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> pd.DataFrame:
     #this function is to be called after output_data() so no need to verify
     #that the outpath is valid and stuff or this fucntion wouldn't be called
     # print out stats to the screen that don't necessarily need to be returned
     num_funs_exponential = dataframe[(dataframe["Big O"] == "O(n**x)")].count()
     num_funs_linear = dataframe[(dataframe["Big O"] == "O(n)")].count()
     num_funs_constant = dataframe[(dataframe["Big O"] == "O(1)")].count()
-    print(f"number of funs with exponential apc: {num_funs_exponential}")
-    print(f"number of funs with linear apc: {num_funs_linear}")
-    print(f"number of funs with constant apc: {num_funs_constant}")
     #need to transform the dataframe to be able to be analyzed
     #it can't have strings
-    columns_to_drop = ['bin', 'cyclomatic complexity level', 'Big O'] + opcodes
+    columns_to_drop = ['bin', 'cyclomatic complexity level', 'Big O'] + [op for op in opcodes if op != "lea" and op != "cmp"] #keep lea and cmp
     #get rid of low memory results so they don't ill affect the time
     #get rid of columns which don't have numeric values
     df = dataframe[(dataframe["bin"] != "low memory")].drop(columns=columns_to_drop).dropna()
@@ -277,14 +317,17 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> None:
     plt.savefig(outpath / "pearson_p-val_correlation_matrix_heatmap.png",dpi=1200)
     plt.clf()
     #pca
-    pca = PCA(n_components=df.shape[1])
-    pca.fit(df)
-    components_dataframe = pd.DataFrame(pca.components_,columns=[f"PC{pc}" for pc in range(len(df.columns))],index=df.columns)
-    with open(outpath / "pca_components.csv","w") as f:
-        components_dataframe.to_csv(f)
+    try:
+        pca = PCA(n_components=df.shape[1])
+        pca.fit(df)
+        components_dataframe = pd.DataFrame(pca.components_,columns=[f"PC{pc}" for pc in range(len(df.columns))],index=df.columns)
+        with open(outpath / "pca_components.csv","w") as f:
+            components_dataframe.to_csv(f)
+    except Exception as e:
+        print(f"Couldn't make PCA due to {e}")
     #multiple regression
-    dep=pd.DataFrame(df["time"])
-    indep=df[[column for column in df.columns if column != "time"]]
+    dep=pd.DataFrame(df["bin int"])
+    indep=df[[column for column in df.columns if column != "time" and column != "bin int"]]
     model = sm.OLS(dep,indep)
     res = model.fit()
     print(res.summary())
@@ -293,8 +336,6 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> None:
     #random forest
     # dep = np.array(df["time"].values)
     # indep = np.array(indep.values)
-    print(dep)
-    print(indep)
     feats_training, feats_testing, target_training, target_testing = train_test_split(indep,dep,test_size=0.3,random_state=100)
     forest = RandomForestRegressor(n_estimators=100, random_state=100,max_depth=3)
     forest.fit(feats_training, target_training)
@@ -303,7 +344,8 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> None:
     r2 = r2_score(target_testing, forest_predictions)
     print(f"mse: {mse}")
     print(f"r2: {r2}")
-    plot_tree(forest.estimators_[0], feature_names=indep.columns, class_names=df["time"].unique(), filled=True, rounded=True)
+    plot_tree(forest.estimators_[0], feature_names=indep.columns, class_names=["time", "bin int"], filled=True, rounded=True)
     plt.tight_layout()
     plt.savefig(outpath / "random_forest_predictor_tree.png",dpi=1200)
     plt.clf()
+    return df

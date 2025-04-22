@@ -348,11 +348,25 @@ class OxideShell(Cmd):
         drop orphans
         drop &<collection>
         drop $<context>
-        show %<oid>
         """
         if not line:
             raise ShellSyntaxError("")
         commands = self.parse_line("drop "+line)
+        self.parse_pipe(commands)
+
+    @error_handler
+    def do_mod_drop(self,line):
+        """
+    Description: Intelligently deletes results from given module
+
+    Syntax:
+        mod_drop module_name
+        mod_drop module_name &<collection>
+        mod_drop module_name %<oid>
+        """
+        if not line:
+            raise ShellSyntaxError("")
+        commands = self.parse_line("mod_drop "+line)
         self.parse_pipe(commands)
 
     @error_handler
@@ -936,6 +950,28 @@ class OxideShell(Cmd):
                 print(args)
         return args
 
+    def mod_drop(self, args, opts):
+        if not args:
+            print("  - Nothing to drop")
+            return args
+        logger = logging.getLogger("oxide")
+        mod_list = self.oxide.modules_list()
+        module_name = args[0]
+        args = args[1:]
+        if module_name not in mod_list:
+            raise ShellSyntaxError("Unrecognized Module %s" % module_name)
+        if args:
+            if sys_utils.query(f"Are you sure you want to delete collection or OID results from {module_name}?","no"):
+                valid, invalid = self.oxide.valid_oids(args)
+                valid_oids = self.oxide.expand_oids(valid)
+                for oid in valid_oids:
+                    self.oxide.flush_oid_for_module(oid,module_name)
+                print(f"  - Dropped {len(valid_oids)} results from {module_name}")
+        else:
+            if sys_utils.query(f"Are you sure you want to delete all results from {module_name}?","no"):
+                self.oxide.flush_module(module_name)
+                print(f"  - Dropped all results from {module_name}")
+
     def drop(self, args, opts):
         if not args:
             print("  - Nothing to drop")
@@ -982,6 +1018,11 @@ class OxideShell(Cmd):
                     logger.setLevel(logging.WARNING)
 
                     print(("  - Dropped %d orphan OID(s)" % count))
+            else:
+                if sys_utils.query(f"Are you sure you want to delete all results from {args[1]}?","no"):
+                    self.oxide.flush_module(mod_name)
+                    print(f"  - Dropped all results from {mod_name}")
+
         else: # drop <oid> | <collection>
             if sys_utils.query("Are you sure you want to delete collection or OID?","no"):
                 valid, invalid = self.oxide.valid_oids(args)
@@ -1192,6 +1233,8 @@ class OxideShell(Cmd):
                 res = self.show(args, opts)
         elif command == "drop": # ... | drop ... | ...
             res = self.drop(args, opts)
+        elif command == "mod_drop":
+            res = self.mod_drop(args, opts)
         elif command == "configure":
             res = self.configure(args, opts)
         elif command[0] in ("%", "$", "&", "^"): # %<oid> $<context> &<collection> or ^<name>
@@ -1862,6 +1905,15 @@ class OxideShell(Cmd):
             return self.pipe_complete(text, line, begidx, endidx)
         control = line[begidx-1]
         return self.completions(text, self.commands["drop"], control)
+
+    def complete_mod_drop(self, text, line, begidx, endidx):
+        if "|" in line:
+            return self.pipe_complete(text, line, begidx, endidx)
+        length = len(line.split())
+        if length <= 2 and not (length == 2 and not text):
+            return self.mod_completions(text, False)
+        control = line[begidx-1]
+        return self.completions(text, [], control)
 
     def complete_tag(self, text, line, begidx, endidx):
         if "|" in line:
