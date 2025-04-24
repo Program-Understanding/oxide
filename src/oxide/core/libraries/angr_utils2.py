@@ -38,6 +38,7 @@ def syscalls_breakpoint(state):
 class angrTherapy:
     def __init__(self,oid : str):
         import angr
+        from claripy import BVS
         """
         initiate an angr project given an oid
         """
@@ -57,6 +58,7 @@ class angrTherapy:
         fff = api.tmp_file(ff,data)
         self._proj = angr.Project(fff)
         self._opts = angr.options
+        self._bvs = BVS
 
     def timed_underconstrained_function_run(self,function_offset: int,timeout:int=600, prototype:str="")->tuple | bool:
         from time import time
@@ -67,15 +69,21 @@ class angrTherapy:
         if angr_fun_addr > self._proj.loader.max_addr:
             return False
         #add the option to run the call state w/o following calls
+        angr_opts = {self._opts.LAZY_SOLVES,self._opts.CALLLESS,self._opts.SYMBOL_FILL_UNCONSTRAINED_MEMORY,self._opts.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,self._opts.CONSERVATIVE_READ_STRATEGY,self._opts.SYMBOLIC_WRITE_ADDRESSES,self._opts.SYMBOLIC_INITIAL_VALUES,self._opts.UNDER_CONSTRAINED_SYMEXEC}
         if prototype:
             try:
-                fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS},prototype=prototype)
+                fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options=angr_opts,prototype=prototype)
             except Exception as e:
                 logger.warning("Something wrong w/ using prototype... Making call state without prototype")
                 logger.warning(f"Protoype was {prototype}")
-                fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS})
+                fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options=angr_opts)
         else:
-            fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options={self._opts.LAZY_SOLVES,self._opts.CALLLESS})
+            fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options=angr_opts)
+        #symbol fill the .bss and .data sections
+        for section in [".bss", ".data"]:
+            start = self._proj.loader.main_object.sections_map[section].vaddr
+            end = start + self._proj.loader.main_object.sections_map[section].memsize
+            for addr in range(start, end): fun_call_state.memory.store(addr, self._bvs(f"mem_{addr}", 8))
         simgr = self._proj.factory.simgr(fun_call_state)
         start_time = time()
         try:
