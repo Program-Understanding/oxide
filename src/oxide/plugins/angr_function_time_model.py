@@ -22,7 +22,9 @@ Opts = TypedDict(
         "data-path": str,
         "allow-missing-ret": bool,
         "allow-low-memory": bool,
-        "epochs":int
+        "epochs":int,
+        "data-name": str,
+        "delete-cached": bool
     }
 )
 
@@ -35,9 +37,14 @@ Outlier_opts = TypedDict(
         "allow-missing-ret": bool,
         "allow-low-memory": bool,
         "epochs":int,
-        "no-prompts": bool
+        "no-prompts": bool,
+        "data-name": str,
+        "delete-cached": bool
     }
 )
+
+def clear_data(data_name:str = "default") -> bool:
+    return api.local_delete_data("angr_function_time_model",data_name)
 
 def get_data(oid_list: list[str], timeout: int=600, bins: int=6, data_name:str="default") -> pd.DataFrame | Literal[False]:
     opts = {"timeout": timeout, "data-path": "/home/kevan/output", "bins": 6}
@@ -65,7 +72,21 @@ def train(args : list[str], opts : Opts):
         bins = opts["bins"]
     else:
         bins = 6
-    df = get_data(args, timeout, bins)
+    if "data-name" in opts:
+        data_name = opts["data-name"]
+    else:
+        data_name = "default"
+    if "delete-cached" in opts:
+        delete_cached = opts["delete-cached"]
+    else:
+        delete_cached = False
+    if delete_cached:
+        res = clear_data(data_name)
+        if res:
+            logger.info("Successfully cleared data!")
+        else:
+            logger.info("Didn't clear data!")
+    df = get_data(args, timeout, bins,data_name)
     if df is False:
         return False
     idp = df[[column for column in df.columns if column != "time" and column != "bin int"]]
@@ -223,7 +244,21 @@ def identify_outliers(args: list[str], opts: Outlier_opts):
         bins = opts["bins"]
     else:
         bins = 6
-    df = get_data(args, timeout, bins)
+    if "data-name" in opts:
+        data_name = opts["data-name"]
+    else:
+        data_name = "default"
+    if "delete-cached" in opts:
+        delete_cached = opts["delete-cached"]
+    else:
+        delete_cached = False
+    if delete_cached:
+        res = clear_data(data_name)
+        if res:
+            logger.info("Successfully cleared data!")
+        else:
+            logger.info("Didn't clear data!")
+    df = get_data(args, timeout, bins,data_name)
     if df is False:
         return False
     if "no-prompts" in opts and opts["no-prompts"] == False:

@@ -33,33 +33,86 @@ class GhidraDisasm(TypedDict):
     canon_blocks: None
     functions: dict[int,GhidraDisasmFunctions]
 
+DisassemblyInsns = TypedDict(
+    "DisassemblyInsns",
+    {
+        "id": int,
+        "mnemonic": str,
+        "address": int,
+        "op_str" : str,
+        "size" : int,
+        "str" : str,
+        "groups" : list[Literal["jump"] | Literal["branch_relative"] | str],
+        "regs_read" : list[str],
+        "regs_write" : list[str],
+        "regs_access" : tuple[list[str],list[str]],
+        "prefix" : list[int],
+        "opcode" : list[int],
+        "rex" : int,
+        "operand_size" : int,
+        "modrm" : int,
+        "eflags": list[str],
+        "operands" : dict[str,dict[Literal["type.mem"],dict[str,str|int] | dict[Literal["size"],int] | dict[Literal["access"],str]] | dict[Literal["displacement"],int] | dict[Literal["type.imm"],int] | dict[Literal["type.reg"],str]]
+    }
+)
+
 def documentation() -> dict[str, object]:
     return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "Usage": USG}
 
 def process(oid: str, opts: dict[Literal["by-function-name"],bool]) -> bool:
-    disasm_output : dict[int,GhidraDisasmFunctions] | None = api.get_field("ghidra_disasm", oid, "functions")
-    if not disasm_output:
-        logger.error("Failed to extract disassembly")
+    functions : dict[int,GhidraDisasmFunctions] | None = api.get_field("ghidra_disasm", oid, "functions")
+    if not functions:
+        logger.error("Failed to extract function information")
         return False
     original_blocks : dict[int,GhidraDisasmBlocks] | None = api.get_field("ghidra_disasm", oid, "original_blocks")
     if not original_blocks:
         logger.error("Couldn't get original blocks")
         return False
-    results : dict[str | int,int] = {}
-    for f in disasm_output:
+    ddisasm : dict[str,dict[int,DisassemblyInsns]] | None = api.get_field("disassembly",oid,oid)
+    if ddisasm is None:
+        logger.error("Couldn't get disasm from disassembly module")
+        return False
+    else:
+        disasm : dict[int, DisassemblyInsns] = ddisasm["instructions"]
+    
+    results : dict[str | int,dict[Literal["earlier block"]|Literal["later block"]|Literal["same block"], int]] = {}
+    for f in functions:
         if f not in original_blocks:
             #logger.info(f"{f} not in {list(original_blocks.keys())}")
             continue
         f_name : str | int
         if "by-function-name" in opts and opts["by-function-name"]:
-            f_name = disasm_output[f]["name"]
+            f_name = functions[f]["name"]
         else:
             f_name = f
-        results[f_name] = 0
+        results[f_name] = {"earlier block": 0,"later block": 0,"same block":0}
         #loop through each destination of the function
-        for d in original_blocks[f]["dests"]:
-            #check if the destination is one of the function's blocks
-            if d in disasm_output[f]["blocks"]:
-                results[f_name]+=1
+        for b in functions[f]["blocks"]:
+            #get all instructions from the function
+            fun_insns : list[int] = [i for i,_ in original_blocks[b]["members"]]
+            for i in fun_insns:
+                if i not in disasm: continue
+                insn = disasm[i]
+                if "jump" in insn["groups"] or "call" in insn["groups"] or "branch_relative" in insn["groups"]:
+                    d : int
+                    operands = list(insn["operands"].keys())
+                    for key in operands:
+                        if  "type.imm" in insn["operands"][key]:
+                            d = insn["operands"][key]["type.imm"]
+                            break
+                    if not "d" in locals(): continue
+                    #check if the destination is one of the function's blocks
+                    addr : int = insn["address"]
+                    if d in functions[f]["blocks"]:
+                        timing : Literal["earlier block"]|Literal["later block"]|Literal["same block"]
+                        if d == b:
+                            timing = "same block"
+                        elif d < addr:
+                            timing = "earlier block"
+                        elif d > addr :
+                            timing = "later block"
+                        else:
+                            timing = "same block"
+                        results[f_name][timing]+=1
     api.store(NAME,oid,results,opts)
     return True

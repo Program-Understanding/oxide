@@ -28,6 +28,15 @@ class OperandsDict(TypedDict):
     mem : list[int]
     reg : list[int]
 
+ComplexityVsTime = TypedDict(
+    "ComplexityVsTime",
+    {
+        "times":list[float],
+        "instructions": list[int],
+        "operands": dict[Literal["imm"] | Literal["reg"] | Literal["mem"] | str, list[int]],
+        "opcodes": dict[str,list[int]],
+        "interesting":dict[str,dict[str,dict[int,str]|float|int|str]]
+    })
 ComplexityDict = TypedDict(
     "ComplexityDict",
     {
@@ -40,11 +49,11 @@ ComplexityDict = TypedDict(
 Bins_w_time = TypedDict(
     "Bins_w_time",
     {
-        "opcodes": dict[str,int],
+        "opcodes": dict[str,list[int]],
         "operands": OperandsDict,
         "complexity": ComplexityDict,
         "num instructions": list[int],
-        "num params": list[int]
+        "num params": list[int],
     }
 )
 
@@ -165,7 +174,7 @@ def mapper(oid:str, opts: dict[str,Any], jobid=False):
 
 def reducer(intermediate_output : list[str], opts : Opts, jobid):
     #gathering results into a dict to analyze
-    complexity_vs_time : dict[str,dict[str,list[float]|dict[str,list[float]]]] = {}
+    complexity_vs_time : dict[Literal["simple"]|Literal["moderate"]|Literal["needs refactor"]|Literal["complex"]|str,ComplexityVsTime] = {}
     bins_w_time : dict[str,Bins_w_time] = {}
     functions_w_angr_errors = 0
     oids_w_angr_errors = 0
@@ -189,7 +198,9 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
     df_O_degree = []
     all_opcodes : set[str] = set()
     df_num_params = []
-    df_self_references = []
+    df_self_references_to_same_block = []
+    df_self_references_to_earlier_block = []
+    df_self_references_to_later_block = []
     df_num_strides = []
     df_num_dereferences = []
     df_num_cmp_jump_stride2 = []
@@ -203,7 +214,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                                           "opcodes": {},
                                           "interesting":{}}
     #binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
-    binkeys : list[int] = [round(i,1) for i in numpy.logspace(numpy.log10(0.3),numpy.log10(600),num=opts["bins"]-1)]
+    binkeys : list[int] = [round(i,1) for i in numpy.logspace(numpy.log10(0.3),numpy.log10(opts["timeout"]),num=opts["bins"]-1)]
     binkeys[-1] = opts["timeout"]
     for i in range(len(binkeys)):
         bn = binkeys[i]
@@ -260,7 +271,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
             opcode_by_func : dict[str, dict[str,str]] | None  = api.get_field(NAME,oid,"opcode_by_func",opts)
             complexitys : dict[str, dict[str, str]] | None = api.get_field(NAME,oid,"path_complexity",opts)
             fun_strides_and_dereferences : dict[str,dict[Literal["dereferences"] | Literal["strides"],dict[int,str]]] | None = api.get_field(NAME,oid,"f_complexity",opts)
-            fun_self_references : dict[str,int] | None = api.get_field(NAME,oid,"f_self_references",opts)
+            fun_self_references : dict[str | int,dict[Literal["earlier block"]|Literal["later block"]|Literal["same block"], int]] | None = api.get_field(NAME,oid,"f_self_references",opts)
             fun_bi_grams : dict[str | int,dict[Literal["cmp-jump"] | Literal["cmp-jump-stride3"] | Literal["cmp-jump-stride4"],int]] | None = api.get_field(NAME,oid,"f_cmp_jmps",opts)
             if time_result is None or opcode_by_func is None or complexitys is None or fun_self_references is None or fun_strides_and_dereferences is None or fun_bi_grams is None:
                 logger.warning(f"None result for {oid}")
@@ -290,15 +301,9 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                         mncs[opcode] = 1
                     else:
                         mncs[opcode] += 1
-                fun_opcodes = {}
-                for opcode in mncs:
-                    if opcode in fun_opcodes:
-                        fun_opcodes[opcode] += 1
-                    else:
-                        fun_opcodes[opcode] = 1
                 #after we've tracked the opcodes of this function, we can check
                 #if it has a ret or not
-                if not "ret" in fun_opcodes:
+                if not "ret" in mncs:
                     functions_w_no_ret += 1
                     if not opts["allow-missing-ret"]:
                         continue
@@ -309,7 +314,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                 #we should just skip these kinds of functions
                 if f_dict["summary"]["num_insns"] < 10:
                     intersting = False
-                    for opcode in fun_opcodes:
+                    for opcode in mncs:
                         if opcode.startswith("j"):
                             intersting = True
                             break
@@ -323,8 +328,8 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                     if not opts["allow-low-memory"]:
                         continue
                     f_bin = "low memory"
-                complexity_level = f_dict["summary"]["complexity_desc"]
-                cyclomatic_complexity = f_dict["summary"]["complexity"]
+                complexity_level : Literal["simple"]|Literal["moderate"]|Literal["needs refactor"]|Literal["complex"]|str = f_dict["summary"]["complexity_desc"]
+                cyclomatic_complexity : int = f_dict["summary"]["complexity"]
                 complexity_vs_time[complexity_level]["times"].append(time)
                 bins_w_time[f_bin]["complexity"][complexity_level] += 1
                 if fun not in opcode_by_func:
@@ -345,7 +350,9 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                                                                                 "from": oid,
                                                                                 "complexity": f_dict["summary"]["complexity"]}
                 num_insns = f_dict["summary"]["num_insns"]
-                num_self_refs = fun_self_references[fun]
+                num_self_refs_earlier = fun_self_references[fun]["earlier block"]
+                num_self_refs_later = fun_self_references[fun]["later block"]
+                num_self_refs_same_block = fun_self_references[fun]["same block"]
                 num_derefs = len(fun_strides_and_dereferences[fun]["dereferences"])
                 num_strides = len(fun_strides_and_dereferences[fun]["strides"])
                 num_cmp_jump_bi_grams = fun_bi_grams[fun]["cmp-jump"]
@@ -355,9 +362,11 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                 df_cyclo_complexity_level.append(complexity_level)
                 df_cyclo_complexity_int.append(cyclomatic_complexity)
                 df_instructions.append(num_insns)
-                df_opcodes.append(fun_opcodes)
+                df_opcodes.append(mncs)
                 df_num_params.append(num_params)
-                df_self_references.append(num_self_refs)
+                df_self_references_to_earlier_block.append(num_self_refs_earlier)
+                df_self_references_to_later_block.append(num_self_refs_later)
+                df_self_references_to_same_block.append(num_self_refs_same_block)
                 df_num_strides.append(num_strides)
                 df_num_dereferences.append(num_derefs)
                 df_num_cmp_jump_stride2.append(num_cmp_jump_bi_grams)
@@ -430,7 +439,9 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
         "mems":df_mem,
         "regs":df_reg,
         "num params": df_num_params,
-        "num self-references": df_self_references,
+        "num self-references (earlier)": df_self_references_to_earlier_block,
+        "num self-references (later)" : df_self_references_to_later_block,
+        "num self-references (same block)" : df_self_references_to_same_block,
         "num dereferences" : df_num_dereferences,
         "num strides" : df_num_strides,
         "num cmp-jumps stride 2": df_num_cmp_jump_stride2,
@@ -446,7 +457,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
         dataframe = df
         logger.info(f"Analysis saved to {outpath} directory")
 
-    filtered_bins_w_time : dict[str,dict[str,dict[str,float]]] = {}
+    filtered_bins_w_time : dict[str,dict[str,dict[str,float] | int]] = {}
     for bn in bins_w_time:
         if bins_w_time[bn] is None: continue
         filtered_bins_w_time[bn]={}

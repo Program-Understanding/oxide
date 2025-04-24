@@ -48,7 +48,9 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     #number of parameters
     num_params = []
     #number of self references in the code
-    num_self_refs = []
+    num_self_refs_same = []
+    num_self_refs_earlier = []
+    num_self_refs_later = []
     #number of strides or dereferences
     num_derefs = []
     num_strides = []
@@ -98,7 +100,9 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             #number of parameters
             num_params.append(dataframe.loc[dataframe["bin"] == bn, "num params"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #number of self references
-            num_self_refs.append(dataframe.loc[dataframe["bin"] == bn, "num self-references"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            num_self_refs_earlier.append(dataframe.loc[dataframe["bin"] == bn, "num self-references (earlier)"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            num_self_refs_later.append(dataframe.loc[dataframe["bin"] == bn, "num self-references (later)"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            num_self_refs_same.append(dataframe.loc[dataframe["bin"] == bn, "num self-references (same block)"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #number of strided accesses or dereferences
             num_derefs.append(dataframe.loc[dataframe["bin"] == bn, "num dereferences"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             num_strides.append(dataframe.loc[dataframe["bin"] == bn, "num strides"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
@@ -128,7 +132,9 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             mems.append(0)
             regs.append(0)
             num_params.append(0)
-            num_self_refs.append(0)
+            num_self_refs_earlier.append(0)
+            num_self_refs_later.append(0)
+            num_self_refs_same.append(0)
             num_strides.append(0)
             num_derefs.append(0)
             num_cmp_jumps.append(0)
@@ -153,7 +159,7 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     plt.savefig(outpath / "jmps_movs_cmovs_xors_leas_by_bin.png",dpi=1200)
     plt.clf()
     #number of self references
-    df = pd.DataFrame({"num self-references" :num_self_refs},index=binkeys)
+    df = pd.DataFrame({"num self-references (earlier)" :num_self_refs_earlier, "num self-references (later)": num_self_refs_later, "num self-references (same block)" : num_self_refs_same},index=binkeys)
     df.plot.bar(rot=0)
     plt.xticks(rotation=45)
     plt.title("Average number of self-references per function by bin")

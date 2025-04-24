@@ -4,10 +4,32 @@ NAME = "function_dereferences"
 USG = "Run this module over an OID to get details about dereferences occurring per function (strided accesses and general dereferences)"
 
 import logging
-from typing import Literal
+from typing import Literal, TypedDict
 from core import api
 import re
 logger = logging.getLogger(NAME)
+
+#ghidra_disasm related hints
+class OutputMeta(TypedDict):
+    time: float
+    load_addr: int
+class GhidraDisasmBlocks(TypedDict):
+    members: list[tuple[int,str]]
+    dests: list[int]
+class GhidraDisasmFunctions(TypedDict):
+    blocks : list[int]
+    name: str
+    vaddr: str
+    params: list[tuple[int,str]]
+    retType: str
+    signature: str
+    returning: str
+class GhidraDisasm(TypedDict):
+    meta: OutputMeta
+    instructions: dict[int,str]
+    original_blocks: dict[int, GhidraDisasmBlocks]
+    canon_blocks: None
+    functions: dict[int,GhidraDisasmFunctions]
 
 opts_doc : dict[Literal["by-function-name"],dict[str,int|bool|str|type]] = {"by-function-name": {"type": bool,"mangle":True,"default":True,"Description":"Organize the results by name of function instead of by offset"}}
 
