@@ -54,6 +54,8 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     #number of strides or dereferences
     num_derefs = []
     num_strides = []
+    #chatgpt function time estimate
+    gpt_estimated_time = []
     #number of comparisons followed immediately by jumps
     num_cmp_jumps = []
     #O
@@ -106,6 +108,8 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             #number of strided accesses or dereferences
             num_derefs.append(dataframe.loc[dataframe["bin"] == bn, "num dereferences"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             num_strides.append(dataframe.loc[dataframe["bin"] == bn, "num strides"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            #gpt estimate for time
+            gpt_estimated_time.append(dataframe.loc[dataframe["bin"] == bn, "chat gpt generated function's estimated time"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #number of cmps followed by jumps
             num_cmp_jumps.append(dataframe.loc[dataframe["bin"] == bn, "num cmp-jumps stride 2"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #complexity
@@ -142,6 +146,7 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             mod.append(0)
             needs_ref.append(0)
             cmplx.append(0)
+            gpt_estimated_time.append(0)
             for O in different_O:
                 big_o[O].append(0)
     #matched j*/mov*/cmov*/*xor*/lea
@@ -324,11 +329,19 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> pd.DataFrame:
     plt.clf()
     #pca
     try:
-        pca = PCA(n_components=df.shape[1])
-        pca.fit(df)
-        components_dataframe = pd.DataFrame(pca.components_,columns=[f"PC{pc}" for pc in range(len(df.columns))],index=df.columns)
-        with open(outpath / "pca_components.csv","w") as f:
-            components_dataframe.to_csv(f)
+        independent_vars = df.drop(columns=["bin int", "time"])
+        pca = PCA()
+        pca.fit_transform(independent_vars)
+        # Principal component loadings
+        loadings = pd.DataFrame(pca.components_.T,
+                        columns=[f'PC{i+1}' for i in range(len(independent_vars.columns))],
+                        index=independent_vars.columns)
+        with open(outpath / "pca_loadings.csv","w") as f:
+            loadings.to_csv(f)
+        explained_variance = pd.Series(pca.explained_variance_ratio_,
+                               index=[f'PC{i+1}' for i in range(len(X.columns))])
+        with open(outpath / "pca_explained_variance.csv","w") as f:
+            explained_variance.to_csv(f)
     except Exception as e:
         print(f"Couldn't make PCA due to {e}")
     #multiple regression

@@ -142,6 +142,21 @@ def opcode_mapper(all_opcodes,df_opcodes,data_dict):
         data_dict["cmov*"].append(cmov_star)
 #       data_dict["lea"].append(lea)
 
+def chat_gpt_estimate_symbolic_cost(num_symbolic_branches : int, num_symbolic_mem_accesses: int, has_loops : bool, has_unmodeled_calls: bool) -> float:
+    path_count: int = 2 ** num_symbolic_branches
+    base_cost: float = 0.005  # seconds per path
+    mem_cost_multiplier: float = 1 + (0.1 * num_symbolic_mem_accesses)
+
+    time: float = path_count * base_cost * mem_cost_multiplier
+
+    if has_loops:
+        time *= 1.5
+    if has_unmodeled_calls:
+        time *= 2
+
+    return time
+
+
 def mapper(oid:str, opts: dict[str,Any], jobid=False):
     if api.exists(NAME,oid,opts):
         return oid
@@ -204,6 +219,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
     df_num_strides = []
     df_num_dereferences = []
     df_num_cmp_jump_stride2 = []
+    df_gpt_estimated_time = []
     for complexity in ["simple", "moderate", "needs refactor", "complex"]:
         complexity_vs_time[complexity] = {"times":[],
                                           "instructions": [],
@@ -356,6 +372,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                 num_derefs = len(fun_strides_and_dereferences[fun]["dereferences"])
                 num_strides = len(fun_strides_and_dereferences[fun]["strides"])
                 num_cmp_jump_bi_grams = fun_bi_grams[fun]["cmp-jump"]
+                chat_gpt_time_estimate = chat_gpt_estimate_symbolic_cost(num_self_refs_later + num_self_refs_earlier + num_self_refs_same_block, num_derefs, num_self_refs_earlier > 0, "call" in mncs)
                 df_time.append(time)
                 df_bin.append(f_bin)
                 df_bin_int.append(f_bin_int)
@@ -370,6 +387,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                 df_num_strides.append(num_strides)
                 df_num_dereferences.append(num_derefs)
                 df_num_cmp_jump_stride2.append(num_cmp_jump_bi_grams)
+                df_gpt_estimated_time.append(chat_gpt_time_estimate)
                 big_o = complexitys[fun]["O"]
                 if "n**" in big_o:
                     big_o_degree = int(big_o[5:].strip(")"))
@@ -445,6 +463,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
         "num dereferences" : df_num_dereferences,
         "num strides" : df_num_strides,
         "num cmp-jumps stride 2": df_num_cmp_jump_stride2,
+        "chat gpt generated function's estimated time": df_gpt_estimated_time,
     }
     opcode_mapper(all_opcodes,df_opcodes,data_dict)
     dataframe = pd.DataFrame(data_dict,index=df_index)

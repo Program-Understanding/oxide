@@ -13,6 +13,7 @@ import torch
 from typing import TypedDict, Literal
 #from sklearn.metrics import mean_squared_error
 import random
+from sklearn.metrics import accuracy_score, f1_score,mean_absolute_error, mean_squared_error
 
 Opts = TypedDict(
     "Opts",
@@ -92,14 +93,19 @@ def train(args : list[str], opts : Opts):
     idp = df[[column for column in df.columns if column != "time" and column != "bin int"]]
     columns : list[str] = list(idp)
     #sort out our independent (stuff that time depends on) and dependent (time) variables
-    dep: np.ndarray[tuple[int,int],np.dtype[np.float32]] = pd.DataFrame(df[["time", "bin int"]]).to_numpy()
+#    dep: np.ndarray[tuple[int,int],np.dtype[np.float32]] = pd.DataFrame(df[["time", "bin int"]]).to_numpy()
+    dep: np.ndarray[tuple[int], np.dtype[np.int64]] = df["bin int"].to_numpy()
+
     indep : np.ndarray[tuple[int,int],np.dtype[np.float32]]= idp.to_numpy()
     deps = torch.from_numpy(dep).float()
     indeps = torch.from_numpy(indep).float()
 
     #weights and biases
     #indep.shape[1] is # of columns
-    model = torch.nn.Linear(indep.shape[1],dep.shape[1])
+    # model = torch.nn.Linear(indep.shape[1],dep.shape[1])
+    num_classes = bins # Number of distinct bins (classes)
+    print(df["bin int"].unique()) #make sure we see the unique classes
+    model = torch.nn.Linear(indep.shape[1], num_classes)
     #samples and testing
     training_set = torch.utils.data.TensorDataset(indeps, deps)
     num_samples = int(len(training_set)*0.8)
@@ -135,15 +141,20 @@ def train(args : list[str], opts : Opts):
     #         print(f"Epoch {i}/{epochs}, Loss: {losss}, MSE: {sum(mse_list)/len(mse_list)}")
     # model.train(False)
     # Training loop
-    criterion = torch.nn.MSELoss()
+    #criterion = torch.nn.MSELoss()
+    criterion = torch.nn.CrossEntropyLoss()
     for epoch in range(epochs):
         model.train()  # Set the model to training mode
         total_loss = 0.0
 
         for xb, yb in training_loader:
+            print("Feeding into model (inputs):", xb)
+            print("truth is", yb)
+            return True
             opt.zero_grad()  # Zero the gradients
             predictions = model(xb)  # Forward pass
-            loss = criterion(predictions.squeeze(), yb.float())  # Calculate loss
+            #loss = criterion(predictions.squeeze(), yb.float())  # Calculate loss
+            loss = criterion(predictions, yb.long())
             loss.backward()  # Backward pass
             opt.step()  # Update weights
             total_loss += loss.item()  # Accumulate loss
@@ -151,6 +162,7 @@ def train(args : list[str], opts : Opts):
             # Print loss every 100 epochs
         if epoch % 100 == 0:
             print(f"Epoch {epoch}/{epochs}, Loss: {total_loss / len(training_loader)}")
+
     api.local_store("angr_function_time_model","model",model)
     api.local_store("angr_function_time_model","testing_data",test_samples)
     api.local_store("angr_function_time_model","training_data",train_samples)
@@ -186,14 +198,81 @@ def test(args : list[str], opts : dict[Literal["tests"],bool]):
                 prediction : torch.Tensor = model(test)
                 for i in range(len(columns)):
                     givens[columns[i]] = test.tolist()[i]
-                results.append({"prediction": {"seconds": prediction.tolist()[0], "log. bin": prediction.tolist()[1]}, "reality": {"seconds": truth.tolist()[0], "log. bin": truth.tolist()[1]}, "givens": givens})
+                #results.append({"prediction": {"seconds": prediction.tolist()[0], "log. bin": prediction.tolist()[1]}, "reality": {"seconds": truth.tolist()[0], "log. bin": truth.tolist()[1]}, "givens": givens})
+                results.append({"prediction": {"log. bin": torch.argmax(prediction, dim=-1)}, "reality": {"log. bin": truth.tolist()}, "givens": givens})
         else:
             rand_index = random.randint(0,len(test_samples)-1)
             test, truth = test_samples[rand_index]
             prediction : torch.Tensor = model(test)
             for i in range(len(columns)):
                 givens[columns[i]] = test.tolist()[i]
-            results = {"prediction": {"seconds": prediction.tolist()[0], "log. bin": prediction.tolist()[1]}, "reality": {"seconds": truth.tolist()[0], "log. bin": truth.tolist()[1]}, "givens": givens}
+            #results = {"prediction": {"seconds": prediction.tolist()[0], "log. bin": prediction.tolist()[1]}, "reality": {"seconds": truth.tolist()[0], "log. bin": truth.tolist()[1]}, "givens": givens}
+            results = {"prediction": {"log. bin": torch.argmax(prediction, dim=-1)}, "reality": {"log. bin": truth.tolist()}, "givens": givens}
+    return results if "results" in locals() else False
+
+def get_accuracy(args : list[str], opts : dict[Literal["tests"],bool]):
+    """
+    Evaluate the model's accuracy
+    
+    Usage: get_accuracy &<collection> | show
+    """
+    res = api.local_retrieve("angr_function_time_model","model")
+    if res is None: return False
+    model : torch.nn.Linear = res
+    res = api.local_retrieve("angr_function_time_model","testing_data")
+    if res is None: return False
+    test_samples : torch.utils.data.DataLoader[tuple[torch.Tensor, ...]] = res
+    res = api.local_retrieve("angr_function_time_model","training_data")
+    if res is None: return False
+    train_samples : torch.utils.data.DataLoader[tuple[torch.Tensor, ...]] = res
+    res = api.local_retrieve("angr_function_time_model","dataframe_columns")
+    if res is None: return False
+    columns : list[str] = res
+
+    all_predictions_time = []
+    all_predictions_bin = []
+    all_truths_time = []
+    all_truths_bin = []
+    
+    with torch.no_grad():
+        for test, truth in test_samples:
+            prediction : torch.Tensor = model(test)
+            #all_predictions_time.append(prediction.tolist()[0])
+            all_predictions_bin.append(torch.argmax(prediction, dim=-1))
+            #all_truths_time.append(truth.tolist()[0])
+            all_truths_bin.append(truth.tolist())
+
+    # Convert lists to tensors for metric calculations
+    # all_predictions_time = np.array(all_predictions_time)
+    # all_truths_time = np.array(all_truths_time)
+
+    all_predictions_bin = np.array(all_predictions_bin)
+    all_truths_bin = np.array(all_truths_bin)
+    
+    predicted_classes_bin = all_predictions_bin.astype(int)
+    true_classes_bin = all_truths_bin.astype(int)
+
+    # #calculate the ol' mse
+    # mse_time = mean_squared_error(all_truths_time, all_predictions_time)
+    # mae_time = mean_squared_error(all_truths_time, all_predictions_time)
+    # Calculate accuracy and F1 score
+    # accuracy_time = accuracy_score(true_classes_time, predicted_classes_time)
+    # f1_time = f1_score(true_classes_time, predicted_classes_time)
+
+    accuracy_bin = accuracy_score(true_classes_bin, predicted_classes_bin)
+    f1_bin = f1_score(true_classes_bin, predicted_classes_bin,average="weighted")
+
+    results = {
+        # "time": {
+        #     "mse": mse_time,
+        #     "mae": mae_time
+        # },
+        "bin": {
+            "accuracy": accuracy_bin,
+            "f1_score": f1_bin
+        }
+    }
+    
     return results if "results" in locals() else False
 
 def evaluate(args : list[str], opts : Opts):
@@ -288,5 +367,6 @@ def identify_outliers(args: list[str], opts: Outlier_opts):
         return {"outliers": len(filtered_df), "non-outliers": len(df)-len(filtered_df)}
     return True
 
+
 #plugin's exports to the shell (functions the shell can use)
-exports = [train,test,evaluate,identify_outliers]
+exports = [train,test,evaluate,identify_outliers,get_accuracy]

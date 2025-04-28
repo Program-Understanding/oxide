@@ -134,6 +134,7 @@ def process(oid, opts):
     the results from the acfg module for the function.
     Results are returned on function by function basis.
     """
+    logger.info(f"getting path complexity for {oid}")
     results = {}
     from time import sleep
     fun_names = []
@@ -343,8 +344,16 @@ def process(oid, opts):
         pythonpath = pythonpath + directory + ";"
     env = os.environ.copy()
     try:
-        subproc_out = subprocess.check_output(command, universal_newlines=True, shell=True, stderr=subprocess.STDOUT,env=env)
-        print(f"subproc out: {subproc_out}")
+        print(f"running: {command}")
+        subproc_out = subprocess.check_output(command, universal_newlines=True, shell=True, stderr=subprocess.STDOUT,env=env,timeout=60)
+    except subprocess.TimeoutExpired as e:
+        for fun in funs:
+            fun_name = funs[fun]["name"]
+            results[fun_name] = {"O" : "Error"}
+            while not api.store(NAME,oid,results,opts):
+                sleep(1)
+                logger.info(f"trying to store to api")
+        return results
     except subprocess.CalledProcessError as e:
         logger.error("Issue with calling Metrinome")
         print(e.output)
@@ -361,7 +370,6 @@ def process(oid, opts):
         fun_name = line[0][trim_len:]
         if len(line) < 2 or fun_name not in results: continue
         results[fun_name] = {"O":line[1]}
-            
     #clean up the created files
     # for f_fname in fun_filenames:
     #     try:
