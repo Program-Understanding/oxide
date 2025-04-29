@@ -46,8 +46,13 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 #Generating our call graph from the database
 def create_graph(call_dict):
     graph = nx.DiGraph()
-    for caller in call_dict:
-        for callee in call_dict[caller]['calls_to']:
+    # 1) collect every function offset (as caller or callee)
+    all_funcs = set(call_dict.keys()) | {c for info in call_dict.values() for c in info['calls_to']}
+    # 2) add them as isolated nodes
+    graph.add_nodes_from(all_funcs)
+    # 3) then add edges
+    for caller, info in call_dict.items():
+        for callee in info['calls_to']:
             graph.add_edge(caller, callee)
-
     return graph
+
