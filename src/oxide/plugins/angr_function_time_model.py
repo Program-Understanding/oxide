@@ -14,6 +14,7 @@ from typing import TypedDict, Literal
 #from sklearn.metrics import mean_squared_error
 import random
 from sklearn.metrics import accuracy_score, f1_score,mean_absolute_error, mean_squared_error
+from sklearn.preprocessing import StandardScaler
 
 Opts = TypedDict(
     "Opts",
@@ -62,7 +63,7 @@ def get_data(oid_list: list[str], timeout: int=600, bins: int=6, data_name:str="
 
 def train(args : list[str], opts : Opts):
     """
-    Train a linear regression model to predict time taken to run angr.
+    Train a classification regression model to predict time taken to run angr.
     Usage: train [--timeout=<int>] [--bins=<number of bins>] [--epochs=<int>] &<collection>
     """
     if "timeout" in opts:
@@ -93,67 +94,51 @@ def train(args : list[str], opts : Opts):
     idp = df[[column for column in df.columns if column != "time" and column != "bin int"]]
     columns : list[str] = list(idp)
     #sort out our independent (stuff that time depends on) and dependent (time) variables
-#    dep: np.ndarray[tuple[int,int],np.dtype[np.float32]] = pd.DataFrame(df[["time", "bin int"]]).to_numpy()
     dep: np.ndarray[tuple[int], np.dtype[np.int64]] = df["bin int"].to_numpy()
-
+    scaler = StandardScaler()
     indep : np.ndarray[tuple[int,int],np.dtype[np.float32]]= idp.to_numpy()
-    deps = torch.from_numpy(dep).float()
+    indep = scaler.fit_transform(indep)
+    deps = torch.from_numpy(dep).long()
     indeps = torch.from_numpy(indep).float()
 
     #weights and biases
-    #indep.shape[1] is # of columns
-    # model = torch.nn.Linear(indep.shape[1],dep.shape[1])
+    #indep.shape[1] is # of column
     num_classes = bins # Number of distinct bins (classes)
     print(df["bin int"].unique()) #make sure we see the unique classes
     model = torch.nn.Linear(indep.shape[1], num_classes)
     #samples and testing
+    # Create the full dataset
     training_set = torch.utils.data.TensorDataset(indeps, deps)
-    num_samples = int(len(training_set)*0.8)
-    train_samples, test_samples = torch.utils.data.random_split(training_set, [num_samples,len(training_set)-num_samples])
-    training_loader = torch.utils.data.DataLoader(train_samples, 16,shuffle=True)
-    testing_loader = torch.utils.data.DataLoader(test_samples, 16, shuffle=False)
+
+    # Split into train/test
+    num_samples = int(len(training_set) * 0.8)
+    train_samples, test_samples = torch.utils.data.random_split(training_set, [num_samples, len(training_set) - num_samples])
+
+    # Calculate class frequencies for the training subset
+    train_labels = torch.tensor([deps[i] for i in train_samples.indices])
+    class_counts = torch.bincount(train_labels)
+    class_weights = 1. / class_counts.float()
+    sample_weights = class_weights[train_labels]
+    sampler = torch.utils.data.WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
+
+    # Use sampler instead of shuffle=True
+    training_loader = torch.utils.data.DataLoader(train_samples, batch_size=16, sampler=sampler)
+    testing_loader = torch.utils.data.DataLoader(test_samples, batch_size=16, shuffle=False)
+
     #training epochs
     if "epochs" in opts:
         epochs = opts["epochs"]
     else:
         epochs = 1000
     opt = torch.optim.SGD(model.parameters(), lr=1e-5)
-    #epochs
-    # loss_list = []
-    # for i in range(epochs):
-    #     losss : float = 0.0
-    #     #train w/ batches
-    #     mse_list = []
-    #     for xb, yb in training_loader:
-    #         print(xb)
-    #         model.train(True)
-    #         #calculate prediction and loss
-    #         prediction = model(xb)
-    #         loss = torch.nn.functional.mse_loss(prediction, yb)
-    #         losss = loss.item()
-    #         mse_list.append(mean_squared_error(yb.detach().numpy(),prediction.detach().numpy()))
-    #         #backwards propagation
-    #         loss.backward()
-    #         #update gradients
-    #         opt.step()
-    #         opt.zero_grad()
-    #     if i % 10 == 0:
-    #         print(f"Epoch {i}/{epochs}, Loss: {losss}, MSE: {sum(mse_list)/len(mse_list)}")
-    # model.train(False)
     # Training loop
-    #criterion = torch.nn.MSELoss()
     criterion = torch.nn.CrossEntropyLoss()
     for epoch in range(epochs):
         model.train()  # Set the model to training mode
         total_loss = 0.0
-
         for xb, yb in training_loader:
-            print("Feeding into model (inputs):", xb)
-            print("truth is", yb)
-            return True
             opt.zero_grad()  # Zero the gradients
             predictions = model(xb)  # Forward pass
-            #loss = criterion(predictions.squeeze(), yb.float())  # Calculate loss
             loss = criterion(predictions, yb.long())
             loss.backward()  # Backward pass
             opt.step()  # Update weights
@@ -199,7 +184,7 @@ def test(args : list[str], opts : dict[Literal["tests"],bool]):
                 for i in range(len(columns)):
                     givens[columns[i]] = test.tolist()[i]
                 #results.append({"prediction": {"seconds": prediction.tolist()[0], "log. bin": prediction.tolist()[1]}, "reality": {"seconds": truth.tolist()[0], "log. bin": truth.tolist()[1]}, "givens": givens})
-                results.append({"prediction": {"log. bin": torch.argmax(prediction, dim=-1)}, "reality": {"log. bin": truth.tolist()}, "givens": givens})
+                results.append({"prediction": {"log. bin": torch.argmax(prediction, dim=-1).tolist()}, "reality": {"log. bin": truth.tolist()}, "givens": givens})
         else:
             rand_index = random.randint(0,len(test_samples)-1)
             test, truth = test_samples[rand_index]
@@ -207,7 +192,7 @@ def test(args : list[str], opts : dict[Literal["tests"],bool]):
             for i in range(len(columns)):
                 givens[columns[i]] = test.tolist()[i]
             #results = {"prediction": {"seconds": prediction.tolist()[0], "log. bin": prediction.tolist()[1]}, "reality": {"seconds": truth.tolist()[0], "log. bin": truth.tolist()[1]}, "givens": givens}
-            results = {"prediction": {"log. bin": torch.argmax(prediction, dim=-1)}, "reality": {"log. bin": truth.tolist()}, "givens": givens}
+            results = {"prediction": {"log. bin": torch.argmax(prediction, dim=-1)}, "reality": {"log. bin": truth.tolist().tolist()}, "givens": givens}
     return results if "results" in locals() else False
 
 def get_accuracy(args : list[str], opts : dict[Literal["tests"],bool]):
@@ -368,5 +353,26 @@ def identify_outliers(args: list[str], opts: Outlier_opts):
     return True
 
 
+def correlations(args:list[str],opts:Opts):
+    if "timeout" in opts:
+        timeout = opts["timeout"]
+    else:
+        timeout = 600
+    if "bins" in opts:
+        bins = opts["bins"]
+    else:
+        bins = 6
+    if "data-name" in opts:
+        data_name = opts["data-name"]
+    else:
+        data_name = "default"
+    df = get_data(args, timeout, bins,data_name)
+    if df is False:
+        return False
+    correlations = df.corr(numeric_only=True)["time"].sort_values(ascending=False)
+    print("time\n------------------------------------------------\n",correlations)
+    correlations = df.corr(numeric_only=True)["bin int"].sort_values(ascending=False)
+    print("\nbin int\n------------------------------------------------\n",correlations)
+
 #plugin's exports to the shell (functions the shell can use)
-exports = [train,test,evaluate,identify_outliers,get_accuracy]
+exports = [train,test,evaluate,identify_outliers,get_accuracy,correlations]

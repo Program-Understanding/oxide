@@ -109,7 +109,7 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
             num_derefs.append(dataframe.loc[dataframe["bin"] == bn, "num dereferences"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             num_strides.append(dataframe.loc[dataframe["bin"] == bn, "num strides"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #gpt estimate for time
-            gpt_estimated_time.append(dataframe.loc[dataframe["bin"] == bn, "chat gpt generated function's estimated time"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
+            gpt_estimated_time.append(dataframe.loc[dataframe["bin"] == bn, "chat gpt generated function's estimated seconds"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #number of cmps followed by jumps
             num_cmp_jumps.append(dataframe.loc[dataframe["bin"] == bn, "num cmp-jumps stride 2"].sum()/len(dataframe.loc[dataframe["bin"] == bn].index))
             #complexity
@@ -221,6 +221,17 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
     plt.yscale('log')
     plt.tight_layout()
     plt.savefig(outpath / "cyclomatic_complexity_by_bin.png",dpi=1200)
+    plt.clf()
+    #gpt estimated time per bin
+    df = pd.DataFrame({"chatgpt estimated time": gpt_estimated_time}, index = binkeys)
+    df.plot.bar(rot=0)
+    plt.xticks(rotation=45)
+    plt.title("Average ChatGPT estimated functions per bin")
+    plt.ylabel("Average GPT estimated time in seconds")
+    plt.xlabel("Time range in seconds")
+    plt.yscale('log')
+    plt.tight_layout()
+    plt.savefig(outpath / "gpt_estimated_time_by_bin.png",dpi=1200)
     plt.clf()
     #apc plot
     if len(different_O):

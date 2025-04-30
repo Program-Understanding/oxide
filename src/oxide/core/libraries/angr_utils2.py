@@ -7,22 +7,27 @@ but i'd like to free it and also rewrite it over time without breaking things
 from multiprocessing.managers import BaseManager, BaseProxy
 import traceback
 import logging
+import os
 #add silly libraries that want to talk here
-for lib in ["angr", "claripy","cle"]:
+for lib in ["angr", "claripy","cle","pyvex_c"]:
     l = logging.getLogger(lib)
     l.setLevel(logging.CRITICAL)
 logger = logging.getLogger("angr_utils2")
-from oxide.core import api
+from oxide.core import api, config
 
 class angrManager(BaseManager):
     pass
 import psutil
-minimum_memory=int(psutil.virtual_memory().total*0.3)
+
+maximum_memory=int(psutil.virtual_memory().total*0.7)//config.multiproc_max
 
 def ufr_step_func(simgr):
     simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: 0x0 == s.ip.concrete_value)
-    if psutil.virtual_memory().available <= minimum_memory:
-        simgr.move(from_stash="active", to_stash="lowmem")
+    if len(simgr.active) > 0:
+        state = simgr.active[0]
+        #logger.info(f"checking memory...pid {state.globals['pid']}: {psutil.Process(state.globals['pid']).memory_info().rss} >= {maximum_memory} = { psutil.Process(state.globals['pid']).memory_info().rss >= maximum_memory}")
+        if psutil.Process(state.globals["pid"]).memory_info().rss >= maximum_memory:
+            simgr.move(from_stash="active", to_stash="lowmem")
     return simgr
 
 def memory_write_breakpoint(state):
@@ -79,6 +84,9 @@ class angrTherapy:
                 fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options=angr_opts)
         else:
             fun_call_state = self._proj.factory.call_state(angr_fun_addr,add_options=angr_opts)
+        #store the process id for ram purposes
+        #logger.info(f"PID for newly spawned angr project: {os.getpid()} given maximum memory of {maximum_memory}")
+        fun_call_state.globals["pid"] = os.getpid()
         #symbol fill the .bss and .data sections
         for section in [".bss", ".data"]:
             start = self._proj.loader.main_object.sections_map[section].vaddr

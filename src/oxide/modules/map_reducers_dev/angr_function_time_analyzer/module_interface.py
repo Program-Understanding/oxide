@@ -463,7 +463,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
         "num dereferences" : df_num_dereferences,
         "num strides" : df_num_strides,
         "num cmp-jumps stride 2": df_num_cmp_jump_stride2,
-        "chat gpt generated function's estimated time": df_gpt_estimated_time,
+        "chat gpt generated function's estimated seconds": df_gpt_estimated_time,
     }
     opcode_mapper(all_opcodes,df_opcodes,data_dict)
     dataframe = pd.DataFrame(data_dict,index=df_index)
