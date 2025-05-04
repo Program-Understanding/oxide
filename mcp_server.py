@@ -405,6 +405,59 @@ async def strings(oid: str) -> dict[Any,Any] | Literal[False]:
         return False
 
 @mcp.tool()
+async def capabilities(oid: str) -> dict[Any,Any] | Literal[False]:
+    """
+    Get a set of capabilities used by a binary file as identified by Capa.
+
+    Returns: A JSON dictionary with the following contents: 
+    - filepath is the path to the binary file
+    - capa_capabilities is a dictionary where the keys are the identified 
+      capabilities and the values are names of functions where the capability was found.
+    Example:
+    {
+        "filepath": "'/Users/dennis/research-dev/random_ubuntu_bins/hexdump'",
+        "capa_capabilities": {
+            "read file on Linux": [
+                "FUN_00102d30",
+                "FUN_00102fd0",
+                "FUN_001049f0",
+                "FUN_00104a10",
+                "FUN_00104a30",
+                "FUN_00104a50"
+            ],
+            "write file on Linux": [
+                "FUN_00104160"
+            ]
+        }
+    }
+
+    Inputs:
+        oid: the object id of the binary we are interested in
+    """
+    opts = {}
+    opts["rules_path"] = args.caparulespath
+    result = oxide.retrieve("capa_results", [oid], opts)
+    if result:
+        logger.info("Retrieved capa_results successfully!")
+        result = result[oid]  # Return only information for this oid
+
+        # Convert offsets to function names
+        # First get all the offsets
+        all_offsets = []
+        for offsets in result["capa_capabilities"].values():
+            all_offsets.extend(offsets)
+        # Get the function names for all offsets
+        func_names = await function_name(oid, all_offsets)
+        # Replace offsets with function names
+        for capability, offsets in result["capa_capabilities"].items():
+            result["capa_capabilities"][capability] = [f"{func_names[offset]}" if offset in func_names else f"{offset}" for offset in offsets]
+
+        return result
+    else:
+        logger.error("Failed to retrieve capa_results")
+        return False
+
+@mcp.tool()
 async def disasm_for_file(oid: str) -> dict[Any,Any] | Literal[False]:
     """
     Get disassembly of an entire binary file. WARNING: The size of the result is likely to
@@ -516,7 +569,7 @@ async def decmap_for_file(oid:str, org_by_func: bool) -> dict[Any,Any] | Literal
 @mcp.tool()
 async def source_for_func(oid:str, function_name:str) -> str | Literal[False]:
     """
-    Get the C source code (reconstructed through decompilation) for a specified function as a string. 
+    Get the C source-like code (reconstructed through decompilation) for a specified function as a string. 
 
     Inputs:
         oid: the ID of the binary file containing the desired function
