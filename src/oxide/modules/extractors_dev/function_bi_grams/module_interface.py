@@ -77,7 +77,7 @@ def process(oid: str, opts: dict[Literal["by-function-name"],bool]) -> bool:
         return False
     else:
         disasm : dict[int, DisassemblyInsns] = ddisasm["instructions"]
-    results : dict[str | int,dict[Literal["cmp-jump"] | Literal["cmp-jump-stride3"] | Literal["cmp-jump-stride4"],int]] = {}
+    results : dict[str | int,dict[Literal["cmp-jump"] | Literal["cmp-jump-stride3"] | Literal["cmp-jump-stride4"] | Literal["returns"],int | bool]] = {}
     for f in functions:
         if f not in original_blocks:
             #logger.info(f"{f} not in {list(original_blocks.keys())}")
@@ -87,7 +87,7 @@ def process(oid: str, opts: dict[Literal["by-function-name"],bool]) -> bool:
             f_name = functions[f]["name"]
         else:
             f_name = f
-        results[f_name] = {"cmp-jump": 0, "cmp-jump-stride3": 0, "cmp-jump-stride4":0}
+        results[f_name] = {"cmp-jump": 0, "cmp-jump-stride3": 0, "cmp-jump-stride4":0, "returns": False}
         #loop through each block of the function
         for bb in functions[f]["blocks"]:
             #loop through each instruction of the function
@@ -102,6 +102,10 @@ def process(oid: str, opts: dict[Literal["by-function-name"],bool]) -> bool:
                     if "jump" in ins2["groups"]:
                         #if not "cmp-jump" in results[f_name]: results[f_name]["cmp-jump"] = 0
                         results[f_name]["cmp-jump"] += 1
+                if ins1["mnemonic"] == "ret":
+                    results[f_name]["returns"] = True
+                if "call exit" in ins2["op_str"]:
+                    results[f_name]["returns"] = True
             for i in range(0,len(fun_insns),3):
                 if i+2 >= len(fun_insns): break
                 ins1 = disasm[fun_insns[i]] if fun_insns[i] in disasm else None
@@ -125,5 +129,4 @@ def process(oid: str, opts: dict[Literal["by-function-name"],bool]) -> bool:
                     if "jump" in ins4["groups"]:
                         #if not "cmp-jump-stride4" in results[f_name]: results[f_name]["cmp-jump-stride4"] = 0
                         results[f_name]["cmp-jump-stride4"] += 1
-    api.store(NAME,oid,results,opts)
-    return True
+    return api.store(NAME,oid,results,opts)

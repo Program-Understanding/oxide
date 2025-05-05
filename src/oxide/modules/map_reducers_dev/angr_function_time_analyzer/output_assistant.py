@@ -361,7 +361,7 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> pd.DataFrame:
     model = sm.OLS(dep,indep)
     res = model.fit()
     print(res.summary())
-    with open(outpath / "linear_regression.csv","w") as f:
+    with open(outpath / "linear_regression.txt","w") as f:
         f.write(res.summary().as_text())
     #random forest
     # dep = np.array(df["time"].values)
@@ -378,4 +378,7 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> pd.DataFrame:
     plt.tight_layout()
     plt.savefig(outpath / "random_forest_predictor_tree.png",dpi=1200)
     plt.clf()
+    #write out the csv we're training with
+    with open(outpath / "training_input.csv","w") as f:
+        df.to_csv(f)
     return df

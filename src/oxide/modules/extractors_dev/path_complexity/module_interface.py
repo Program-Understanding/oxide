@@ -5,7 +5,7 @@ NAME="path_complexity"
 import logging
 logger = logging.getLogger(NAME)
 
-from core import api
+from oxide.core import api
 import sympy
 import numpy
 from stopit import ThreadingTimeout
@@ -347,13 +347,11 @@ def process(oid, opts):
         print(f"running: {command}")
         subproc_out = subprocess.check_output(command, universal_newlines=True, shell=True, stderr=subprocess.STDOUT,env=env,timeout=60)
     except subprocess.TimeoutExpired as e:
+        logger.info("Reached timeout, trying to store results")
         for fun in funs:
             fun_name = funs[fun]["name"]
             results[fun_name] = {"O" : "Error"}
-            while not api.store(NAME,oid,results,opts):
-                sleep(1)
-                logger.info(f"trying to store to api")
-        return results
+        return api.store(NAME,oid,results,opts)
     except subprocess.CalledProcessError as e:
         logger.error("Issue with calling Metrinome")
         print(e.output)
@@ -376,7 +374,4 @@ def process(oid, opts):
     #         os.remove(f_fname)
     #     except:
     #         pass
-    while not api.store(NAME,oid,results,opts):
-        sleep(1)
-        logger.info(f"trying to store to api")
-    return results
+    return api.store(NAME,oid,results,opts)

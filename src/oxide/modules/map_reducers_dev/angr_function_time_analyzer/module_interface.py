@@ -14,7 +14,7 @@ from pathlib import Path
 
 logger = logging.getLogger(NAME)
 opts_doc = {
-    "timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"},
+    "timeout": {"type":int,"mangle":True,"default":300,"Description":"timeout in seconds per function"},
     "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"},
     "data-path":{"type":str,"mangle":False,"default":"","Description":"Path to a directory to output a csv file and some graphs to"},
     "allow-missing-ret":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results that don't have a ret instruction"},
@@ -113,14 +113,11 @@ def opcode_mapper(all_opcodes,df_opcodes,data_dict):
     data_dict["mov*"] = []
     data_dict["*xor*"] = []
     data_dict["cmov*"] = []
-    #lea is already counted, counting it twice is bad
-#    data_dict["lea"] = []
     for fun_opcode_dict in df_opcodes:
         j_star = 0
         mov_star = 0
         xor_star = 0
         cmov_star = 0
-#        lea = 0
         for opcode in all_opcodes:
             if opcode in fun_opcode_dict:
                 data_dict[opcode].append(fun_opcode_dict[opcode])
@@ -132,15 +129,12 @@ def opcode_mapper(all_opcodes,df_opcodes,data_dict):
                     xor_star += 1
                 if opcode.startswith("cmov"):
                     cmov_star += 1
-#                if opcode.startswith("lea"):
-#                    lea += 1
             else:
                 data_dict[opcode].append(0)
         data_dict["j*"].append(j_star)
         data_dict["mov*"].append(mov_star)
         data_dict["*xor*"].append(xor_star)
         data_dict["cmov*"].append(cmov_star)
-#       data_dict["lea"].append(lea)
 
 def chat_gpt_estimate_symbolic_cost(num_symbolic_branches : int, num_symbolic_mem_accesses: int, has_loops : bool, has_unmodeled_calls: bool) -> float:
     path_count: int = 2 ** num_symbolic_branches
@@ -198,6 +192,8 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
     total_functions = 0
     functions_analyzed = 0
     functions_w_memory_issues = 0
+    mains_skipped = 0
+    short_uninteresting_funcs = 0
     df_time = []
     df_bin = [] #string representation of bin
     df_bin_int = [] #integer representation of bin
@@ -230,7 +226,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                                           "opcodes": {},
                                           "interesting":{}}
     #binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
-    binkeys : list[int] = [round(i,1) for i in numpy.logspace(numpy.log10(0.3),numpy.log10(opts["timeout"]),num=opts["bins"]-1)]
+    binkeys : list[int] = [round(i,1) for i in numpy.logspace(numpy.log10(1.0),numpy.log10(opts["timeout"]),num=opts["bins"]-1)]
     binkeys[-1] = opts["timeout"]
     for i in range(len(binkeys)):
         bn = binkeys[i]
@@ -288,7 +284,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
             complexitys : dict[str, dict[str, str]] | None = api.get_field(NAME,oid,"path_complexity",opts)
             fun_strides_and_dereferences : dict[str,dict[Literal["dereferences"] | Literal["strides"],dict[int,str]]] | None = api.get_field(NAME,oid,"f_complexity",opts)
             fun_self_references : dict[str | int,dict[Literal["earlier block"]|Literal["later block"]|Literal["same block"], int]] | None = api.get_field(NAME,oid,"f_self_references",opts)
-            fun_bi_grams : dict[str | int,dict[Literal["cmp-jump"] | Literal["cmp-jump-stride3"] | Literal["cmp-jump-stride4"],int]] | None = api.get_field(NAME,oid,"f_cmp_jmps",opts)
+            fun_bi_grams : dict[str | int,dict[Literal["cmp-jump"] | Literal["cmp-jump-stride3"] | Literal["cmp-jump-stride4"]|Literal["returns"],int | bool]] | None = api.get_field(NAME,oid,"f_cmp_jmps",opts)
             if time_result is None or opcode_by_func is None or complexitys is None or fun_self_references is None or fun_strides_and_dereferences is None or fun_bi_grams is None:
                 logger.warning(f"None result for {oid}")
                 oids_w_angr_errors += 1
@@ -305,6 +301,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                     functions_w_none_complexity += 1
                     continue
                 if fun == "main":
+                    mains_skipped += 1
                     continue
                 #need to assess whether we have a ret in the function or if we should skip it
                 opcodes : dict[str, str] = opcode_by_func[fun]
@@ -319,7 +316,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                         mncs[opcode] += 1
                 #after we've tracked the opcodes of this function, we can check
                 #if it has a ret or not
-                if not "ret" in mncs:
+                if not "ret" in mncs and not fun_bi_grams[fun]["returns"]:
                     functions_w_no_ret += 1
                     if not opts["allow-missing-ret"]:
                         continue
@@ -334,7 +331,8 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                         if opcode.startswith("j"):
                             intersting = True
                             break
-                    if intersting:
+                    if not intersting:
+                        short_uninteresting_funcs += 1
                         continue
                 time : float = float(f_dict["angr seconds"].split(" ")[0])
                 f_bin: str = find_bin_key(binkeys,time,opts["timeout"])
@@ -506,6 +504,6 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
             filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
                                                        "times": complexity_vs_time[complexity]["times"]}
         if opts["data-path"]:
-            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed":functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}
+            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed":functions_analyzed, "functions which ran out of memory": functions_w_memory_issues, "short, uninteresting functions": short_uninteresting_funcs, "functions named 'main' (skipped due to main likely calling other functions a lot)" : mains_skipped}
         else:
-            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues}
+            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues,"short, uninteresting functions": short_uninteresting_funcs, "functions named 'main' (skipped due to main likely calling other functions a lot)" : mains_skipped}

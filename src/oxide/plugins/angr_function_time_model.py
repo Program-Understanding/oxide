@@ -49,7 +49,7 @@ def clear_data(data_name:str = "default") -> bool:
     return api.local_delete_data("angr_function_time_model",data_name)
 
 def get_data(oid_list: list[str], timeout: int=600, bins: int=6, data_name:str="default") -> pd.DataFrame | Literal[False]:
-    opts = {"timeout": timeout, "data-path": "/home/kevan/output", "bins": 6}
+    opts = {"timeout": timeout, "data-path": "/home/kevan/output", "bins": bins}
     res : pd.DataFrame | None = api.local_retrieve("angr_function_time_model",data_name)
     if res is None:
         df : pd.DataFrame | None = api.get_field("angr_function_time_analyzer", oid_list, "dataframe", opts)
