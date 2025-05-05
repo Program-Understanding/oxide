@@ -104,8 +104,14 @@ def process(oid: str, opts: dict[Literal["by-function-name"],bool]) -> bool:
                         results[f_name]["cmp-jump"] += 1
                 if ins1["mnemonic"] == "ret":
                     results[f_name]["returns"] = True
-                if "call exit" in ins2["op_str"]:
-                    results[f_name]["returns"] = True
+                if "call" in ins2["mnemonic"]:
+                    try:
+                        target = int(ins2["op_str"],16)
+                        if "exit" in functions[target]["name"]:
+                            logger.info(f"call found for instruction {ins2}")
+                            results[f_name]["returns"] = True
+                    except:
+                        pass
             for i in range(0,len(fun_insns),3):
                 if i+2 >= len(fun_insns): break
                 ins1 = disasm[fun_insns[i]] if fun_insns[i] in disasm else None
