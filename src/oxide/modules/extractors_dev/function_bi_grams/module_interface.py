@@ -108,7 +108,7 @@ def process(oid: str, opts: dict[Literal["by-function-name"],bool]) -> bool:
                     try:
                         target = int(ins2["op_str"],16)
                         if "exit" in functions[target]["name"]:
-                            logger.info(f"call found for instruction {ins2}")
+                            #logger.info(f"call found for instruction {ins2}")
                             results[f_name]["returns"] = True
                     except:
                         pass

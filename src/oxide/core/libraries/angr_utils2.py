@@ -97,11 +97,11 @@ class angrTherapy:
         try:
             while simgr.active:
                 if time()-start_time > timeout:
-                    return (time()-start_time, "timed out")
+                    return (time()-start_time, "timed out", sum(len(simgr.stashes[stash]) for stash in simgr.stashes))
                 simgr.step(step_func=ufr_step_func)
             if "lowmem" in simgr.stashes and len(simgr.stashes["lowmem"]) > 0:
-                return (time()-start_time, "low memory")
-            return (time()-start_time, False)
+                return (time()-start_time, "low memory",sum(len(simgr.stashes[stash]) for stash in simgr.stashes))
+            return (time()-start_time, False,sum(len(simgr.stashes[stash]) for stash in simgr.stashes))
         except Exception as e:
             logger.error(f"angr caught exception {e}")
             logger.error(traceback.format_exc())

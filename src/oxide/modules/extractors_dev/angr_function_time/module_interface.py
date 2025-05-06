@@ -8,7 +8,7 @@ from angrProgress import angrProgress
 import re
 
 logger = logging.getLogger(NAME)
-opts_doc = {"timeout": {"type":int,"mangle":True,"default":600,"description":"timeout in seconds per function"}}
+opts_doc = {"timeout": {"type":int,"mangle":True,"default":300,"description":"timeout in seconds per function"}}
 
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
@@ -76,7 +76,9 @@ def process(oid, opts):
                     if type(ftime_result) is tuple:
                         ftime = ftime_result[0]
                         stopped_early = ftime_result[1]
+                        total_number_of_states = ftime_result[2]
                         f_dict[f_name]["angr seconds"] = f"{ftime} seconds"
+                        f_dict[f_name]["number of states"] = total_number_of_states
                         if stopped_early:
                             f_dict[f_name]["stopped early for"] = stopped_early
                     else:
