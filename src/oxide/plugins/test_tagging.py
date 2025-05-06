@@ -53,7 +53,9 @@ def tag_test(args, opts):
                 try: 
                     results[file_name][original_function] = {'DESCRIPTION': target_functions[original_function]}
                     for i in context_size:
-                        results[file_name][original_function][i] = api.retrieve("tag_function_context", stripped, {"func_name": stripped_func_name})
+                        tag = api.retrieve("tag_function_context", stripped, {"func_name": stripped_func_name})
+                        print(tag)
+                        results[file_name][original_function][i] =  tag
                 except:
                     pass
     return results
@@ -102,9 +104,86 @@ def get_function_names(args, opts):
 
     return names
 
+def get_function_names(args, opts):
+    file = opts['file']
+    valid, invalid = api.valid_oids(args)
+    
+    original_oids = valid[0]
+    original_oids = get_all_file_names(original_oids)
 
-exports = [tag_test, get_function_names, test_file_tag]
+    for oid in original_oids:
+        if original_oids[oid] == file:
+            functions = api.get_field("ghidra_disasm", oid, "functions")
+            names = {}
+            for f in functions:
+                names[f] = functions[f]['name']
 
+    return names
+
+def tag_firmware(args, opts):
+    valid, invalid = api.valid_oids(args)
+    oids = api.expand_oids(valid)
+
+    exes, non_exes = separate_oids(oids)
+
+    num_functions = {}
+
+    for oid in exes:
+        functions = api.get_field("ghidra_disasm", oid, "functions")
+        num_functions[oid] = len(functions)
+
+    sorted_items = sorted(num_functions.items(), key=lambda kv: kv[1])
+    sorted_oids = [oid for oid, _ in sorted_items]
+
+    result = {}
+
+    total = len(sorted_oids)
+    count = 1
+    for oid in sorted_oids:
+        print(f"{count} of {total}")
+        result[oid] = api.retrieve("tag_file", oid)
+        count += 1
+
+def firmware_exes(args, opts):
+    valid, invalid = api.valid_oids(args)
+    oids = api.expand_oids(valid)
+
+    exes, non_exes = separate_oids(oids)
+
+    num_functions = {}
+    result = {}
+
+    for oid in exes:
+        functions = api.get_field("ghidra_disasm", oid, "functions")
+        num_functions[oid] = len(functions)
+
+    sorted_items = sorted(num_functions.items(), key=lambda kv: kv[1])
+    sorted_oids = [oid for oid, _ in sorted_items]
+
+    for oid in sorted_oids:
+        file_results = api.retrieve("tag_file", oid)
+        if file_results['functions'] == 'FAILED':
+            result[oid] = "FAILED"
+        elif file_results['functions'] is None:
+            result[oid] = None
+        else:
+            result[oid] = {}
+            result[oid]['functions'] = len(file_results['functions'])
+            result[oid]['influential functions'] = len(file_results['influential functions'])
+    return result
+
+
+exports = [tag_test, get_function_names, test_file_tag, tag_firmware, firmware_exes]
+
+def separate_oids(oids):
+    executables, non_executables = set(), set()
+    for oid in oids:
+        file_category = api.get_field("categorize", oid, oid)
+        if file_category == "executable":
+            executables.add(oid)
+        else:
+            non_executables.add(oid)
+    return executables, non_executables
 
 def get_all_file_names(collection):
     file_names = {}

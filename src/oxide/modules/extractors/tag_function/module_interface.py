@@ -4,16 +4,16 @@ CATEGORY = ""  # used for filtering of modules e.g. disassemblers like ida
 
 import logging
 from typing import Dict, List, Tuple, Any
-import os
-import openai
+import regex as re
 from oxide.core import api
+from llm_service import runner
+import textwrap
+from typing import Optional
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"func_name": {"type": str, "mangle": True, "default": "None"},
-            "n": {"type": int, "mangle": True, "default": 5}
-            }
+opts_doc = {"func_name": {"type": str, "mangle": True, "default": "None"}}
 
 """
 options dictionary defines expected options, including type, default value, and whether
@@ -41,115 +41,74 @@ def process(oid: str, opts: dict) -> bool:
     logger.debug("process()")
 
     func_name = opts['func_name']
-    n = opts['n']
     func_decomp = decomp_for_func(oid, func_name)
     if not func_decomp:
         logger.error(f"No decompilation found for function {func_name}")
         return False
 
-    # 1) Generate multiple tag candidates
-    candidates = llm_generate_candidates(func_name, func_decomp, n)
-    if not candidates:
-        logger.error("No tag candidates generated")
-        return False
-
-    if n > 1:
-        tag = llm_select_best(func_name, func_decomp, candidates)
-    else:
-        tag = candidates[0][0]
-    
-
+    tag = llm_tag(func_decomp)
     result = tag
     api.store(NAME, oid, result, opts)
     return True
-    
-def llm_generate_candidates(func_name: str, func_decomp: str, n: int = 5) -> List[Tuple[str, str]]:
-    """
-    Generate N candidate tags (tag, justification) by sampling the model.
-    """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not set; aborting candidate generation.")
-        return []
 
-    system_prompt = "You are a helpful assistant specialised in reverse engineering."
-    user_prompt = f"""
-    ### FUNCTION
-    Name: `{func_name}`
-    ```
-    {func_decomp}
-    ```
-    Task: Propose a concise 2–6 word tag and a ≤15-word justification.
-    Respond exactly in two lines:
-    Tag: <tag>
-    Why: <justification>
+def llm_tag(func_decomp: str, temperature: float = 0.1, max_new_tokens: int = 150) -> Optional[str]:
     """
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.8,
-        max_tokens=60,
-        n=n
+    Generate a single 2–6 word tag for a decompiled function.
+
+    Args:
+      func_name:     Name of the function.
+      func_decomp:   Decompiled C code of the function.
+      temperature:   Sampling temperature for diversity.
+      max_new_tokens:Max number of tokens to generate.
+
+    Returns:
+      The extracted tag (without the 'Tag:' prefix), or None if parsing fails.
+    """
+    # Build the prompt
+    prompt = textwrap.dedent(f"""
+FUNCTION SOURCE (C)
+```c
+{func_decomp}
+
+─────────────────────────────────────────────────────────
+Your task:
+• Read only on the function body above.
+• Produce one 2-6-word tag that states what the function *does*  
+• Produce one ≤ 15-word justification
+
+─────────────────────────────────────────────────────────
+Rules:
+1. Tag must describe the *function's runtime behaviour*.
+    ✗ Do **not** mention “reverse engineering”, "<tag>", “C code”, or variables/instructions found in the code.
+2. Lower-case words, single spaces, no underscores/hyphens.
+3. No hedging or speculation language.
+4. If the purpose is completely unclear, output exactly "unknown".
+5. Output exactly two lines in the following format, nothing else:
+
+Tag: <tag>
+Why: <justification>
+""").strip()
+    # Call the model
+    response = runner.generate(
+        user_input=prompt,
+        temperature=temperature,
+        max_new_tokens=max_new_tokens
     )
 
-    candidates: List[Tuple[str, str]] = []
-    for choice in response.choices:
-        tag = None
-        why = None
-        for line in choice.message.content.splitlines():
-            lower = line.lower()
-            if lower.startswith("tag:"):
-                tag = line.split(":", 1)[1].strip()
-            elif lower.startswith("why:"):
-                why = line.split(":", 1)[1].strip()
-        if tag and why:
-            candidates.append((tag, why))
-    return candidates
-
-
-def llm_select_best(func_name: str, func_decomp: str, candidates: List[Tuple[str, float, str]]) -> Tuple[str, float]:
-    """
-    Select the best tag from the list of candidates.
-    """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not set; aborting selection.")
-        return ""
-
-    system_prompt = "You are a precise assistant skilled at evaluating function tags."
-    block = "\n".join(
-        f"{i+1}. Tag: {t}  Why: {w}"
-        for i, (t, w) in enumerate(candidates)
-    )
-    user_prompt = f"""
-    ### FUNCTION
-    Name: `{func_name}`
-    ```
-    {func_decomp}
-    ```
-    I have generated these tag candidates:
-    {block}
-    Which tag is the most accurate and specific? Respond exactly with:
-    Tag: <tag>
-    """
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.2,
-        max_tokens=60
+    # Normalize to single text block
+    text = (
+        "\n".join(response).strip()
+        if isinstance(response, list)
+        else response.strip()
     )
 
-    tag = ""
-    for line in response.choices[0].message.content.splitlines():
+    # Find, normalize, and return the tag
+    for line in text.splitlines():
         if line.lower().startswith("tag:"):
-            tag = line.split(":", 1)[1].strip()
-    return tag
+            raw_tag = line.split(":", 1)[1].strip()
+            return normalize_tag(raw_tag)
+
+    return None
 
 def decomp_for_func(oid:str, function_name:str):
     """
@@ -168,7 +127,7 @@ def decomp_for_func(oid:str, function_name:str):
         functions_dict = result['decompile']
 
         if (function_name not in functions_dict.keys()):
-            return False        
+            return None        
         function_dict = functions_dict[function_name] 
 
         # Gather the decompilation lines into a map (they will not be returned in order)
@@ -199,6 +158,14 @@ def decomp_for_func(oid:str, function_name:str):
         return return_str
     else:
         logger.error("Failed to retrieve ghidra decompilation mapping")
-        return False
+        return None
 
 prompt = ""
+
+def normalize_tag(raw: str) -> str:
+    # 1) replace underscores/hyphens with spaces  
+    # 2) collapse multiple spaces into one  
+    # 3) lowercase everything  
+    t = raw.replace("_", " ").replace("-", " ")
+    t = " ".join(t.split())
+    return t.lower()

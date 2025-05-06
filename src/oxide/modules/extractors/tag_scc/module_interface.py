@@ -6,16 +6,14 @@ import logging
 
 from typing import Dict, Any, List, Tuple
 import networkx as nx
-import openai
-import os
+import textwrap
 from oxide.core import api
-import subprocess
-import tiktoken
+from llm_service import runner
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"n": {"type": int, "mangle": True, "default": 5}}
+opts_doc = {}
 
 """
 options dictionary defines expected options, including type, default value, and whether
@@ -37,164 +35,92 @@ def documentation() -> Dict[str, Any]:
 
 def process(oid: str, opts: dict) -> bool:
     logger.debug("process() start for %s", oid)
-    n: int = opts["n"]
     result = {}
 
-    for scc in topo_scc:
+    cg: nx.DiGraph = api.get_field("call_graph", oid, oid)
+
+    THRESH = 15                     # prune if < 15 instructions
+    small = [n for n,d in cg.nodes(data=True)
+            if d.get("instr_count", 0) < THRESH]
+    
+    orig_pairs = sum(1 for _ in nx.all_pairs_shortest_path_length(cg))
+
+    # Prune
+    Gp = prune_small_funcs(cg, small)
+
+    # New reachability should be ≥ original (never less)
+    assert sum(1 for _ in nx.all_pairs_shortest_path_length(Gp)) >= orig_pairs
+
+    all_sccs = list(nx.strongly_connected_components(Gp))
+    nontrivial_sccs = [s for s in all_sccs if len(s) > 1]
+
+    for scc in nontrivial_sccs:
         members = sorted(scc)
         member_tags = []
         for fn in members:
-            tag_ctx = api.retrieve("tag_function_context", oid, {"func_name": func_name, "n": 1,})
+            func_name = get_func_name(oid, fn)
+            tag_ctx = api.retrieve("tag_function_context", oid, {"func_name": func_name})
             member_tags.append(tag_ctx)
 
-        # 2) dedupe & cap for prompt brevity
-        member_tags = sorted(set(member_tags))[:16]
+        # dedupe & cap
+        member_tags = sorted(set(member_tags))[:50]
+        tags_str = ", ".join(member_tags)
 
-        # 3) call your LLM-based summariser for the SCC
-        #    (replace "tag_scc_summary" with whichever Oxide API you set up)
-        scc_tag = tag_scc()
+        # generate candidates
+        scc_tag = llm_tag(tags_str)
 
         # 4) store the super-node tag
-        result[tuple(members)] = scc_tag
-
-        print(f"Pass 3 SCC {scc_count} of {num_scc}  (size={len(scc)})")
-        scc_count += 1
-
+        result[tuple(members)] = {"scc tag":scc_tag, "function tags": member_tags}
     api.store(NAME, oid, result, opts)
     return True
 
-def tag_descendants(G: nx.DiGraph, oid: str, n, skip_node: int) -> None:
-    """Populate ``name/tag/confidence`` for every node *except* skip_node."""
-    for fn in G.nodes:
-        if fn == skip_node:
-            continue  # defer tagging root to specialised prompt
-        func_name = get_func_name(oid, fn)
-        if not func_name:
-            continue
-        try:
-            tag = api.retrieve("tag_function", oid, {"func_name": func_name, "n": n})
-        except Exception as exc:  # pragma: no cover – stub error handling
-            logger.warning("LLM tag_function failed for %s: %s", func_name, exc)
-            tag = ""
-        G.nodes[fn].update({"name": func_name, "tag": tag})
-    return G
-
-
-def tag_target_function(func_name:str, decomp: str, G: nx.DiGraph, root: int, n: int = 5) -> List[Tuple[str, str]]:
+def llm_tag(scc_string: List, temperature: float = 0.2, max_new_tokens: int = 150) -> str:
     """
-    Prompt LLM with root decomp and descendant tags; generate N candidate tags (tag, justification) by sampling the model.
+    Generate N candidate tags (tag, justification) by sampling the model.
     """
-    decomp = head_tail(decomp)
 
-    # build descendant tag list
-    tag_lines = []
-    for node in G.nodes:
-        if node == root:
-            continue
-        tag = G.nodes[node].get("tag", "")
-        if not tag:
-            continue
-        depth = nx.shortest_path_length(G, root, node)
-        tag_lines.append("." * depth + f"{G.nodes[node]['name']} ({tag})")
-    tag_block = "\n".join(sorted(tag_lines)) or "<no descendants>"
+    prompt = textwrap.dedent(f"""
+        ### SCC FUNCTION TAGS
+        {scc_string}
 
-    # prepare prompts
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not set; aborting.")
-        return ""
+        ────────────────────────────────────────────────────────────
+        **Your task**
 
-    system_prompt = (
-        "You are a helpful assistant specialised in reverse engineering."
-    )
-    user_prompt = f"""
-    You are an expert reverse-engineer.
+        1. Read *only* the tags above.  
+        2. Decide the single, high-level purpose that unifies this strongly-connected component (SCC).  
+        • If the tags suggest a finite-state machine, reflect that (e.g. “usb device fsm”).  
+        3. Output **exactly two lines**:  
 
-    Function: `{func_name}`
+        Tag: <2–6-word, lower-case, verb-plus-noun theme>  
+        Why: <≤ 15-word justification>  
 
-    Decompiled C:
-    ```c
-    {decomp}
-    ```
+        Rules
+        • Do *not* mention code, reverse engineering, or these instructions.  
+        • Use single spaces, no underscores/hyphens.  
+        • No hedging or speculation language.
+        • If the theme is genuinely unclear, output **unknown** on the Tag line and give a one-sentence explanation on the Why line.
+        """).strip()
 
-    Direct-callee tags:
-    {tag_block}
-
-    Child tags describe low-level work. Your tag must capture the single high-level purpose of `{func_name}`.
-    Use 2-6 words, no punctuation except spaces and hyphens.
-    Avoid words used verbatim in the child tags.
-
-    Respond in this format exactly:
-    Tag: <2-6 words>
-    Why: <≤15 words>
-    """
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.8,
-        max_tokens=60,
-        n=n
+    # Call the model
+    response = runner.generate(
+        user_input=prompt,
+        temperature=temperature,
+        max_new_tokens=max_new_tokens
     )
 
-    candidates: List[Tuple[str, str]] = []
-    for choice in response.choices:
-        tag = None
-        why = None
-        for line in choice.message.content.splitlines():
-            lower = line.lower()
-            if lower.startswith("tag:"):
-                tag = line.split(":", 1)[1].strip()
-            elif lower.startswith("why:"):
-                why = line.split(":", 1)[1].strip()
-        if tag and why:
-            candidates.append((tag, why))
-    return candidates
-
-def llm_select_best(func_name: str, func_decomp: str, candidates: List[Tuple[str, float, str]]) -> Tuple[str, float]:
-    """
-    Select the best tag from the list of candidates.
-    """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not set; aborting selection.")
-        return ""
-
-    system_prompt = "You are a precise assistant skilled at evaluating function tags."
-    block = "\n".join(
-        f"{i+1}. Tag: {t}  Why: {w}"
-        for i, (t, w) in enumerate(candidates)
-    )
-    user_prompt = f"""
-    ### FUNCTION
-    Name: `{func_name}`
-    ```
-    {func_decomp}
-    ```
-    I have generated these tag candidates:
-    {block}
-    Which tag is the most accurate and specific? Respond exactly with:
-    Tag: <tag>
-    """
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.2,
-        max_tokens=60
+    # Normalize to single text block
+    text = (
+        "\n".join(response).strip()
+        if isinstance(response, list)
+        else response.strip()
     )
 
-    tag = ""
-    for line in response.choices[0].message.content.splitlines():
+    # Find and return the tag
+    for line in text.splitlines():
         if line.lower().startswith("tag:"):
-            tag = line.split(":", 1)[1].strip()
-    return tag
-        
-    
+            return line.split(":", 1)[1].strip()
+    return None
+
 def get_func_name(oid, offset):
     result = api.retrieve("function_summary", [oid])
     if result:
@@ -261,23 +187,45 @@ def decomp_for_func(oid:str, function_name:str):
         logger.error("Failed to retrieve ghidra decompilation mapping")
         return False
 
+def build_scc_dag(G: nx.DiGraph):
+    """
+    Return
+      * dag        –  a DiGraph whose nodes are frozensets of original functions
+      * func2scc   –  dict: original node ➜ owning SCC node
+    """
+    # nx.strongly_connected_components returns generators of nodes
+    scc_nodes  = [frozenset(c) for c in nx.strongly_connected_components(G)]
+    func2scc   = {f:scc for scc in scc_nodes for f in scc}
+    dag        = nx.DiGraph()
 
-def head_tail(text: str,
-              total_budget: int = 10_000,   # max tokens you want to keep
-              side_tokens: int = 2_000      # tokens to keep from each end
-              ) -> str:
-    _enc = tiktoken.encoding_for_model("gpt-4o-mini")
-    tokens = _enc.encode(text)
-    n = len(tokens)
+    for scc in scc_nodes:
+        dag.add_node(scc)
 
-    # Fast path: under budget → no clipping
-    if n <= total_budget:
-        return text
+    # add edges between SCCs (ignoring self-loops)
+    for u, v in G.edges():
+        su, sv = func2scc[u], func2scc[v]
+        if su != sv:
+            dag.add_edge(su, sv)
 
-    # Defensive: make sure we don’t ask for more than half the budget per side
-    side_tokens = min(side_tokens, total_budget // 2)
+    return dag, func2scc
 
-    head_part = _enc.decode(tokens[:side_tokens])
-    tail_part = _enc.decode(tokens[-side_tokens:])
+def prune_small_funcs(G, small):
+    G = G.copy()                # keep the original intact
+    for n in small:
+        if n not in G:          # may already be gone via a previous pass
+            continue
 
-    return f"{head_part}\n/* …clipped… */\n{tail_part}"
+        preds = list(G.predecessors(n))
+        succs = list(G.successors(n))
+
+        # 1. add shortcut edges caller → callee
+        for p in preds:
+            for s in succs:
+                if p != s:      # skip self-loops
+                    if not G.has_edge(p, s):
+                        G.add_edge(p, s)
+
+        # 2. finally remove the tiny helper itself
+        G.remove_node(n)
+
+    return G

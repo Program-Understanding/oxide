@@ -6,18 +6,14 @@ import logging
 
 from typing import Dict, Any, List, Tuple
 import networkx as nx
-import openai
-import os
+import textwrap
 from oxide.core import api
-import subprocess
-import tiktoken
+from llm_service import runner
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"func_name": {"type": str, "mangle": True},
-            "n": {"type": int, "mangle": True, "default": 5}
-            }
+opts_doc = {"func_name": {"type": str, "mangle": True}}
 
 """
 options dictionary defines expected options, including type, default value, and whether
@@ -41,7 +37,6 @@ def process(oid: str, opts: dict) -> bool:
     logger.debug("process() start for %s", oid)
 
     func_name: str = opts["func_name"]
-    n: int = opts["n"]
 
     # ------------------------------------------------------------
     # 1. Locate the target function by offset
@@ -58,155 +53,125 @@ def process(oid: str, opts: dict) -> bool:
         children = []
         logger.warning(f"Attempted to get successors of missing node {func_offset}")
 
-
     sub_nodes = set(children) | {func_offset}
     func_call_graph = full_graph.subgraph(sub_nodes).copy()
 
     func_decomp = decomp_for_func(oid, func_name)
+    if func_decomp is None:
+        return False
 
-    func_call_graph = tag_descendants(func_call_graph, oid, n, skip_node=func_offset)
-
-    candidates = tag_target_function(func_name, func_decomp, func_call_graph, func_offset, n)
-
-    if n > 1:
-        tag = llm_select_best(func_name, func_decomp, candidates)
-    else:
-        tag = candidates[0][0]
+    excl_tags, shared_tags = descendants_tags(func_call_graph, oid, func_offset)
+    tag = tag_target_function(func_decomp, excl_tags, shared_tags, func_offset)
 
     api.store(NAME, oid, tag, opts)
     return True
 
-def tag_descendants(G: nx.DiGraph, oid: str, n, skip_node: int) -> None:
-    """Populate ``name/tag/confidence`` for every node *except* skip_node."""
-    for fn in G.nodes:
-        if fn == skip_node:
-            continue  # defer tagging root to specialised prompt
+def descendants_tags(G: nx.DiGraph, oid: str, root: int) -> List:
+    """
+    Collect two buckets of tags for the call-tree under *root*.
+
+    Returns
+    -------
+    (exclusive, shared)
+        exclusive : tags whose function has **exactly one in-edge** and that
+                    edge comes from *root*            → high-signal
+        shared    : tags for every other reachable node (≥1 extra caller) → low-signal
+    """
+    excl_tags: List[str]   = []
+    shared_tags: List[str] = []
+
+    # --- all nodes reachable from *root* (children, grandchildren, …) -----------
+    reachable = nx.descendants(G, root)
+    for fn in reachable:
+        if not valid_function(oid, fn):
+            continue
+
         func_name = get_func_name(oid, fn)
         if not func_name:
             continue
+
         try:
-            tag = api.retrieve("tag_function", oid, {"func_name": func_name, "n": n})
-        except Exception as exc:  # pragma: no cover – stub error handling
+            tag = api.retrieve("tag_function", oid, {"func_name": func_name})
+        except Exception as exc:                  # pragma: no cover – stub error handling
             logger.warning("LLM tag_function failed for %s: %s", func_name, exc)
-            tag = ""
-        G.nodes[fn].update({"name": func_name, "tag": tag})
-    return G
+            continue
+
+        if tag:
+            # ---------- exclusive vs shared  ----------------------------------------
+            preds = list(G.predecessors(fn))
+            if len(preds) == 1 and preds[0] == root:
+                excl_tags.append(tag)
+            else:
+                shared_tags.append(tag)
+
+    excl_tags = list(dict.fromkeys(excl_tags))
+    shared_tags = list(dict.fromkeys(shared_tags))
+
+    return excl_tags, shared_tags
 
 
-def tag_target_function(func_name:str, decomp: str, G: nx.DiGraph, root: int, n: int = 5) -> List[Tuple[str, str]]:
+def tag_target_function(decomp: str, excl_tags: List, shared_tags: List, root: int, temperature: float = 0.1, max_new_tokens: int = 150) -> str:
     """
     Prompt LLM with root decomp and descendant tags; generate N candidate tags (tag, justification) by sampling the model.
     """
-    decomp = head_tail(decomp)
+    excl_tag_block = "\n".join(sorted(excl_tags)) or "<no exclusive descendants>"
+    shared_tag_block = "\n".join(sorted(shared_tags)) or "<no shared descendants>"
+    prompt = textwrap.dedent(f"""
+FUNCTION SOURCE:
+```c
+{decomp}
 
-    # build descendant tag list
-    tag_lines = []
-    for node in G.nodes:
-        if node == root:
-            continue
-        tag = G.nodes[node].get("tag", "")
-        if not tag:
-            continue
-        depth = nx.shortest_path_length(G, root, node)
-        tag_lines.append("." * depth + f"{G.nodes[node]['name']} ({tag})")
-    tag_block = "\n".join(sorted(tag_lines)) or "<no descendants>"
+Exclusive Direct-callee function tags:
+{excl_tag_block}
 
-    # prepare prompts
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not set; aborting.")
-        return ""
+Shared Direct-callee function tags:
+{shared_tag_block}
 
-    system_prompt = (
-        "You are a helpful assistant specialised in reverse engineering."
-    )
-    user_prompt = f"""
-    You are an expert reverse-engineer.
+─────────────────────────────────────────────────────────
+Your task:
+• Read only the C body and the callee tags above.
+• Produce exactly one 2-6-word descriptive tag stating clearly what the function *does*.
+• Produce exactly one ≤ 15-word justification clearly explaining the chosen tag.
 
-    Function: `{func_name}`
+─────────────────────────────────────────────────────────
+Rules:
+1. Tag must describe the *function's runtime behaviour*.
+    ✗ Do **not** mention “reverse engineering”, “C code”, or these instructions.
+2. Lower-case words, single spaces, no underscores/hyphens.
+3. No hedging, placeholders, or speculation language.
+4. If the purpose is completely unclear or uncertain, output exactly:
 
-    Decompiled C:
-    ```c
-    {decomp}
-    ```
+Tag: unknown
+Why: function's behavior unclear from provided information
 
-    Direct-callee tags:
-    {tag_block}
+5. Output exactly two lines, nothing else:
 
-    Child tags describe low-level work. Your tag must capture the single high-level purpose of `{func_name}`.
-    Use 2-6 words, no punctuation except spaces and hyphens.
-    Avoid words used verbatim in the child tags.
+Tag: <tag>
+Why: <justification>
+""").strip()
 
-    Respond in this format exactly:
-    Tag: <2-6 words>
-    Why: <≤15 words>
-    """
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.8,
-        max_tokens=60,
-        n=n
+    # Call the model
+    response = runner.generate(
+        user_input=prompt,
+        temperature=temperature,
+        max_new_tokens=max_new_tokens
     )
 
-    candidates: List[Tuple[str, str]] = []
-    for choice in response.choices:
-        tag = None
-        why = None
-        for line in choice.message.content.splitlines():
-            lower = line.lower()
-            if lower.startswith("tag:"):
-                tag = line.split(":", 1)[1].strip()
-            elif lower.startswith("why:"):
-                why = line.split(":", 1)[1].strip()
-        if tag and why:
-            candidates.append((tag, why))
-    return candidates
-
-def llm_select_best(func_name: str, func_decomp: str, candidates: List[Tuple[str, float, str]]) -> Tuple[str, float]:
-    """
-    Select the best tag from the list of candidates.
-    """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not set; aborting selection.")
-        return ""
-
-    system_prompt = "You are a precise assistant skilled at evaluating function tags."
-    block = "\n".join(
-        f"{i+1}. Tag: {t}  Why: {w}"
-        for i, (t, w) in enumerate(candidates)
-    )
-    user_prompt = f"""
-    ### FUNCTION
-    Name: `{func_name}`
-    ```
-    {func_decomp}
-    ```
-    I have generated these tag candidates:
-    {block}
-    Which tag is the most accurate and specific? Respond exactly with:
-    Tag: <tag>
-    """
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.2,
-        max_tokens=60
+    # Normalize to single text block
+    text = (
+        "\n".join(response).strip()
+        if isinstance(response, list)
+        else response.strip()
     )
 
-    tag = ""
-    for line in response.choices[0].message.content.splitlines():
+    # Find, normalize, and return the tag
+    for line in text.splitlines():
         if line.lower().startswith("tag:"):
-            tag = line.split(":", 1)[1].strip()
-    return tag
-        
+            raw_tag = line.split(":", 1)[1].strip()
+            return normalize_tag(raw_tag)
+
+    return None
+
     
 def get_func_name(oid, offset):
     result = api.retrieve("function_summary", [oid])
@@ -272,25 +237,34 @@ def decomp_for_func(oid:str, function_name:str):
         return return_str
     else:
         logger.error("Failed to retrieve ghidra decompilation mapping")
-        return False
+        return None
+    
+def normalize_tag(raw: str) -> str:
+    # 1) replace underscores/hyphens with spaces  
+    # 2) collapse multiple spaces into one  
+    # 3) lowercase everything  
+    t = raw.replace("_", " ").replace("-", " ")
+    t = " ".join(t.split())
+    return t.lower()
 
+def valid_function(oid, offset):
+    fn_blocks = api.get_field("ghidra_disasm", oid, "functions")[offset]['blocks']
+    blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
+    num_instructions = 0
+    for b in fn_blocks:
+        num_instructions += len(blocks[b])
+    if num_instructions > 5:
+        return True
+    return False
 
-def head_tail(text: str,
-              total_budget: int = 10_000,   # max tokens you want to keep
-              side_tokens: int = 2_000      # tokens to keep from each end
-              ) -> str:
-    _enc = tiktoken.encoding_for_model("gpt-4o-mini")
-    tokens = _enc.encode(text)
-    n = len(tokens)
-
-    # Fast path: under budget → no clipping
-    if n <= total_budget:
-        return text
-
-    # Defensive: make sure we don’t ask for more than half the budget per side
-    side_tokens = min(side_tokens, total_budget // 2)
-
-    head_part = _enc.decode(tokens[:side_tokens])
-    tail_part = _enc.decode(tokens[-side_tokens:])
-
-    return f"{head_part}\n/* …clipped… */\n{tail_part}"
+def split_child_tags(G: nx.DiGraph, node_tags: dict[int, list[str]], parent: int) -> tuple[list[str], list[str]]:
+    """Return (exclusive_tags, shared_tags) for *parent*’s direct callees."""
+    ex, sh = [], []
+    for child in G.successors(parent):
+        tags = node_tags.get(child, [])
+        if G.in_degree(child) == 1:       # ← exclusive
+            ex.extend(tags)
+        else:                             # ← shared
+            sh.extend(tags)
+    # dedupe but preserve order
+    return list(dict.fromkeys(ex)), list(dict.fromkeys(sh))
