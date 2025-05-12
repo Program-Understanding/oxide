@@ -29,30 +29,27 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         these are meant to be very quickly computed things passed along
         into other modules
     """
-    logger.debug("process()")
+    logger.debug("results()")
 
     oid_list = api.expand_oids(oid_list)
-    results = {}
+    graphs: Dict[str, nx.DiGraph] = {}
 
     for oid in oid_list:
-        call_map = api.retrieve("call_mapping", oid)
-        if call_map != None:
-            result = create_graph(call_map)
-            if result != None:
-                results[oid] = result
-        
-    return results
+        call_map = api.retrieve("function_call_targets", oid)
+        if not call_map:
+            continue
+        graphs[oid] = build_call_graph(call_map)
 
-#Generating our call graph from the database
-def create_graph(call_dict):
-    graph = nx.DiGraph()
-    # 1) collect every function offset (as caller or callee)
-    all_funcs = set(call_dict.keys()) | {c for info in call_dict.values() for c in info['calls_to']}
-    # 2) add them as isolated nodes
-    graph.add_nodes_from(all_funcs)
-    # 3) then add edges
-    for caller, info in call_dict.items():
-        for callee in info['calls_to']:
-            graph.add_edge(caller, callee)
-    return graph
+    return graphs
 
+def build_call_graph(call_map: Dict[str, List[str]]) -> nx.DiGraph:
+    """
+    Given call_map where keys are callers and values are lists of callees,
+    return a NetworkX DiGraph of the call relationships.
+    """
+    G = nx.DiGraph()
+    for caller, callees in call_map.items():
+        G.add_node(caller)   # ensures caller exists even if no outgoing edges
+        for callee in callees:
+            G.add_edge(caller, callee)
+    return G

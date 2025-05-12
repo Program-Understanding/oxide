@@ -41,6 +41,8 @@ import json
 import os
 import networkx as nx
 from networkx.readwrite import json_graph
+from openai import OpenAI
+import asyncio
 
 # Parse command line args
 parser = argparse.ArgumentParser('oxide MCP server')
@@ -194,7 +196,117 @@ async def function_summaries(oid: str, function_names: list[str] = None, functio
 
     logger.info("Retrieved summary successfully!")
     return mapping
+
+@mcp.tool()
+async def influential_function_llm_summaries(oid: str) -> dict[Any, Any] | Literal[False]:
+    """
+    Retrieve llm generated "tags" of influential functions in a binary file.
     
+    Inputs:
+      - oid (str): The object ID of the binary to be analyzed.
+      - function_names (list[str], optional): A list of function names to filter the results.
+          Only the functions whose names appear in this list will be included.
+      - function_offsets (list[int], optional): A list of function offsets to filter the results.
+          Only the functions with an offset present in this list will be included.
+          (Note: This filter is applied only if function_names is not provided.)
+
+    Returns: 
+        JSON with tags describing the functionality of a given function in the binary file along with other metrics 
+        in a dictionary format. The dictionary key is function name and the value is
+        another dictionary containing: offset, tag.
+        Example:
+        {
+            \"FUNCTION_NAME\": {
+                \"offset\": 4096, 
+                \"tag\": \"negotiates ssh algorithms\", 
+                \"fan-in\": \"#\", 
+                \"fan-out\": \"#\", 
+                \"depth\": \"#\", 
+            }
+        }
+    """
+    result = oxide.retrieve("tag_file", oid)['influential functions']
+    if not result:
+        logger.error("Failed to retrieve summary")
+        return False
+
+    return result
+
+@mcp.tool()
+async def function_llm_summaries(oid: str, function_names: list[str] = None, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
+    """
+    Retrieve llm generated "tags" of all functions in a binary file, with optional filtering by function names or offsets.
+    
+    Inputs:
+      - oid (str): The object ID of the binary to be analyzed.
+      - function_names (list[str], optional): A list of function names to filter the results.
+          Only the functions whose names appear in this list will be included.
+      - function_offsets (list[int], optional): A list of function offsets to filter the results.
+          Only the functions with an offset present in this list will be included.
+          (Note: This filter is applied only if function_names is not provided.)
+
+    Returns: 
+        JSON with tags describing the functionality of a given function in the binary file along with other metrics 
+        in a dictionary format. The dictionary key is function name and the value is
+        another dictionary containing: offset, tag.
+        Example:
+        {
+            \"FUNCTION_NAME\": {
+                \"offset\": 4096, 
+                \"tag\": \"negotiates ssh algorithms\", 
+                \"fan-in\": \"#\", 
+                \"fan-out\": \"#\", 
+                \"depth\": \"#\", 
+            }
+        }
+    """
+    tag_file_results = oxide.retrieve("tag_file", oid)
+    result = {}
+    for i in tag_file_results.values():
+        result.update(i)
+
+    if not result:
+        logger.error("Failed to retrieve summary")
+        return False
+
+    # Filter by function names if provided, else filter by function offsets if provided.
+    if function_names:
+        mapping = {fn: result[fn] for fn in function_names if fn in result}
+    elif function_offsets:
+        offsets = set(function_offsets)
+        mapping = {fn: info for fn, info in result.items() if info.get('offset') in offsets}
+    else:
+        mapping = result
+
+    return mapping
+
+@mcp.tool()
+async def file_summary(cid: str, oid: str | None = None) -> dict[Any, Any] | Literal[False]:
+    """
+    Retrieve llm generated summaries of all files in a collection, with optional filtering by file oid.
+    
+    Inputs:
+      - cid (str): The collection ID of the collection to retrieve summaries for.
+
+    Returns: 
+        JSON with summaries describing the functionality of a given file in collection 
+        in a dictionary format. The dictionary key is file oid and the value is
+        the llm generated overview of the file.
+        Example:
+        {
+            \"COLLECTION_CID\": {
+                \"FILE_OID\": SUMMARY, 
+            }
+        }
+    """
+    result = {}
+    oids = oxide.expand_oids(cid)
+
+    for oid in oids:
+        result[oid] = oxide.retrieve("tag_file", cid)['file overview']
+
+    return result
+
 @mcp.tool()
 async def control_flow_graph(oid: str, function_names: list[str] = None, function_offsets: list[int] = None) -> dict[Any, Any] | Literal[False]:
     """
@@ -567,7 +679,7 @@ async def decmap_for_file(oid:str, org_by_func: bool) -> dict[Any,Any] | Literal
         return False
 
 @mcp.tool()
-async def source_for_func(oid:str, function_name:str) -> str | Literal[False]:
+async def decomp_for_func(oid:str, function_name:str) -> str | Literal[False]:
     """
     Get the C source-like code (reconstructed through decompilation) for a specified function as a string. 
 
@@ -625,7 +737,7 @@ async def source_for_func(oid:str, function_name:str) -> str | Literal[False]:
     else:
         logger.error("Failed to retrieve ghidra decompilation mapping")
         return False
-    
+
 @mcp.tool()
 async def compare_function_disasm(target_oid: str, target_func_name: str, baseline_oid: str, baseline_func_name: str):
     """
@@ -648,7 +760,7 @@ async def compare_function_disasm(target_oid: str, target_func_name: str, baseli
     else:
         logger.error("Failed to retrieve function diff")
         return function_diff
-    
+
 @mcp.tool()
 async def import_collection(collection_name: str, collection_path: str):
     """
@@ -670,23 +782,101 @@ async def import_collection(collection_name: str, collection_path: str):
 
     oxide.create_collection(collection_name, oids, oids)
 
-# @mcp.tool()
-# async def run_drift(target_sample: str, baseline_sample: str):
-#     """
-#     Uses DRIFT to compare two firmware samples each of which is contained in a collection.
+@mcp.tool()
+async def collection_names():
+    """
+    Retrieve the names of all collections in Oxide.
 
-#     Inputs:
-#         - target_collection (str): The collection we are interested in
-#         - baseline_collection (str): The collection we are triaging the target_collection against
+    Returns:
+      - list[str]: A list of all collection names available in Oxide.
+    """
+    return oxide.collection_names()
 
-#     Returns:
-#         - Results of DRIFT
-#     """
-#     oxide.plugin("drift")
-#     result = oxide.drift("compare_collection", f"${target_sample}", f"${baseline_sample}")
-#     print(result, file=sys.stderr)
 
-#     return result
-    
+@mcp.tool()
+async def collection_cids():
+    """
+    Retrieve the collection IDs (CIDs) of all collections in Oxide.
+
+    Returns:
+      - list[str]: A list of all collection IDs in Oxide.
+    """
+    return oxide.collection_cids()
+
+
+@mcp.tool()
+async def get_cid_from_name(col_name: str):
+    """
+    Retrieve the collection ID (CID) for a given collection name.
+
+    Inputs:
+      - col_name (str): The name of the collection to search for.
+      
+    Returns:
+      - str: The collection ID corresponding to the provided collection name, if found.
+    """
+    return oxide.get_cid_from_name(col_name)
+
+
+@mcp.tool()
+async def get_oids_with_name(some_name: str):
+    """
+    Search for object IDs (OIDs) associated with a given file name.
+
+    Inputs:
+      - some_name (str): The file name to search for within the Oxide system.
+      
+    Returns:
+      - dict_keys: A collection (dict_keys or similar) of OIDs for the files that match the specified name.
+    """
+    results = oxide.get_oids_with_name(some_name)
+    return results.keys()
+
+
+@mcp.tool()
+async def get_names_from_oid(oid: str) -> set[str]:
+    """
+    Retrieve all file names associated with a given object ID (OID).
+
+    Inputs:
+      - oid (str): The object ID for which to retrieve associated file names.
+      
+    Returns:
+      - set[str]: A set containing all file names that are linked to the specified OID.
+    """
+    return oxide.get_names_from_oid(oid)
+
+
+@mcp.tool()
+async def get_oids_in_col(col_cid: str) -> list[str]:
+    """
+    Retrieve all object IDs (OIDs) that belong to a specified collection.
+
+    Inputs:
+      - col_cid (str): The collection ID (CID) of the desired collection.
+      
+    Returns:
+      - list[str]: A list of all object IDs contained within the specified collection.
+    """
+    return oxide.expand_oids(col_cid)
+
+
+@mcp.tool()
+async def run_drift(target_sample: str, baseline_sample: str):
+    """
+    Uses DRIFT to compare two firmware samples each of which is contained in a collection.
+
+    Inputs:
+        - target_collection (str): The collection we are interested in
+        - baseline_collection (str): The collection we are triaging the target_collection against
+
+    Returns:
+        - Results of DRIFT
+    """
+    from oxide.plugins import drift
+    results = drift.compare_collections([target_sample, baseline_sample], {})
+    print(results, file=sys.stderr)
+    return results
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")

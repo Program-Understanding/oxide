@@ -9,6 +9,7 @@ import networkx as nx
 import textwrap
 from oxide.core import api
 from llm_service import runner
+import re
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -110,7 +111,7 @@ def descendants_tags(G: nx.DiGraph, oid: str, root: int) -> List:
     return excl_tags, shared_tags
 
 
-def tag_target_function(decomp: str, excl_tags: List, shared_tags: List, root: int, temperature: float = 0.1, max_new_tokens: int = 150) -> str:
+def tag_target_function(decomp: str, excl_tags: List, shared_tags: List, root: int, temperature: float = 0.15, max_new_tokens: int = 150) -> str:
     """
     Prompt LLM with root decomp and descendant tags; generate N candidate tags (tag, justification) by sampling the model.
     """
@@ -130,7 +131,7 @@ Shared Direct-callee function tags:
 ─────────────────────────────────────────────────────────
 Your task:
 • Read only the C body and the callee tags above.
-• Produce exactly one 2-6-word descriptive tag stating clearly what the function *does*.
+• Produce exactly one 2-6 word descriptive tag stating clearly what the function *does*.
 • Produce exactly one ≤ 15-word justification clearly explaining the chosen tag.
 
 ─────────────────────────────────────────────────────────
@@ -146,8 +147,8 @@ Why: function's behavior unclear from provided information
 
 5. Output exactly two lines, nothing else:
 
-Tag: <tag>
-Why: <justification>
+Tag: your tag here
+Why: one concise justification
 """).strip()
 
     # Call the model
@@ -173,21 +174,21 @@ Why: <justification>
     return None
 
     
-def get_func_name(oid, offset):
-    result = api.retrieve("function_summary", [oid])
-    if result:
-        result = result[oid]
-        for func_name, details in result.items():
-            offset_val = details['offset']
-            if offset_val == offset:
-                return func_name
-            
 def get_func_offset(oid, name):
-    result = api.retrieve("function_summary", [oid])
-    if result:
-        summary = result[oid]
-        if name in summary:
-            return summary[name]['offset']
+    functions = api.get_field("ghidra_disasm", oid, "functions")
+    if functions:
+        for func in functions:
+            if functions[func]['name'] == name:
+                return func
+    return None
+        
+def get_func_name(oid, offset):
+    functions = api.get_field("ghidra_disasm", oid, "functions")
+    if functions:
+        for func in functions:
+            if func == offset:
+                return functions[func]['name']
+    return None
         
 def decomp_for_func(oid:str, function_name:str):
     """
@@ -240,19 +241,25 @@ def decomp_for_func(oid:str, function_name:str):
         return None
     
 def normalize_tag(raw: str) -> str:
-    # 1) replace underscores/hyphens with spaces  
-    # 2) collapse multiple spaces into one  
-    # 3) lowercase everything  
+    # replace underscores/hyphens with spaces
     t = raw.replace("_", " ").replace("-", " ")
+    # strip all other punctuation
+    t = re.sub(r"[^\w\s]", " ", t)
+    # collapse whitespace
     t = " ".join(t.split())
     return t.lower()
 
 def valid_function(oid, offset):
-    fn_blocks = api.get_field("ghidra_disasm", oid, "functions")[offset]['blocks']
+    functions = api.get_field("ghidra_disasm", oid, "functions")
+    if offset in functions:
+        fn_blocks = functions[offset]['blocks']
+    else:
+        return False
     blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
     num_instructions = 0
     for b in fn_blocks:
-        num_instructions += len(blocks[b])
+        if b in blocks:
+            num_instructions += len(blocks[b])
     if num_instructions > 5:
         return True
     return False
