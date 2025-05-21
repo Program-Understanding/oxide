@@ -10,6 +10,7 @@ import textwrap
 from oxide.core import api
 from llm_service import runner
 import re
+import os
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -62,7 +63,7 @@ def process(oid: str, opts: dict) -> bool:
         return False
 
     excl_tags, shared_tags = descendants_tags(func_call_graph, oid, func_offset)
-    tag = tag_target_function(func_decomp, excl_tags, shared_tags, func_offset)
+    tag = tag_target_function(func_decomp, excl_tags, shared_tags, func_offset, oid, func_name)
 
     api.store(NAME, oid, tag, opts)
     return True
@@ -111,22 +112,29 @@ def descendants_tags(G: nx.DiGraph, oid: str, root: int) -> List:
     return excl_tags, shared_tags
 
 
-def tag_target_function(decomp: str, excl_tags: List, shared_tags: List, root: int, temperature: float = 0.15, max_new_tokens: int = 150) -> str:
-    """
-    Prompt LLM with root decomp and descendant tags; generate N candidate tags (tag, justification) by sampling the model.
-    """
-    excl_tag_block = "\n".join(sorted(excl_tags)) or "<no exclusive descendants>"
-    shared_tag_block = "\n".join(sorted(shared_tags)) or "<no shared descendants>"
+def tag_target_function(
+    decomp: str,
+    excl_tags: List[str],
+    shared_tags: List[str],
+    root: int,
+    oid: str,
+    func_name: str,
+    temperature: float = 0.15,
+    max_new_tokens: int = 150
+) -> str:
+    excl_block = "\n".join(sorted(excl_tags)) or "<no exclusive descendants>"
+    shared_block = "\n".join(sorted(shared_tags)) or "<no shared descendants>"
+
     prompt = textwrap.dedent(f"""
 FUNCTION SOURCE:
 ```c
 {decomp}
 
 Exclusive Direct-callee function tags:
-{excl_tag_block}
+{excl_block}
 
 Shared Direct-callee function tags:
-{shared_tag_block}
+{shared_block}
 
 ─────────────────────────────────────────────────────────
 Your task:
@@ -149,30 +157,37 @@ Why: function's behavior unclear from provided information
 
 Tag: your tag here
 Why: one concise justification
-""").strip()
+""")
 
-    # Call the model
     response = runner.generate(
         user_input=prompt,
         temperature=temperature,
         max_new_tokens=max_new_tokens
     )
 
-    # Normalize to single text block
-    text = (
-        "\n".join(response).strip()
-        if isinstance(response, list)
-        else response.strip()
-    )
+    raw_text = ("\n".join(response).strip()
+                if isinstance(response, list)
+                else response.strip())
 
-    # Find, normalize, and return the tag
-    for line in text.splitlines():
+    # Ensure the prompts directory exists
+    prompts_dir = "llm_prompts"
+    try:
+        os.makedirs(prompts_dir, exist_ok=True)
+        filename = os.path.join(prompts_dir, f"{oid}_{func_name}.txt")
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("Prompt:\n")
+            f.write(prompt + "\n\n")
+            f.write("Response:\n")
+            f.write(raw_text + "\n")
+    except Exception as e:
+        logger.error(f"Failed to save prompt and response: {e}")
+
+    for line in raw_text.splitlines():
         if line.lower().startswith("tag:"):
             raw_tag = line.split(":", 1)[1].strip()
             return normalize_tag(raw_tag)
 
     return None
-
     
 def get_func_offset(oid, name):
     functions = api.get_field("ghidra_disasm", oid, "functions")
