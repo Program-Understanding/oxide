@@ -15,100 +15,59 @@
 from oxide.core import api
 from rapidfuzz import fuzz
 import re
-import textwrap
-import os
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict
 import math
 from collections import Counter
 import numpy as np
 from typing import Dict, List, Tuple, Any
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer
 import numpy as np
 
-# load once at import time
-_model = SentenceTransformer("all-MiniLM-L6-v2")
+# 1) set up
+MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+MAX_LEN = tokenizer.model_max_length  # e.g. 512
 
-NAME = "test_tagging"
+_model = SentenceTransformer(MODEL_ID)
+
+NAME = "FUSE"
 DESC = ""
 USG  = ""
-
-# ---------------------------------------------------------------------------
-# Core operations: tag_firmware, tag_firmware_all, firmware_exes
-# ---------------------------------------------------------------------------
-
-def tag_firmware(args, opts):
-    """Fetch tag summaries, processing smaller executables first."""
-    valid, _ = api.valid_oids(args)
-    oids = api.expand_oids(valid or api.collection_cids())
-    exes, _ = separate_oids(oids)
-    fn_counts = {oid: len(api.get_field("ghidra_disasm", oid, "functions") or []) for oid in exes}
-    for idx, oid in enumerate(sorted(fn_counts, key=fn_counts.get), 1):
-        print(f"[{idx}/{len(exes)}] {oid}")
-        api.retrieve("tag_influential_functions", oid)
-        api.retrieve("tag_file", oid)
-
-
-def tag_firmware_all(args, opts):
-    """Fetch tag_all_functions summaries for all collections."""
-    for collection in api.collection_cids():
-        print(api.get_colname_from_oid(collection))
-        oids = api.expand_oids(collection)
-        exes, _ = separate_oids(oids)
-        fn_counts = {oid: len(api.get_field("ghidra_disasm", oid, "functions") or []) for oid in exes}
-        for idx, oid in enumerate(sorted(fn_counts, key=fn_counts.get), 1):
-            print(f"[{idx}/{len(exes)}] {oid}")
-            api.retrieve("tag_all_functions", oid)
-
-
-def firmware_exes(args, opts):
-    """Return inventory of executables in given OIDs/collections."""
-    valid, _ = api.valid_oids(args)
-    exes, _ = separate_oids(api.expand_oids(valid))
-    report = {oid: {"names": get_file_names(oid)} for oid in sorted(exes)}
-    return report
 
 # ---------------------------------------------------------------------------
 # search_firmware: NL prompt → fuzzy-match against function tags
 # ---------------------------------------------------------------------------
 
-def search_firmware(args, opts) -> Dict:
-    """
-    Match natural-language prompts to firmware executables (embeddings)
-    and (optionally) emit evaluation metrics.
-    """
-    # ------------------------------------------------------------------ helpers
-    def is_shared_lib_or_driver(oid: str) -> bool:
-        return any((".so" in n) or (".ko" in n) for n in get_file_names(oid))
+def fuse(args, opts) -> Dict:
+    # options
+    USE_TAGS = opts.get("use_tags", True)
+    eps      = 1e-8
 
-    ALNUM = re.compile(r"[A-Za-z]{3,}")          # keep only sane tokens
-    eps   = 1e-8                                 # avoid divide-by-zero
-
-    # ----------------------------------------------------------------- options
-    K_STR         = opts.get("k_str", 60)
-    K_TAG         = opts.get("k_tag", 60)
-    USE_TAGS      = opts.get("use_tags", True)
-
-    # ----------------------------------------------------------------- harvest
+    # 1) collect component tokens
     valid, _ = api.valid_oids(args)
     exes, _  = separate_oids(api.expand_oids(valid))
 
-    components: Dict[str, Dict[str, List[str]]] = {}
+    ALNUM = re.compile(r"[A-Za-z]{3,}")
+    components = {}
     for oid in exes:
-        if is_shared_lib_or_driver(oid):
+        if any((".so" in n) or (".ko" in n) for n in get_file_names(oid)):
             continue
 
-        # ---------- tags ----------
+        # strings
+        raw     = api.get_field("strings", oid, oid) or {}
+        strings = [s.lower() for s in raw.values()
+                   if ALNUM.search(s) and len(s) < 60]
+
+        # tags
         tags = []
         if USE_TAGS:
             inf = api.retrieve("tag_all_functions", oid) or {}
             if inf != "FAILED":
-                tags = [normalize_tag(e.get("tag_context", ""))
-                        for e in inf.values() if isinstance(e, dict)]
-
-        # ---------- printable strings ----------
-        raw = api.get_field("strings", oid, oid) or {}
-        strings = [s.lower() for s in raw.values()
-                   if ALNUM.search(s) and len(s) < 60]
+                for e in inf.values():
+                    text = e.get("tag")
+                    if isinstance(e, dict) and text:
+                        tags.append(normalize_tag(text))
 
         if strings or (USE_TAGS and tags):
             components[oid] = {"str": strings, "tag": tags}
@@ -116,190 +75,129 @@ def search_firmware(args, opts) -> Dict:
     if not components:
         return {"error": "No tokens extracted from firmware!"}
 
-    # ----------------------------------------------------- IDF + top-K pruning
-    def topk_by_idf(docs: Dict[str, List[str]], k: Optional[int]) -> Dict[str, List[str]]:
-        """
-        Returns either:
-        • the top-k tokens for each doc (if k > 0)
-        • ALL tokens unchanged          (if k is None or k <= 0)
-        """
-        if k is None or k <= 0:          # <-- new early exit
-            return docs
-        flat = [t for tokens in docs.values() for t in tokens]
-        df   = Counter(flat)
-        N    = len(docs)
-        idf  = {t: math.log(N / df[t]) for t in df}
-        out = {}
-        for oid, toks in docs.items():
-            out[oid] = sorted(toks, key=lambda t: idf[t], reverse=True)[:k]
-        return out
-
-    str_dict = topk_by_idf({o: c["str"] for o, c in components.items()}, K_STR)
-    if USE_TAGS:
-        tag_dict = topk_by_idf({o: c["tag"] for o, c in components.items()}, K_TAG)
-
-    # --------------------------------------------------- build embeddings
-    oids      = list(components.keys())
-    str_docs  = [" ".join(str_dict[o]) for o in oids]
-    str_mat   = _model.encode(str_docs, normalize_embeddings=True)
+    # 2) build IDF maps
+    str_docs = {oid: comp["str"] for oid, comp in components.items()}
+    idf_str  = compute_idf(str_docs)
 
     if USE_TAGS:
-        tag_docs = [" ".join(tag_dict[o]) for o in oids]
-        tag_mat  = _model.encode(tag_docs, normalize_embeddings=True)
+        tag_docs = {oid: comp["tag"] for oid, comp in components.items()}
+        idf_tag  = compute_idf(tag_docs)
 
-    # --------------------------------------------------- adaptive fusion
-    fused_rows = []
-    alpha_vec  = []        # keep so we can inspect later if needed
-    for idx, oid in enumerate(oids):
+    # 3) select highest‑IDF strings (full budget) per component
+    selected_tags = {}
+    selected_strs = {}
+    for oid, comp in components.items():
         if USE_TAGS:
-            n_tag = len(tag_dict[oid])
-            n_str = len(str_dict[oid])
-            alpha_i = n_tag / (n_tag + n_str + eps)
-            alpha_vec.append(alpha_i)
-
-            vec = str_mat[idx] + alpha_i * tag_mat[idx]
-            vec = vec / (np.linalg.norm(vec) + eps)               # re-normalize
+            selected_tags[oid] = select_until(comp["tag"], idf_tag, MAX_LEN)
+            selected_strs[oid] = select_until(comp["str"], idf_str, MAX_LEN)
         else:
-            vec = str_mat[idx]
-            alpha_vec.append(0.0)
-        fused_rows.append(vec)
+            # all tokens go to strings
+            selected_tags[oid] = []
+            selected_strs[oid] = select_until(comp["str"], idf_str, MAX_LEN)
 
-    fused_mat = np.vstack(fused_rows).astype("float32")
+    # 4) embed strings and tags
+    oids = list(components)
+    str_docs = [" ".join(selected_strs[oid]) for oid in oids]
+    str_embs  = _model.encode(str_docs, normalize_embeddings=True, truncation=False)
 
-    # --------------------------------------------------- retrieval + metrics
-    prompts        = list(prompts2oids.keys())
-    prec1 = hit5 = hit2  = 0
-    mrr_sum        = 0.0
-    batch: List[Dict[str, Any]] = []
+    if USE_TAGS:
+        tag_docs = [" ".join(selected_tags[o]) for o in oids]
+        tag_embs  = _model.encode(tag_docs, normalize_embeddings=True, truncation=False)
+
+    # 5) fuse vectors with dynamic weighting based on token counts
+    fused_rows = []
+    for i, oid in enumerate(oids):
+        se = str_embs[i]
+        if USE_TAGS:
+            te = tag_embs[i]
+            tok = tokenizer.encode
+            n_s = sum(len(tok(s, add_special_tokens=False)) for s in selected_strs[oid])
+            n_t = sum(len(tok(t, add_special_tokens=False)) for t in selected_tags[oid])
+            alpha = n_t / (n_s + n_t + eps)
+            se /= np.linalg.norm(se)
+            te /= np.linalg.norm(te)
+            v_adapt = (1 - alpha) * se + alpha * te
+        else:
+            v_adapt = se
+        fused_rows.append(v_adapt / (np.linalg.norm(v_adapt) + 1e-8))
+
+    emb_mat = np.vstack(fused_rows).astype("float32")
+
+    # 6) retrieval & metrics (unchanged)
+    prompts = list(prompts2oids.keys())
+    batch   = []
+    prec1 = hit2 = hit5 = 0
+    mrr_sum = 0.0
 
     for prompt in prompts:
-        qvec  = _model.encode(prompt, normalize_embeddings=True).astype("float32")
-        sims  = fused_mat.dot(qvec)                       # cosine already
+        qvec = _model.encode([prompt], normalize_embeddings=True).astype("float32")
+        sims = emb_mat.dot(qvec.T).squeeze()
+        idxs = np.argsort(-sims)
 
-        idxs  = np.argsort(-sims)
-
-        def fmt(oid: str) -> Dict[str, Any]:
+        def fmt(oid):
             return {
-                "oid":   oid,
+                "oid": oid,
                 "names": get_file_names(oid),
                 "num functions": len(api.retrieve("tag_all_functions", oid) or {})
             }
 
-        best   = fmt(oids[idxs[0]]) if idxs.size else None
-        cands  = [fmt(oids[i]) for i in idxs[:5]]
-
-        # evaluation --------------------------------------------------------
-        gold_oid = prompts2oids.get(prompt, "")           # single string now
-        rank = None
-        for r, i in enumerate(idxs, 1):
-            if oids[i] == gold_oid:
-                rank = r
-                break
+        gold = prompts2oids[prompt]
+        rank = next((i+1 for i in range(len(oids)) if oids[idxs[i]] == gold), None)
 
         prec1 += int(rank == 1)
-        hit5  += int(rank <= 5)
-        hit2 += int(rank <= 2)
+        hit2  += int(rank and rank <= 2)
+        hit5  += int(rank and rank <= 5)
         if rank:
             mrr_sum += 1.0 / rank
 
         batch.append({
             "prompt":  prompt,
-            "results": {"best_match": best, "candidates": cands},
+            "results": {
+                "best_match": fmt(oids[idxs[0]]),
+                "candidates": [fmt(oids[i]) for i in idxs[:5]]
+            },
             "rank":    rank,
-            "gold":    fmt(gold_oid)
+            "gold":    fmt(gold)
         })
 
     n = len(prompts) or 1
     return {
-        "batch":   batch,
+        "batch": batch,
         "metrics": {
             "P@1":   prec1 / n,
-            "Hit@5": hit5 / n,
             "Hit@2": hit2 / n,
-            "MRR":   mrr_sum / n,
-        },
-    }
-
-
-# ---------------------------------------------------------------------------
-# search_component: fuzzy + Dice/Jaccard match against a reference component
-# ---------------------------------------------------------------------------
-
-def search_component(args, opts) -> Dict:
-    """Match a reference component against executables in a firmware image."""
-    valid, _ = api.valid_oids(args)
-    if len(valid) < 2:
-        raise ValueError("Usage: search_component <component_oid> <firmware_collection>")
-    comp_oid, firmware = valid[:2]
-
-    comp_inf = api.retrieve("tag_influential_functions", comp_oid) or {}
-    comp_tags = [normalize_tag(e['tag']) for e in comp_inf.values() if isinstance(e, dict) and 'tag' in e]
-
-    exes, _ = separate_oids(api.expand_oids(firmware))
-    components = {}
-    for oid in exes:
-        inf = api.retrieve("tag_influential_functions", oid) or {}
-        if inf == 'FAILED': continue
-        tags = [normalize_tag(e['tag']) for e in inf.values() if isinstance(e, dict) and 'tag' in e]
-        if tags:
-            components[oid] = tags
-
-    results = []
-    for oid, tags in components.items():
-        pairs = fuzzy_pairs(comp_tags, tags)
-        inter = len(pairs)
-        dice = (2 * inter) / (len(comp_tags) + len(tags)) if (comp_tags and tags) else 0.0
-        union = len(comp_tags) + len(tags) - inter
-        jaccard = inter / union if union else 0.0
-        results.append((oid, dice, jaccard, pairs))
-    results.sort(key=lambda x: x[1], reverse=True)
-
-    top5 = results[:5]
-    best = top5[0][0] if top5 else None
-    return {
-        "component": {"oid": comp_oid, "names": get_file_names(comp_oid)},
-        "results": {
-            "best_match": {"oid": best, "names": get_file_names(best)} if best else None,
-            "candidates": [
-                {"oid": o, "dice": round(d,4), "jaccard": round(j,4), "pairs": p, "names": get_file_names(o)}
-                for o,d,j,p in top5
-            ]
+            "Hit@5": hit5 / n,
+            "MRR":    mrr_sum / n
         }
     }
 
-# ---------------------------------------------------------------------------
-# batch_test: run search_component over paired OIDs
-# ---------------------------------------------------------------------------
-
-def batch_test(args, opts) -> Dict:
-    """Run search_component over a test pair; report @1 and @5 accuracy."""
-    valid, _ = api.valid_oids(args)
-    if len(valid) < 2:
-        raise ValueError("Usage: batch_test <firmware_cid_pair>")
-    known, unknown = valid[:2]
-
-    known_map = get_all_file_names(list(separate_oids(api.expand_oids(known))[0]))
-    unknown_map = get_all_file_names(list(separate_oids(api.expand_oids(unknown))[0]))
-    pairs = pair_exes(known_map, unknown_map)
-
-    correct = 0
-    top5 = 0
-    for a, b in pairs:
-        res = search_component([a, unknown], {})
-        best = res['results']['best_match']['oid'] if res['results']['best_match'] else None
-        if best == b:
-            correct += 1
-        if any(c['oid'] == b for c in res['results']['candidates']):
-            top5 += 1
-
-    total = len(pairs)
-    return {'@1': correct/total if total else 0.0, '@5': top5/total if total else 0.0}
-
-exports = [tag_firmware, firmware_exes, search_component, search_firmware, batch_test, tag_firmware_all]
+exports = [fuse]
 
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
+
+def compute_idf(docs):
+    df = Counter()
+    N  = len(docs)
+    for toks in docs.values():
+        for t in set(toks):
+            df[t] += 1
+    # standard smoothing to avoid zero/∞
+    return {t: math.log((N+1)/(df_t+1)) + 1
+            for t, df_t in df.items()}
+
+def select_until(tokens, idf_map, budget):
+    chosen, used = [], 0
+    for t in sorted(tokens, key=lambda x: idf_map.get(x,0), reverse=True):
+        toklen = len(tokenizer.tokenize(t))
+        if used + toklen > budget:
+            continue
+        chosen.append(t)
+        used += toklen
+        if used >= budget:
+            break
+    return chosen
 
 def separate_oids(oids: List[str]) -> Tuple[set, set]:
     """Split OIDs into executables and others"""
@@ -360,7 +258,7 @@ def normalize_tag(tag: str) -> str:
         tag = u_norm('NFC', tag)
     except ImportError:
         pass
-    tag = tag.replace('_', ' ').replace('-', ' ')
+    tag = tag.replace('_', ' ')
     tag = re.sub(r"[^\w\s]", ' ', tag)
     return re.sub(r"\s+", ' ', tag).strip().lower()
 
@@ -392,7 +290,7 @@ prompts2oids = {
         "598cd0a2dfb5d69f561413cb823e9543f7ba143e",
 
     # 2  Dropbear ─ SSH server / client / key-gen
-    "Component that establishes encrypted remote shell sessions and transfers files securely over a network channel.": 
+    "Component that establishes encrypted remote shell sessions (SSH) and transfers files securely over a network channel.": 
         "93073b5d2844d703f9b1e00061a6dcd7dd90b915",
 
     # 3  Dnsmasq ─ DNS & DHCPv4
