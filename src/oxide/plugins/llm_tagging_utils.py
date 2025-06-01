@@ -1,22 +1,6 @@
-"""Oxide plugin: semantic‑tag matching utilities.
-
-  • tag_firmware        – fetch and cache tag summaries for executables
-  • firmware_exes       – quick inventory of executables + tag status
-  • search_component    – match a reference component against a firmware image
-  • search_firmware     – match components via natural‑language prompt
-  • batch_test          – micro‑benchmark over a fixed test set
-
-  The implementation purposefully stays **simple**: we rely on normalized
-  string overlap plus RapidFuzz Levenshtein similarity. No stemming, IDF,
-  or trigram logic is used, which keeps runtime fast and accuracy around
-  75 % on the current OpenWrt dataset.
-"""
-
 from oxide.core import api
 from rapidfuzz import fuzz
 import re
-import textwrap
-import os
 from typing import List, Tuple, Dict, Optional
 import math
 from collections import Counter
@@ -28,7 +12,7 @@ import numpy as np
 # load once at import time
 _model = SentenceTransformer("all-MiniLM-L6-v2")
 
-NAME = "test_tagging"
+NAME = "llm_tagging_utils"
 DESC = ""
 USG  = ""
 
@@ -62,9 +46,11 @@ def tag_firmware_all(args, opts):
 
 def firmware_exes(args, opts):
     """Return inventory of executables in given OIDs/collections."""
-    valid, _ = api.valid_oids(args)
-    exes, _ = separate_oids(api.expand_oids(valid))
-    report = {oid: {"names": get_file_names(oid)} for oid in sorted(exes)}
+    report = {}
+    for collection in api.collection_cids():
+        print(f"{collection}: {api.get_colname_from_oid(collection)}")
+        # exes, _ = separate_oids(api.expand_oids(collection))
+        # report[collection] = {oid: {"names": get_file_names(oid)} for oid in sorted(exes)}
     return report
 
 # ---------------------------------------------------------------------------

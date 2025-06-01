@@ -24,7 +24,6 @@ CATEGORY = ""
 # Options documentation
 opts_doc: Dict[str, Dict[str, str]] = {}
 
-
 def documentation() -> Dict[str, Any]:
     """Return module documentation understood by the Oxide plug‑in loader."""
     return {
@@ -37,45 +36,43 @@ def documentation() -> Dict[str, Any]:
     }
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Main entry‑point
-# ────────────────────────────────────────────────────────────────────────────
-
 def process(oid: str, opts: Dict[str, Any]) -> bool:
     """Populate *only* the **influential functions** for *oid* and store it."""
     logger.debug("Starting tag‑file process for %s", oid)
 
     call_graph: nx.DiGraph = api.get_field("call_graph", oid, oid)
     if call_graph.number_of_nodes() == 0:
-        results = "FAILED"
-        api.store(NAME, oid, results, opts)
+        api.store(NAME, oid, "FAILED", opts)
         return False
 
+    # Compute depth and SCCs
     depth_cache = _compute_depth_cache(call_graph)
     scc_dag = _build_scc_dag(call_graph)
-    bottom_up_sccs = reversed(list(nx.topological_sort(scc_dag)))
+
+    # Filter only SCCs larger than one node
+    large_sccs = [scc for scc in scc_dag.nodes() if len(scc) > 1]
+    print(f"Large SCCs (size >1) for {oid}: {large_sccs}")
+
+    # Iterate bottom-up over only larger SCCs
+    bottom_up_sccs = list(nx.topological_sort(scc_dag))
+    bottom_up_sccs = [scc for scc in bottom_up_sccs if len(scc) > 1]
 
     desired_count = _pick_k_sqrt(len(call_graph))
-    influential = _get_influential_nodes(call_graph, depth_cache, desired_count)
 
-    # We now keep *one* output bucket only
+    # Prepare results
     results: Dict[str, Dict[str, Any]] = {}
-    influential_tags: List[str] = []
-
-    # Ensure decompilation is available before we begin
     decmap = api.retrieve("ghidra_decmap", [oid], {"org_by_func": True})
     if decmap is None:
-        results = "FAILED"
-        api.store(NAME, oid, results, opts)
+        api.store(NAME, oid, "FAILED", opts)
         return False
 
     p = progress.Progress(call_graph.number_of_nodes())
 
-    # Walk the SCCs bottom‑up.  Skip early if node is *not* influential.
-    for scc in bottom_up_sccs:
+    # Walk only larger SCCs bottom‑up
+    for scc in reversed(bottom_up_sccs):
         for node in sorted(scc):
             p.tick()
-            if not _is_valid_function(oid, node) or node not in influential:
+            if not _is_valid_function(oid, node):
                 continue
 
             name = _get_function_name(oid, node) or f"sub_{node:x}"
@@ -85,8 +82,6 @@ def process(oid: str, opts: Dict[str, Any]) -> bool:
             entry["tag"] = tag if tag else "FAILED"
 
             results[name] = entry
-            if tag:
-                influential_tags.append(tag)
 
     api.store(NAME, oid, results, opts)
     logger.debug("Finished tag‑file process for %s", oid)

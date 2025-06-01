@@ -1,8 +1,3 @@
-DESC = "Uses an LLM to generate a tag for a given function and its call graph"
-NAME = "tag_function_context"
-CATEGORY = ""  # used for filtering of modules e.g. disassemblers like ida
-
-import logging
 
 from typing import Dict, Any, List, Tuple
 import networkx as nx
@@ -12,48 +7,15 @@ from llm_service import runner
 import re
 import os
 
-logger = logging.getLogger(NAME)
-logger.debug("init")
 
-opts_doc = {"func_name": {"type": str, "mangle": True}}
-
-"""
-options dictionary defines expected options, including type, default value, and whether
-presence of option distinguishes a version of output (mangle).
-
-An example of option
-{"version": {"type": int, "mangle": True, "default": -1}
-where 'version' is guarenteed to be passed into opts of process
-    it has type int, with default value -1, and caching of results only relevant to this value
-        template_extract --version=1 vs template_extract --version=2
-    would result in running two different times
-"""
-
-
-def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
-            "atomic": True, "category": CATEGORY}
-
-
-def process(oid: str, opts: dict) -> bool:
-    logger.debug("process() start for %s", oid)
-
-    func_name: str = opts["func_name"]
-
-    # ------------------------------------------------------------
-    # 1. Locate the target function by offset
-    # ------------------------------------------------------------
-    func_offset = get_func_offset(oid, func_name)
-    if func_offset is None:
-        logger.error("Function %s not found in summary for %s", func_name, oid)
-        return False
+def run(oid, func_offset):
+    func_name = get_func_name(oid, func_offset)
 
     full_graph: nx.DiGraph = api.get_field("call_graph", oid, oid)
     if full_graph.has_node(func_offset):
         children = list(full_graph.successors(func_offset))
     else:
         children = []
-        logger.warning(f"Attempted to get successors of missing node {func_offset}")
 
     sub_nodes = set(children) | {func_offset}
     func_call_graph = full_graph.subgraph(sub_nodes).copy()
@@ -64,9 +26,7 @@ def process(oid: str, opts: dict) -> bool:
 
     excl_tags, shared_tags = descendants_tags(func_call_graph, oid, func_offset)
     tag = semantic_function_tag(func_decomp, excl_tags, shared_tags, oid, func_name)
-
-    api.store(NAME, oid, tag, opts)
-    return True
+    return tag
 
 def descendants_tags(G: nx.DiGraph, oid: str, root: int) -> List:
     """
@@ -172,6 +132,19 @@ Why: one concise justification
                 if isinstance(response, list)
                 else response.strip())
 
+    # Ensure the prompts directory exists
+    prompts_dir = "llm_prompts"
+    try:
+        os.makedirs(prompts_dir, exist_ok=True)
+        filename = os.path.join(prompts_dir, f"{oid}_{func_name}.txt")
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("Prompt:\n")
+            f.write(prompt + "\n\n")
+            f.write("Response:\n")
+            f.write(raw_text + "\n")
+    except Exception as e:
+        logger.error(f"Failed to save prompt and response: {e}")
+
     for line in raw_text.splitlines():
         if line.lower().startswith("tag:"):
             raw_tag = line.split(":", 1)[1].strip()
@@ -242,7 +215,6 @@ def decomp_for_func(oid:str, function_name:str):
                 indent_level += 1
         return return_str
     else:
-        logger.error("Failed to retrieve ghidra decompilation mapping")
         return None
     
 def normalize_tag(raw: str) -> str:
