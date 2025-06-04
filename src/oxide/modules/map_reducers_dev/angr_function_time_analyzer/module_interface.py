@@ -18,7 +18,8 @@ opts_doc = {
     "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"},
     "data-path":{"type":str,"mangle":False,"default":"","Description":"Path to a directory to output a csv file and some graphs to"},
     "allow-missing-ret":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results that don't have a ret instruction"},
-    "allow-low-memory":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results which ran into memory issues within angr"}}
+    "allow-low-memory":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results which ran into memory issues within angr"}
+}
 
 def documentation():
     return {"description":DESC, "opts_doc": opts_doc, "private": False,"set":False, "atomic": True}
@@ -83,6 +84,7 @@ F_Dict = TypedDict(
         "summary": Summary,
         "angr seconds": str,
         "instructions": dict[int,str],
+        "number of states" : int
     }
 )
     
@@ -170,12 +172,12 @@ def mapper(oid:str, opts: dict[str,Any], jobid=False):
             logger.error(f"complexity description for {fun} in {oid} is none")
             return False
     results["opcode_by_func"] = api.retrieve("opcodes",oid,{"by_func":True})
-    results["path_complexity"] = api.retrieve("path_complexity",oid,opts)
+    #results["path_complexity"] = api.retrieve("path_complexity",oid,opts)
     results["f_complexity"] = api.retrieve("function_dereferences",oid,opts)
     results["f_self_references"] = api.retrieve("function_self_references",oid,opts)
     results["f_cmp_jmps"] = api.retrieve("function_bi_grams", oid, opts)
-    if results["opcode_by_func"] is None or results["path_complexity"] is None:
-        logger.error(f"couldn't get either path complexity or opcode by func for {oid}")
+    if results["opcode_by_func"] is None:# or results["path_complexity"] is None:
+        logger.error(f"couldn't get opcode by func for {oid}")
         return False
     while not api.store(NAME,oid,results,opts):
         sleep(1)
@@ -186,6 +188,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
     complexity_vs_time : dict[Literal["simple"]|Literal["moderate"]|Literal["needs refactor"]|Literal["complex"]|str,ComplexityVsTime] = {}
     bins_w_time : dict[str,Bins_w_time] = {}
     functions_w_angr_errors = 0
+    functions_wo_states = 0
     oids_w_angr_errors = 0
     functions_w_no_ret = 0
     functions_w_none_complexity = 0
@@ -205,8 +208,8 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
     df_reg = []
     df_index = []
     df_opcodes = []
-    df_O = []
-    df_O_degree = []
+    # df_O = []
+    # df_O_degree = []
     all_opcodes : set[str] = set()
     df_num_params = []
     df_self_references_to_same_block = []
@@ -216,6 +219,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
     df_num_dereferences = []
     df_num_cmp_jump_stride2 = []
     df_gpt_estimated_time = []
+    df_num_states = []
     for complexity in ["simple", "moderate", "needs refactor", "complex"]:
         complexity_vs_time[complexity] = {"times":[],
                                           "instructions": [],
@@ -226,8 +230,8 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                                           "opcodes": {},
                                           "interesting":{}}
     #binkeys = [i*time_bin_size for i in range(1,opts["bins"]+1)]
-    binkeys : list[int] = [round(i,1) for i in numpy.logspace(numpy.log10(1.0),numpy.log10(opts["timeout"]),num=opts["bins"]-1)]
-    binkeys[-1] = opts["timeout"]
+    binkeys : list[int] = [round(i,1) for i in numpy.logspace(numpy.log10(1.0),numpy.log10(opts["timeout"]),num=opts["bins"]-1)] if opts["timeout"]!=0 else [0]
+    binkeys[-1] = opts["timeout"] if opts["timeout"] != 0 else 0
     for i in range(len(binkeys)):
         bn = binkeys[i]
         if i == 0:
@@ -281,11 +285,11 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
         if oid:
             time_result : dict[str, F_Dict] | None = api.get_field(NAME,oid,"time_result",opts)
             opcode_by_func : dict[str, dict[str,str]] | None  = api.get_field(NAME,oid,"opcode_by_func",opts)
-            complexitys : dict[str, dict[str, str]] | None = api.get_field(NAME,oid,"path_complexity",opts)
+            #complexitys : dict[str, dict[str, str]] | None = api.get_field(NAME,oid,"path_complexity",opts)
             fun_strides_and_dereferences : dict[str,dict[Literal["dereferences"] | Literal["strides"],dict[int,str]]] | None = api.get_field(NAME,oid,"f_complexity",opts)
             fun_self_references : dict[str | int,dict[Literal["earlier block"]|Literal["later block"]|Literal["same block"], int]] | None = api.get_field(NAME,oid,"f_self_references",opts)
             fun_bi_grams : dict[str | int,dict[Literal["cmp-jump"] | Literal["cmp-jump-stride3"] | Literal["cmp-jump-stride4"]|Literal["returns"],int | bool]] | None = api.get_field(NAME,oid,"f_cmp_jmps",opts)
-            if time_result is None or opcode_by_func is None or complexitys is None or fun_self_references is None or fun_strides_and_dereferences is None or fun_bi_grams is None:
+            if time_result is None or opcode_by_func is None or fun_self_references is None or fun_strides_and_dereferences is None or fun_bi_grams is None: #or complexitys is None
                 logger.warning(f"None result for {oid}")
                 oids_w_angr_errors += 1
                 continue
@@ -294,7 +298,10 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                 f_dict : F_Dict = time_result[fun]
                 if "error" in f_dict["angr seconds"]:
                     functions_w_angr_errors += 1
-                    logger.info(f"Function has error in angr seconds and complexity {complexitys[fun]['O']}")
+                    #logger.info(f"Function has error in angr seconds")# and complexity {complexitys[fun]['O']}")
+                    continue
+                if not "number of states" in f_dict:
+                    functions_wo_states += 1
                     continue
                 if f_dict["summary"]["complexity_desc"] is None:
                     logger.error(f"complexity desc is none for {oid} function {fun}")
@@ -335,8 +342,8 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                         short_uninteresting_funcs += 1
                         continue
                 time : float = float(f_dict["angr seconds"].split(" ")[0])
-                f_bin: str = find_bin_key(binkeys,time,opts["timeout"])
-                f_bin_int = find_bin_int(binkeys,time,opts["timeout"])
+                f_bin: str = find_bin_key(binkeys,time,opts["timeout"]) if opts["timeout"] != 0 else "0-0"
+                f_bin_int = find_bin_int(binkeys,time,opts["timeout"]) if opts["timeout"] != 0 else 0
                 if "stopped early for" in f_dict and f_dict["stopped early for"] != "timed out":
                     functions_w_memory_issues += 1
                     if not opts["allow-low-memory"]:
@@ -364,13 +371,15 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                                                                                 "from": oid,
                                                                                 "complexity": f_dict["summary"]["complexity"]}
                 num_insns = f_dict["summary"]["num_insns"]
+                num_states = f_dict["number of states"]
                 num_self_refs_earlier = fun_self_references[fun]["earlier block"]
                 num_self_refs_later = fun_self_references[fun]["later block"]
                 num_self_refs_same_block = fun_self_references[fun]["same block"]
                 num_derefs = len(fun_strides_and_dereferences[fun]["dereferences"])
                 num_strides = len(fun_strides_and_dereferences[fun]["strides"])
                 num_cmp_jump_bi_grams = fun_bi_grams[fun]["cmp-jump"]
-                chat_gpt_time_estimate = chat_gpt_estimate_symbolic_cost(num_self_refs_later + num_self_refs_earlier + num_self_refs_same_block, num_derefs, num_self_refs_earlier > 0, "call" in mncs)
+                #chat_gpt_time_estimate = chat_gpt_estimate_symbolic_cost(num_self_refs_later + num_self_refs_earlier + num_self_refs_same_block, num_derefs, num_self_refs_earlier > 0, "call" in mncs)
+                df_num_states.append(num_states)
                 df_time.append(time)
                 df_bin.append(f_bin)
                 df_bin_int.append(f_bin_int)
@@ -385,22 +394,22 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                 df_num_strides.append(num_strides)
                 df_num_dereferences.append(num_derefs)
                 df_num_cmp_jump_stride2.append(num_cmp_jump_bi_grams)
-                df_gpt_estimated_time.append(chat_gpt_time_estimate)
-                big_o = complexitys[fun]["O"]
-                if "n**" in big_o:
-                    big_o_degree = int(big_o[5:].strip(")"))
-                    big_o = "O(n**x)"
-                elif "O(0" in big_o:
-                    big_o = "Error"
-                    big_o_degree = None
-                elif "O(1" in big_o:
-                    big_o_degree = 0
-                elif "O(n)" in big_o:
-                    big_o_degree = 1
-                else:
-                    big_o_degree = None
-                df_O.append(big_o)
-                df_O_degree.append(big_o_degree)
+                #df_gpt_estimated_time.append(chat_gpt_time_estimate)
+                #big_o = complexitys[fun]["O"]
+                # if "n**" in big_o:
+                #     big_o_degree = int(big_o[5:].strip(")"))
+                #     big_o = "O(n**x)"
+                # elif "O(0" in big_o:
+                #     big_o = "Error"
+                #     big_o_degree = None
+                # elif "O(1" in big_o:
+                #     big_o_degree = 0
+                # elif "O(n)" in big_o:
+                #     big_o_degree = 1
+                # else:
+                #     big_o_degree = None
+                # df_O.append(big_o)
+                # df_O_degree.append(big_o_degree)
                 complexity_vs_time[complexity_level]["instructions"].append(num_insns)
                 bins_w_time[f_bin]["num instructions"].append(num_insns)
                 operands = f_dict["summary"]["operands"]
@@ -448,8 +457,8 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
         "bin int": df_bin_int,
         "cyclomatic complexity": df_cyclo_complexity_int,
         "cyclomatic complexity level":df_cyclo_complexity_level,
-        "Big O": df_O,
-        "Big O degree": df_O_degree,
+        # "Big O": df_O,
+        # "Big O degree": df_O_degree,
         "instructions":df_instructions,
         "imms":df_imm,
         "mems":df_mem,
@@ -461,7 +470,8 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
         "num dereferences" : df_num_dereferences,
         "num strides" : df_num_strides,
         "num cmp-jumps stride 2": df_num_cmp_jump_stride2,
-        "chat gpt generated function's estimated seconds": df_gpt_estimated_time,
+        "num states": df_num_states,
+        #"chat gpt generated function's estimated seconds": df_gpt_estimated_time,
     }
     opcode_mapper(all_opcodes,df_opcodes,data_dict)
     dataframe = pd.DataFrame(data_dict,index=df_index)
@@ -504,6 +514,6 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
             filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
                                                        "times": complexity_vs_time[complexity]["times"]}
         if opts["data-path"]:
-            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed":functions_analyzed, "functions which ran out of memory": functions_w_memory_issues, "short, uninteresting functions": short_uninteresting_funcs, "functions named 'main' (skipped due to main likely calling other functions a lot)" : mains_skipped}
+            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed":functions_analyzed, "functions which ran out of memory": functions_w_memory_issues, "short, uninteresting functions": short_uninteresting_funcs, "functions named 'main' (skipped due to main likely calling other functions a lot)" : mains_skipped, "functions w/o a count for states": functions_wo_states}
         else:
-            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues,"short, uninteresting functions": short_uninteresting_funcs, "functions named 'main' (skipped due to main likely calling other functions a lot)" : mains_skipped}
+            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues,"short, uninteresting functions": short_uninteresting_funcs, "functions named 'main' (skipped due to main likely calling other functions a lot)" : mains_skipped, "functions w/o a count for states": functions_wo_states}

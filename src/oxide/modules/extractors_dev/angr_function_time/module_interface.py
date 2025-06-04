@@ -60,7 +60,7 @@ def process(oid, opts):
                "fstat64",
                "lstat64",
                "fstatat64",
-               "__fstat"]:
+               "__fstat"] or not function_extract[f_name]["instructions"]:
             prog.tick()
             continue
         if f_name in function_summary and type(fun) is int:
@@ -69,6 +69,11 @@ def process(oid, opts):
             f_dict[f_name]["instructions"] = function_extract[f_name]["instructions"]
             f_dict[f_name]["angr seconds"] = ""
             #logger.info(f"Function signature {signature}")
+            #accounting for a timeout of 0 so we can have the model predict the time instead...
+            if "timeout" in opts and opts["timeout"] == 0:
+                f_dict[f_name]["angr seconds"] = f"0 seconds"
+                f_dict[f_name]["number of states"] = 0
+                continue
             with angrManager() as angrmanager:
                 angrproj = angrmanager.angr_project(oid)
                 try:
