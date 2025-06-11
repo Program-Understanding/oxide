@@ -1,9 +1,10 @@
 import os
 import subprocess
 import tempfile
-import json
 import shutil
 from bindiff import BinDiff
+from bindiff.types import function_algorithm_str, basicblock_algorithm_str
+from pathlib import Path
 
 def run_ghidra_binexport(ghidra_path, input_file, output_dir, script_path, use_xvfb=True):
     """
@@ -74,43 +75,64 @@ def run_bindiff(primary, secondary, output_dir):
         raise FileNotFoundError(f"Expected .BinDiff not found: {expected}")
     return _parse_bindiff_to_dict(primary, secondary, expected)
 
-
 def _parse_bindiff_to_dict(binexp1, binexp2, bindiff_file):
     """
-    Parse a .BinDiff file and return statistics as a Python dict.
+    Parse a .BinDiff database and return exhaustive statistics
+    in a JSON-serialisable dict.
     """
     diff = BinDiff.from_binexport_files(binexp1, binexp2, bindiff_file)
-    stats = {"matched_functions": [], "unmatched_primary": [], "unmatched_secondary": []}
 
-    for f1, f2, match in diff.iter_function_matches():
-        bb_matches = list(diff.iter_basicblock_matches(f1, f2))
-        instr_matched = sum(
-            len(list(diff.iter_instruction_matches(bb1, bb2))) for bb1, bb2, _ in bb_matches
-        )
-        instr_unmatched_prim = sum(len(diff.primary_unmatched_instruction(bb1)) for bb1, _, _ in bb_matches)
-        instr_unmatched_sec  = sum(len(diff.secondary_unmatched_instruction(bb2)) for _, bb2, _ in bb_matches)
+    # 1. per-binary roll-ups
+    file_stats = {
+        "similarity": diff.similarity,              # float 0-1
+        "confidence": diff.confidence,              # float 0-1
+    }
 
-        stats["matched_functions"].append({
-            "primary_address": hex(f1.addr),
-            "secondary_address": hex(f2.addr),
-            "function_name": f1.name,
-            "similarity": match.similarity,
-            "confidence": match.confidence,
-            "basic_block_stats": {
-                "matched": len(bb_matches),
-                "unmatched_primary": len(diff.primary_unmatched_basic_block(f1)),
-                "unmatched_secondary": len(diff.secondary_unmatched_basic_block(f2))
+    # running aggregates for convenience
+    agg = {"matched_functions": 0,
+           "matched_basic_blocks": 0,
+           "matched_instructions": 0}
+
+    # 2. per-function detail
+    fun_matches = {}
+    for f1, f2, fm in diff.iter_function_matches():
+        fun_matches[(hex(f1.addr), hex(f2.addr))] = {
+            "similarity":        fm.similarity,
+            "confidence":        fm.confidence,
+            "algorithm": {
+                "id": fm.algorithm, 
+                "name": function_algorithm_str(fm.algorithm),
             },
-            "instruction_stats": {
-                "matched": instr_matched,
-                "unmatched_primary": instr_unmatched_prim,
-                "unmatched_secondary": instr_unmatched_sec
-            }
-        })
+            "functions": {
+                "primary": {
+                    "address": hex(f1.addr),
+                    "name": f1.name
+                },
+                "secondary": {
+                    "address": hex(f2.addr),
+                    "name": f2.name,
+                }
+            },
+        }
 
-    for func in diff.primary_unmatched_function():
-        stats["unmatched_primary"].append({"address": hex(func.addr), "function_name": func.name})
-    for func in diff.secondary_unmatched_function():
-        stats["unmatched_secondary"].append({"address": hex(func.addr), "function_name": func.name})
+        # update aggregates
+        agg["matched_functions"]     += 1
 
-    return stats
+    # 3. unmatched functions
+    unmatched_primary = [
+        {"address": hex(f.addr), "name": f.name}
+        for f in diff.primary_unmatched_function()
+    ]
+    unmatched_secondary = [
+        {"address": hex(f.addr), "name": f.name}
+        for f in diff.secondary_unmatched_function()
+    ]
+
+    # 4. wrap-up
+    file_stats.update(agg)
+    return {
+        "file_stats":        file_stats,
+        "function_matches":  fun_matches,
+        "unmatched_primary": unmatched_primary,
+        "unmatched_secondary": unmatched_secondary,
+    }

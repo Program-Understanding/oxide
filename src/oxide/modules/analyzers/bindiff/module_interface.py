@@ -1,35 +1,32 @@
 #!/usr/bin/env python3
 """
 BinDiff analyzer module for pairing target and baseline binary files using BinDiff.
+Refined for clarity, reduced duplication, enhanced error handling, and logging.
 """
-
 import logging
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List
 
 from oxide.core import api
 from export_bindiff import run_bindiff, run_ghidra_binexport
 import os
+import tempfile
 
 # Module metadata
-desc = "Analyzer module to compute BinDiff between two firmware binaries."
-name = "bindiff"
+DESC = "Analyzer module to compute BinDiff between two firmware binaries."
+NAME = "bindiff"
 
-logger = logging.getLogger(name)
-logger.debug("Initializing BinDiff analyzer module")
+logger = logging.getLogger(NAME)
 
 # Options documentation
-tps_doc: Dict[str, Any] = {}
-
+opts_doc: Dict[str, Any] = {}
 
 def documentation() -> Dict[str, Any]:
     """
     Returns module documentation.
-
-    :returns: dict containing description, option docs, and visibility flags.
     """
     return {
-        "description": desc,
-        "opts_doc": tps_doc,
+        "description": DESC,
+        "opts_doc": opts_doc,
         "private": False,
         "set": False,
         "atomic": True,
@@ -38,67 +35,71 @@ def documentation() -> Dict[str, Any]:
 def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
     Entry point for the BinDiff analyzer.
-
-    Expects exactly two OIDs: the target and the baseline. Computes differences
-    using BinDiff and returns the results.
+    Expects exactly two OIDs: the baseline and the target.
+    Computes differences using BinDiff and returns the results.
     """
-    # Validate input
     if len(oid_list) != 2:
-        logger.error("Expected exactly two OIDs: target and baseline.")
+        logger.error("Expected exactly two OIDs: baseline and target, got %d", len(oid_list))
         return {}
 
-    target_oid, baseline_oid = oid_list
+    baseline_oid, target_oid = oid_list
 
-    # Prepare temporary files
     try:
-        target_tmp, _ = _prepare_temp_file(target_oid)
-        baseline_tmp, _ = _prepare_temp_file(baseline_oid)
-    except ValueError as e:
-        logger.error(str(e))
+        baseline_export = get_or_create_binexport(baseline_oid)
+        target_export = get_or_create_binexport(target_oid)
+
+        diff_results = run_bindiff(baseline_export, target_export, api.scratch_dir)
+        return diff_results or {}
+    except Exception:
+        logger.exception("BinDiff execution failed for OIDs %s and %s", baseline_oid, target_oid)
         return {}
 
-    # Run BinDiff
-    try:
-        ghidra_path = api.ghidra_path
-        script_path = api.scripts_dir
-        scratch_dir = api.scratch_dir
-
-        baseline_binexport = run_ghidra_binexport(ghidra_path, baseline_tmp, scratch_dir, script_path)
-        target_binexport = run_ghidra_binexport(ghidra_path, target_tmp, scratch_dir, script_path)
-
-        diff_results = run_bindiff(baseline_binexport, target_binexport, scratch_dir)
-    except Exception as e:
-        logger.exception("BinDiff execution failed")
-        return {}
-
-    return diff_results or {}
-
-def _prepare_temp_file(oid: str) -> Tuple[str, Any]:
+def get_or_create_binexport(oid: str) -> str:
     """
-    Retrieves binary data for the given OID, writes it to a temporary file,
-    and returns the temporary file path along with its header.
-
-    :param oid: Object ID in the database.
-    :raises ValueError: If data, header, or filename cannot be retrieved.
-    :returns: (tmp_file_path, header)
+    Retrieves or generates a BinExport file for the given OID.
+    Caches the result in the API store under NAME.
     """
-    # Retrieve data field
+    # Return cached export if exists
+    if api.exists(NAME, oid):
+        cached = api.get_field(NAME, oid, oid)
+        return write_temp_file(cached, descriptor=f"{NAME}_{oid}")
+
+    # Generate via Ghidra
+    ghidra_path = api.ghidra_path
+    scripts_dir = api.scripts_dir
+
+    binary_path = write_temp_file_for_oid(oid)
+    binexport_path = run_ghidra_binexport(ghidra_path, binary_path, api.scratch_dir, scripts_dir)
+    cache_binexport(oid, binexport_path)
+    return binexport_path
+
+def write_temp_file(data: bytes, descriptor: str) -> str:
+    """
+    Write bytes data to a temporary file. Return the file path.
+    """
+    suffix = os.path.splitext(descriptor)[1] or ""
+    with tempfile.NamedTemporaryFile(prefix=f"{descriptor}_", suffix=suffix, delete=False) as tmp:
+        tmp.write(data)
+        tmp.flush()
+        return tmp.name
+
+def write_temp_file_for_oid(oid: str) -> str:
+    """
+    Extract binary data for the given OID, write to a temp file, and return its path.
+    """
     src = api.source(oid)
-    data = api.get_field(src, oid, "data", {})
+    data = api.get_field(src, oid, "data")
     if not data:
-        raise ValueError(f"No data available for OID {oid}")
+        raise ValueError(f"No data found for OID {oid}")
 
-    # Retrieve header for metadata
-    header = api.get_field("object_header", oid, oid)
-    if not header:
-        raise ValueError(f"No header available for OID {oid}")
-
-    # Retrieve filename metadata
     names = api.get_field("file_meta", oid, "names") or []
-    if not names:
-        raise ValueError(f"No filenames found for OID {oid}")
-    original_name = names.pop()
+    filename = names[-1] if names else oid
+    return write_temp_file(data, descriptor=filename)
 
-    # Write to temporary file
-    tmp_path = api.tmp_file(original_name, data)
-    return tmp_path, header
+def cache_binexport(oid: str, path: str) -> None:
+    """
+    Cache the BinExport file content in the API store.
+    """
+    with open(path, "rb") as f:
+        content = f.read()
+    api.store(NAME, oid, {oid: content})
