@@ -18,7 +18,8 @@ opts_doc = {
     "bins": {"type": int,"mangle":True,"default":3,"Description":"How many time bins"},
     "data-path":{"type":str,"mangle":False,"default":"","Description":"Path to a directory to output a csv file and some graphs to"},
     "allow-missing-ret":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results that don't have a ret instruction"},
-    "allow-low-memory":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results which ran into memory issues within angr"}
+    "allow-low-memory":{"type":bool,"mangle":False,"default":False,"Description":"Allow functions in results which ran into memory issues within angr"},
+    "skip-main": {"type": bool, "mangle": False, "default": True,"Description":"Skip analyzing the function 'main' in the binary"}
 }
 
 def documentation():
@@ -66,6 +67,7 @@ Opts = TypedDict(
         "data-path": str,
         "allow-missing-ret": bool,
         "allow-low-memory": bool,
+        "skip-main": bool
     }
 )
 
@@ -307,7 +309,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                     logger.error(f"complexity desc is none for {oid} function {fun}")
                     functions_w_none_complexity += 1
                     continue
-                if fun == "main":
+                if fun == "main" and opts["skip-main"]:
                     mains_skipped += 1
                     continue
                 #need to assess whether we have a ret in the function or if we should skip it
@@ -514,6 +516,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
             filtered_complexity_vs_time[complexity] = {"instructions": complexity_vs_time[complexity]["instructions"],
                                                        "times": complexity_vs_time[complexity]["times"]}
         if opts["data-path"]:
-            return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed":functions_analyzed, "functions which ran out of memory": functions_w_memory_issues, "short, uninteresting functions": short_uninteresting_funcs, "functions named 'main' (skipped due to main likely calling other functions a lot)" : mains_skipped, "functions w/o a count for states": functions_wo_states}
+            output = {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret,"dataframe":dataframe, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed":functions_analyzed, "functions which ran out of memory": functions_w_memory_issues, "short, uninteresting functions": short_uninteresting_funcs, "functions named 'main' (skipped due to main likely calling other functions a lot)" : mains_skipped, "functions w/o a count for states": functions_wo_states}
+            return output
         else:
             return {"filtered_bins_w_time": filtered_bins_w_time, "filtered_complexity_vs_time": filtered_complexity_vs_time, "functions with angr errors": functions_w_angr_errors,"oids with angr errors": oids_w_angr_errors, "functions without ret instruction": functions_w_no_ret, "functions with no complexity": functions_w_none_complexity, "total functions": total_functions, "functions analyzed": functions_analyzed, "functions which ran out of memory": functions_w_memory_issues,"short, uninteresting functions": short_uninteresting_funcs, "functions named 'main' (skipped due to main likely calling other functions a lot)" : mains_skipped, "functions w/o a count for states": functions_wo_states}

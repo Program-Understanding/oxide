@@ -5,7 +5,7 @@ NAME="angr_function_time_model"
 AUTHOR="Kevan"
 
 import xgboost
-from oxide.core import api
+from oxide.core import api, datastore_filesystem
 import logging
 logger = logging.getLogger(NAME)
 import pandas as pd
@@ -26,6 +26,7 @@ import seaborn as sns
 from pathlib import Path
 import networkx as nx
 from lifelines.utils import concordance_index
+from lifelines import CoxPHFitter
 Opts = TypedDict(
     "Opts",
     {
@@ -39,6 +40,7 @@ Opts = TypedDict(
         "delete-cached": bool,
         "all": bool,
         "by-function-name": bool,
+        "skip-main": bool,
     }
 )
 
@@ -164,6 +166,96 @@ def train_xgboost(args : list[str], opts : Opts):
     data = (X_train, X_test, time_train, time_test, event_train, event_test)
     api.local_store("angr_function_time_model","data",data)
     return True
+
+def train_lifelines(args : list[str], opts : Opts):
+    """
+    Train a lifelines survival model to predict time taken to run angr.
+    Usage: train [--timeout=<int>] [--bins=<number of bins>] [--epochs=<int>] &<collection>
+    """
+    if "timeout" in opts:
+        timeout = opts["timeout"]
+    else:
+        timeout = 300
+    if "bins" in opts:
+        bins = opts["bins"]
+    else:
+        bins = 3
+    if "data-name" in opts:
+        data_name = opts["data-name"]
+    else:
+        data_name = "default"
+    if "delete-cached" in opts:
+        delete_cached = opts["delete-cached"]
+    else:
+        delete_cached = False
+    if delete_cached:
+        res = clear_data(data_name)
+        if res:
+            logger.info("Successfully cleared data!")
+        else:
+            logger.info("Didn't clear data!")
+    df = get_data(args, timeout, bins,data_name)
+    if df is False:
+        logger.error("Couldn't get dataframe when requested")
+        return False
+
+    #make into proper format for lifelines model
+    input_df = df[[column for column in df.columns if column != "bin int" and column != "chat gpt generated function's estimated seconds" and column != "num states" and column not in ["num dereferences", "num strides", "lea", "cmov*", "imms", "mems"]]].copy()
+    input_df.loc[:,"event"] = input_df['time'].map(lambda x: int(x >= 1.5))
+    train_df, test_df = train_test_split(input_df,test_size=0.2,random_state=42)
+    model = CoxPHFitter(penalizer=0.1)
+    model.fit(df=train_df, duration_col="time",event_col="event")
+
+    api.local_store("angr_function_time_model","lifelines_model",model)
+    api.local_store("angr_function_time_model","lifelines_data",(train_df,test_df))
+    risk_scores = model.predict_partial_hazard(test_df)
+
+    # Compute C-index on the test data
+    c_index = concordance_index(
+        test_df['time'],
+        -risk_scores,
+        test_df['event']
+    )
+    logger.info("Trained successfully")
+    model.print_summary()
+    #    model.check_assumptions(train_df)
+    logger.info(f"First training got a c_index of {c_index}")
+    weak_features = model.summary[model.summary["p"] > 0.05].index
+    df_reduced = train_df.drop(columns=weak_features)
+    model = CoxPHFitter(penalizer=0.1)
+    model.fit(df_reduced, duration_col="time", event_col="event")
+    risk_scores = model.predict_partial_hazard(test_df)
+
+    # Compute C-index on the test data
+    c_index = concordance_index(
+        test_df['time'],
+        -risk_scores,
+        test_df['event']
+    )
+    logger.info("Retrained successfully")
+    model.print_summary()
+    
+    return {"c index after training": c_index}
+
+def test_lifelines(args : list[str],opts:Opts):
+    model = api.local_retrieve("angr_function_time_model","lifelines_model")
+    if model is None:
+        logger.error("Couldn't load model")
+        return False
+    data : tuple[pd.DataFrame, pd.DataFrame] | None = api.local_retrieve("angr_function_time_model","lifelines_data")
+    if data is None:
+        logger.error("Couldn't load training or testing data")
+        return False
+    train_df, test_df = data
+    risk_scores = model.predict_partial_hazard(test_df)
+
+    # Compute C-index on the test data
+    c_index = concordance_index(
+        test_df['time'],
+        -risk_scores,           # negate because higher risk = shorter survival
+        test_df['event']
+    )
+    return {"c-index" : c_index}
 
 def train_dbscan_cluster(args : list[str], opts:Opts):
     """
@@ -317,9 +409,14 @@ def evaluate(args : list[str], opts : Opts):
     res = api.local_retrieve("angr_function_time_model","model")
     if res is None: return False
     model : xgboost.XGBModel = res
-    opts["timeout"] = 5
+    opts["timeout"] = 30
     results = {}
-    for oid in args:
+    if not "data-path" in opts:
+        logger.error("missing data path")
+        return False
+    valid, invalid = api.valid_oids(args)
+    for oid in api.expand_oids(valid):
+        datastore_filesystem.delete_oid_data("angr_function_time_analyzer",oid)
         df : pd.DataFrame | None = api.get_field("angr_function_time_analyzer", oid, "dataframe", opts)
         if df is None:
             logger.error(f"Couldn't get dataframe for oid {oid}")
@@ -330,26 +427,30 @@ def evaluate(args : list[str], opts : Opts):
             continue
         #reorder the dataframe to match what the model expects
         expected_features = model.feature_names
-        df = df[expected_features]
-        idp = df[[column for column in df.columns if column != "time" and column != "bin int" and column != "chat gpt generated function's estimated seconds"]]
+        new_df = df[model.feature_names]
+        idp = new_df[[column for column in new_df.columns if column != "time" and column != "bin int" and column != "chat gpt generated function's estimated seconds"]]
         #have model predict the function risk per function
         dmatrix = xgboost.DMatrix(idp)
         oid_scores = model.predict(dmatrix)
         if not len(oid_scores):
             logger.warning(f"Didn't get any risk scores for oid {oid}")
             continue
-        scores_with_function_names = pd.Series(oid_scores, index=df.index.str.slice(start=len(oid)), name="predicted_risk")
+        scores_with_function_names = pd.Series(oid_scores, index=new_df.index.str.slice(start=len(oid)), name="predicted_risk")
         #now we can evaluate per oid how well our prediction did against the reality
         results[oid] = {}
         good_ones = 0
         total = 0
         for row_name, risk_score in scores_with_function_names.items():
-            time_taken = float(df.loc[oid+row_name,"time"])
-            results[oid][row_name] = {"seconds taken": time_taken, "predicted risk score": risk_score}
-            #not sure if using a threshold of 0.3 for a risk score is signficant or not but its something
-            if (time_taken <= 1.0 and risk_score <= 0.3) or (time_taken > 1.0 and risk_score > 0.3):
-                good_ones += 1
-            total+=1
+            try:
+                time_taken = float(df.loc[oid+row_name,"time"])
+                results[oid][row_name] = {"seconds taken": time_taken, "predicted risk score": risk_score}
+                #not sure if using a threshold of 0.3 for a risk score is signficant or not but its something
+                if (time_taken <= 1.0 and risk_score <= 0.3) or (time_taken > 1.0 and risk_score > 0.3):
+                    good_ones += 1
+                total+=1
+            except KeyError:
+                print(f"row name is {row_name}")
+                print(f"Keyerror on db. tried to check {oid+row_name} for time and found nothing.. df = {df}")
         results[oid]["OID stats"] = {"total predictions": total, "predictions where risk score was > 0.3 and seconds taken was > 1 or vice versa": good_ones}
     return results
     
@@ -450,14 +551,18 @@ def get_detailed_call_graph(args:list[str],opts:Opts):
     if not opts["data-path"]:
         logger.error("Missing data path")
         return False
-    res = api.local_retrieve("angr_function_time_model","model")
+    #res = api.local_retrieve("angr_function_time_model","model")
+    res = api.local_retrieve("angr_function_time_model","lifelines_model")
     if res is None:
         logger.error("No existing trained model!")
         return False
-    model : xgboost.XGBModel = res
+    #model : xgboost.XGBModel = res
+    model = res
     opts["timeout"] = 0
+    opts["skip-main"] = False
     results = {}
-    for oid in args:
+    valid, invalid = api.valid_oids(args)
+    for oid in api.expand_oids(valid):
         call_graph : nx.DiGraph[int] | None = api.get_field("call_graph",oid,oid,opts)
         if call_graph is None:
             logger.error(f"Couldn't get call graph for oid {oid}")
@@ -466,17 +571,25 @@ def get_detailed_call_graph(args:list[str],opts:Opts):
         if not g_d:
             logger.error(f"Error with ghidra disassembly for {oid}!")
             return False
+        datastore_filesystem.delete_oid_data("angr_function_time_analyzer",oid)
         df : pd.DataFrame | None = api.get_field("angr_function_time_analyzer", oid, "dataframe", opts)
         if df is None:
             logger.error(f"Couldn't get dataframe for oid {oid}")
             return False
         #reorder the dataframe to match what the model expects
-        expected_features = model.feature_names
+        data : tuple[pd.DataFrame, pd.DataFrame] | None = api.local_retrieve("angr_function_time_model","lifelines_data")
+        if data is None:
+            logger.error("Couldn't load training or testing data")
+            return False
+        train_df, test_df = data
+        expected_features = [col for col in train_df.columns if col != "event"]
         df = df[expected_features]
-        idp = df[[column for column in df.columns if column != "time" and column != "bin int" and column != "chat gpt generated function's estimated seconds"]]
+        #idp = df[[column for column in df.columns if column != "time" and column != "bin int" and column != "chat gpt generated function's estimated seconds"]]
+        idp = df[[column for column in df.columns if column != "bin int" and column != "chat gpt generated function's estimated seconds" and column != "num states"]]
         #have model predict the function risk per function
-        dmatrix = xgboost.DMatrix(idp)
-        oid_scores = model.predict(dmatrix)
+        #dmatrix = xgboost.DMatrix(idp)
+        #oid_scores = model.predict(dmatrix)
+        oid_scores = model.predict_partial_hazard(idp)
         if not len(oid_scores):
             logger.warning(f"Didn't get any risk scores for oid {oid}")
             continue
@@ -488,7 +601,6 @@ def get_detailed_call_graph(args:list[str],opts:Opts):
         labels = {}
         for fun in g_d:
             f_name = g_d[fun]["name"]
-            labels[fun] = f"{fun}: {f_name}"
             if g_d[fun]["blocks"] == [] or f_name in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0", "__libc_start_main", "malloc", "puts",
                       #functions excluded by x86 sok
                       "__x86.get_pc_thunk.bx", # glibc in i386 function
@@ -507,7 +619,11 @@ def get_detailed_call_graph(args:list[str],opts:Opts):
                "lstat64",
                "fstatat64",
                "__fstat"]:
+                #remove these nodes from the call graph
+                if call_graph.has_node(fun):
+                    call_graph.remove_node(fun)
                 continue
+            labels[fun] = f"{fun}: {f_name}"
             f_names.append(f_name)
             if f_name in cols:
                 risk_score = float(scores_with_function_names[f_name])
@@ -531,8 +647,8 @@ def get_detailed_call_graph(args:list[str],opts:Opts):
             else:
                 node_colors.append(default_color)
         plt.figure(figsize=(7,7))
-        pos = nx.kamada_kawai_layout(call_graph)#,seed=42,iterations=3*len(g_d),k=0.7)
-        nx.draw(call_graph,pos,with_labels=True,labels=labels,node_color=node_colors,edge_color="gray",node_size=800,font_weight="bold")
+        pos = nx.spring_layout(call_graph,seed=42,iterations=3*len(g_d),k=0.7)
+        nx.draw(call_graph,pos,with_labels=True,labels=labels,node_color=node_colors,edge_color="gray",node_size=2000,font_weight="bold")
         sm = plt.cm.ScalarMappable(cmap=cmap,norm=norm)
         sm.set_array([])
         ax = plt.gca()
@@ -584,10 +700,11 @@ def average_functions_per_oid(args:list[str],opts:Opts):
     args = api.expand_oids(valid)
     total_functions = 0
     oids_without_functions = 0
-    for oid in args:
+    valid, invalid = api.valid_oids(args)
+    for oid in api.expand_oids(valid):
         functions : dict[str,dict[str,int|float|bool|tuple[float,str]]] | None = api.retrieve("angr_function_time", oid, {"timeout": timeout})
-        if not functions:
-            logger.error("Failed to extract disassembly")
+        if functions is None:
+            logger.error(f"Failed to get angr function time for oid {oid}")
             return False
         if show_all:
             results[oid] = len(functions)
@@ -600,6 +717,25 @@ def average_functions_per_oid(args:list[str],opts:Opts):
     results["oids without functions"] = oids_without_functions
     return results
 
+def count_binaries_that_have_functions(args: list[str], opts: Opts):
+    results = {"total binaries": 0, "binaries that have function times predicted": 0, "binaries that don't have function times predicted": 0, "binaries that have function times predicted that aren't just main": 0}
+    valid, invalid = api.valid_oids(args)
+    for oid in api.expand_oids(valid):
+        res : dict[str,AngrFunctionTime] | None = api.retrieve("angr_function_time",oid,opts)
+        if res is None:
+            logger.error(f"Couldn't get angr function time for oid {oid}")
+            return False
+        results["total binaries"] += 1
+        #check if we have at least a result in the angr function time that isn't just main
+        if len(res) > 0 and "main" in res:
+            results["binaries that have function times predicted"] += 1
+            if len(res) > 1:
+                results["binaries that have function times predicted that aren't just main"] += 1
+        else:
+            results["binaries that don't have function times predicted"] += 1
+    return results
+    
+
 def identify_contender_for_case_study(args: list[str], opts: Opts):
     if "timeout" in opts:
         timeout = opts["timeout"]
@@ -611,7 +747,8 @@ def identify_contender_for_case_study(args: list[str], opts: Opts):
         logger.error("Couldn't get valid OIDs")
         return False
     args = api.expand_oids(valid)
-    for oid in args:
+    valid, invalid = api.valid_oids(args)
+    for oid in api.expand_oids(valid):
         functions : dict[str,AngrFunctionTime] | None = api.retrieve("angr_function_time", oid, {"timeout": timeout})
         if not functions:
             logger.error(f"couldn't get angr function time results for oid {oid}")
@@ -637,7 +774,8 @@ def identify_contender_for_case_study(args: list[str], opts: Opts):
         return {"candidate oid": oid , "candidate function": candidate_function, "angr_function_time_results": functions, "candidate results": functions[candidate_function]}
     logger.info(f"Couldn't find a candidate that was the one and only function in the binary that timed out without any other functions timing out or having an error")
     logger.info("broadening the search to allow for functions that stopped early...")
-    for oid in args:
+    valid, invalid = api.valid_oids(args)
+    for oid in api.expand_oids(valid):
         functions : dict[str,AngrFunctionTime] | None = api.retrieve("angr_function_time", oid, {"timeout": timeout})
         if not functions:
             logger.error(f"couldn't get angr function time results for oid {oid}")
@@ -663,7 +801,8 @@ def identify_contender_for_case_study(args: list[str], opts: Opts):
         return {"candidate oid": oid , "candidate function": candidate_function, "angr_function_time_results": functions, "candidate results": functions[candidate_function]}
     logger.info(f"Still couldn't find a good candidate...")
     logger.info("broadening the search to allow for functions that stopped early AND binaries that have multiple candidates...")
-    for oid in args:
+    valid, invalid = api.valid_oids(args)
+    for oid in api.expand_oids(valid):
         functions : dict[str,AngrFunctionTime] | None = api.retrieve("angr_function_time", oid, {"timeout": timeout})
         if not functions:
             logger.error(f"couldn't get angr function time results for oid {oid}")
@@ -683,4 +822,4 @@ def identify_contender_for_case_study(args: list[str], opts: Opts):
         return {"candidate oid": oid , "candidate function": candidate_function, "angr_function_time_results": functions, "candidate results": functions[candidate_function]}
 
 #plugin's exports to the shell (functions the shell can use)
-exports = [train_xgboost,train_dbscan_cluster, test_xgboost,evaluate,identify_outliers,identify_outliers2,get_accuracy,correlations,average_functions_per_oid,identify_contender_for_case_study,get_detailed_call_graph]
+exports = [train_xgboost,train_dbscan_cluster, test_xgboost,evaluate,identify_outliers,identify_outliers2,get_accuracy,correlations,average_functions_per_oid,identify_contender_for_case_study,get_detailed_call_graph,count_binaries_that_have_functions,train_lifelines,test_lifelines]

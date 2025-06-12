@@ -308,6 +308,7 @@ def output_data(outpath, dataframe : pd.DataFrame,binkeys) -> bool:
         #     #fig.suptitle("angr Bin per Metrinome Asymptotic Path Complexity Level")
         #     plt.savefig(outpath / "path_complexity_pie_plots.png",dpi=1200)
         #     plt.clf()
+    plt.close("all")
     return True
 
 def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> pd.DataFrame:
@@ -406,4 +407,5 @@ def analyze_dataframe(outpath,dataframe : pd.DataFrame,opcodes) -> pd.DataFrame:
     #write out the csv we're training with
     with open(outpath / "training_input.csv","w") as f:
         df.to_csv(f)
+    plt.close("all")
     return df

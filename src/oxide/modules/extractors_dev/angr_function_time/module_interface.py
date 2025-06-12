@@ -30,6 +30,7 @@ def process(oid, opts):
     if not function_extract:
         logger.error(f"Error with function extract for {oid}")
         return False
+    f_dict["skipped functions"] = {}
     for fun in g_d:
         f_name = g_d[fun]["name"]        
         signature = g_d[fun]["signature"]
@@ -40,6 +41,10 @@ def process(oid, opts):
         #and if we don't know the signature properly its best to move on
         if "undefined" in signature or "FILE" in signature:
             prog.tick()
+            if "undefined" in signature:
+                f_dict["skipped functions"][f_name] = "due to undefined signature"
+            else:
+                f_dict["skipped functions"][f_name] = "due to FILE in signature"
             continue
         #skipping _start as it doesn't ret and will run until it times out
         #also skipping other libc things and things that don't have any basic blocks
@@ -62,6 +67,12 @@ def process(oid, opts):
                "fstatat64",
                "__fstat"] or not function_extract[f_name]["instructions"]:
             prog.tick()
+            if g_d[fun]["blocks"] == []:
+                f_dict["skipped functions"][f_name] = "due to empty blocks"
+            elif not function_extract[f_name]["instructions"]:
+                f_dict["skipped functions"][f_name] = "due to missing instructions"
+            else:
+                f_dict["skipped functions"][f_name] = "due to being suspected library call"
             continue
         if f_name in function_summary and type(fun) is int:
             f_dict[f_name] = {}
@@ -110,6 +121,7 @@ def process(oid, opts):
                         f_dict[f_name]["angr seconds"] = "angr error"
         elif type(fun) is not int:
             #sometimes the function comes out as a string
+            f_dict["skipped functions"][fun] = "wasn't an int?"
             prog.tick()
             continue
         prog.tick()
