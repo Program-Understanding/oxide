@@ -169,13 +169,12 @@ def _sort_lines(extract_lines: str) -> Tuple[list, list, list]:
         try:
             space_index = line.index(' ')
             json.loads(line[space_index + 1:])
-        except ValueError:
-            continue
         except json.decoder.JSONDecodeError:
             logger.error("json decoding error %s", line[space_index + 1:])
             # ensure line can be decoded
             continue
-
+        except ValueError:
+            continue
         if len(line) > 6 and line[0:7] == "RESULTM":
             # meta information such as load address
             try:

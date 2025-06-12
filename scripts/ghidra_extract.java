@@ -127,8 +127,11 @@ public class ghidra_extract extends GhidraScript {
 
         // loop through program functions
         Function function = getFirstFunction();
-
-        while (function != null) {
+	//potential different way to grab functions
+	//FunctionIterator funcIter = currentProgram.getFunctionManager().getFunctions(true);
+        //while (funcIter.hasNext()) {
+	    //Function function = funcIter.next();
+	while (function != null) {
             // Fill out parameter information
             String Parms = "[";
 
@@ -137,7 +140,13 @@ public class ghidra_extract extends GhidraScript {
             for (Parameter var : function.getParameters()) {
                 if (first == false) { Parms += ", "; }
                 first = false;
-                Parms += "\"" + var.getFormalDataType() + "\"";
+                Parms += "\"" + var.getFormalDataType().toString().replace("\\", "\\\\")       // escape backslashes
+		    .replace("\"", "\\\"")       // escape quotes
+		    .replace("\n", " ")          // remove newlines
+		    .replace("\r", " ")          // remove carriage returns
+		    .replace("{", "(")           // soften braces
+		    .replace("}", ")")           // soften braces
+		    + "\"";
             }
 
             Parms += "]";
@@ -170,7 +179,7 @@ public class ghidra_extract extends GhidraScript {
                 "\"params\": " + Parms + ","                         + //list of parameters, iterator?
                 "\"retType\": \"" +function.getReturn() + "\","      +  // return type of function
                 "\"signature\": \"" +function.getSignature() + "\"," +
-                "\"returning\": \"" + !function.hasNoReturn() + "\"}" + "\n\n");
+                "\"returning\": " + !function.hasNoReturn() + "}" + "\n\n");
 
             function = getFunctionAfter(function);
         }
