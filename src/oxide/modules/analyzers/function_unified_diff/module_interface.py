@@ -59,17 +59,17 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
     oid_list = api.expand_oids(oid_list)
     results = {}
-    oid = oid_list[0]
-    func = opts['function']
-    func_insts = retrieve_function_instructions(oid, func)
+    target_oid = oid_list[0]
+    target_func = opts['target']
+    target_func_insts = retrieve_function_instructions(target_oid, target_func)
 
     baseline_oid = oid_list[1]
-    baseline_func = opts['baseline_function']
+    baseline_func = opts['baseline']
     baseline_func_insts = retrieve_function_instructions(baseline_oid, baseline_func)
     
-    if func_insts and baseline_func_insts:
-        max_context = max(len(baseline_func_insts), len(func_insts))
-        u_diff = unified_diff(baseline_func_insts, func_insts, n=max_context)
+    if target_func_insts and baseline_func_insts:
+        max_context = max(len(baseline_func_insts), len(target_func_insts))
+        u_diff = unified_diff(baseline_func_insts, target_func_insts, n=max_context)
     else:
         u_diff = None
     
@@ -88,7 +88,6 @@ def retrieve_function_instructions(file, func):
     Retrieve function instructions for a specific function by its name.
     """
     function_data = api.retrieve('function_representations', file, {'lift_addrs': True})
-    for func_id, details in function_data.items():
-        if details.get('name') == func:
-            return details.get('modified_fun_instructions', None)
+    if func in function_data:
+        return function_data[func].get('modified_fun_instructions', None)
     return None

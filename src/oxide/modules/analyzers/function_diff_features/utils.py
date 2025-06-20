@@ -6,19 +6,18 @@ def retrieve_function_instructions(file, func):
     Retrieve function instructions for a specific function by its name.
     """
     function_data = api.retrieve('function_representations', file, {'lift_addrs': True})
-    for func_id, details in function_data.items():
-        if details.get('name') == func:
-            return details.get('modified_fun_instructions', None)
+    if func in function_data:
+        return function_data[func].get('modified_fun_instructions', None)
     return None
 
-def diff_features(target_file, target_func_name, target_func_insts, baseline_file, baseline_func_name, baseline_func_insts):
+def diff_features(target_file, target_function, target_func_insts, baseline_file, baseline_func, baseline_func_insts):
     added_instr = 0
     removed_instr = 0
     basic_blocks = 0
     func_calls = 0
 
-    num_target_func_calls, num_target_func_bb = _get_bb(target_file, target_func_name)
-    num_baseline_func_calls, num_baseline_func_bb = _get_bb(baseline_file, baseline_func_name)
+    num_target_func_calls, num_target_func_bb = _get_bb(target_file, target_function)
+    num_baseline_func_calls, num_baseline_func_bb = _get_bb(baseline_file, baseline_func)
     
     basic_blocks = num_target_func_bb - num_baseline_func_bb
     func_calls = num_target_func_calls - num_baseline_func_calls
@@ -28,12 +27,11 @@ def diff_features(target_file, target_func_name, target_func_insts, baseline_fil
 
 def _get_bb(file, func):
     file_disasm = api.retrieve('ghidra_disasm', file)
-    for func_addr in file_disasm['functions']:
-        if file_disasm['functions'][func_addr]['name'] == func:
-            call_mappings = api.get_field("call_mapping", file, func_addr)
-            function_calls = len(call_mappings['calls_to'])
-            num_bb = len(file_disasm['functions'][func_addr]['blocks'])
-            return function_calls, num_bb
+    if func in file_disasm['functions']:
+        call_mappings = api.get_field("function_call_targets", file, func)
+        function_calls = len(call_mappings)
+        num_bb = len(file_disasm['functions'][func]['blocks'])
+        return function_calls, num_bb
     return 0, 0
 
 def parse_instruction(line):
@@ -59,7 +57,6 @@ def _instruction_changes(func_insts, ref_func_insts):
     # High-level counters
     total_lines_added = 0
     total_lines_removed = 0
-    total_lines_modified = 0
 
     # Detailed counters for the "modified" lines
     total_opcode_modifications = 0

@@ -1,17 +1,13 @@
-DESC = " This module is a template for analyzer, new analyzers can copy this format"
+DESC = ""
 NAME = "pair_functions"
 
-# imports
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple, Set, Optional
 
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.optimize import linear_sum_assignment
-from typing import List, Dict
-import numpy as np
 from sklearn.preprocessing import RobustScaler, normalize
-
 
 from oxide.core import api
 
@@ -26,228 +22,397 @@ def documentation() -> Dict[str, Any]:
         set - Whether this module accepts collections
         atomic - TBD
     """
-    return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False,
-            "atomic": True}
+    return {
+        "description": DESC,
+        "opts_doc": opts_doc,
+        "private": False,
+        "set": False,
+        "atomic": True
+    }
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
-    """ Entry point to compare functions between two files based on ACFG similarity. """
+    """
+    Entry point to compare functions between two files.
+    Returns a dict with five buckets:
+      - matched_funcs
+      - lifted_matched_funcs
+      - modified_funcs
+      - unmatched_baseline_funcs
+      - unmatched_target_funcs
+
+    Each bucket is itself a dict whose keys are (baseline_addr, target_addr),
+    and whose values are dicts containing similarity, func_addr, func_name, and file
+    for both baseline and target (None where unmatched).
+    """
     logger.debug("process()")
 
     oid_list = api.expand_oids(oid_list)
+    baseline_file, target_file = oid_list[0], oid_list[1]
 
-    result = {}
+    # Step A: Retrieve function representations
+    funcs_baseline      = retrieve_funcs(baseline_file, lift_addrs=False)
+    funcs_target        = retrieve_funcs(target_file,   lift_addrs=False)
+    funcs_baseline_lift = retrieve_funcs(baseline_file, lift_addrs=True)
+    funcs_target_lift   = retrieve_funcs(target_file,   lift_addrs=True)
 
-    matched_funcs = {}
-    matched_A = []
-    matched_B = []
+    acfg_baseline = api.retrieve("acfg", baseline_file) or {}
+    acfg_target   = api.retrieve("acfg",   target_file)   or {}
 
-    lifted_matched_funcs = {}
-    lifted_matched_A = []
-    lifted_matched_B = []
+    # Step B: Unique-hash matching (no lift)
+    matched_funcs, rem_b0, rem_t0 = unique_hash_match(
+        baseline_file, funcs_baseline,
+        target_file,   funcs_target
+    )
 
-    modified_funcs = {}
-    unmatched_funcs = {}
-    unmatched_baseline_funcs = {}
-
-    # Retrieve ACFGs for both files
-    fileA = oid_list[0]
-    fileA_acfg = api.retrieve("acfg", fileA)
-    if fileA_acfg is None:
-        fileA_acfg = {}
-
-    fileB = oid_list[1]
-    fileB_acfg = api.retrieve("acfg", fileB)
-    if fileB_acfg is None:
-        fileB_acfg = {}
-
-    A_unique_funcs = get_unique_functions(fileA)
-    B_unique_funcs = get_unique_functions(fileB)
-
-    A_unique_lifted_funcs = get_unique_lifted_functions(fileA)
-    B_unique_lifted_funcs = get_unique_lifted_functions(fileB)
-
-    if A_unique_funcs and B_unique_funcs:
-        matched_funcs, matched_A, matched_B = pair_matched_functions(fileA, A_unique_funcs, fileB, B_unique_funcs)
-
-    for a in matched_A:
-        if a in A_unique_lifted_funcs:
-            del A_unique_lifted_funcs[a]
-    for b in matched_B:
-        if b in B_unique_lifted_funcs:
-            del B_unique_lifted_funcs[b]
-
-    if A_unique_lifted_funcs and B_unique_lifted_funcs:
-        lifted_matched_funcs, lifted_matched_A, lifted_matched_B = pair_matched_functions(fileA, A_unique_lifted_funcs, fileB, B_unique_lifted_funcs)
-
-    for i in list(fileA_acfg):
-        if i not in A_unique_lifted_funcs or i in lifted_matched_A or i in matched_A:
-            del fileA_acfg[i]
-
-    for i in list(fileB_acfg):
-        if i not in B_unique_lifted_funcs or i in lifted_matched_B or i in matched_B:
-            del fileB_acfg[i]
-
-    if len(fileA_acfg) > 0 and len(fileB_acfg) > 0:
-        modified_funcs, unmatched_funcs, unmatched_baseline_funcs = pair_modified_functions(fileA, fileA_acfg, fileB, fileB_acfg)
-
-    result = {
-        'matched_funcs': matched_funcs,
-        'lifted_matched_funcs': lifted_matched_funcs,
-        'modified_funcs': modified_funcs,
-        'unmatched_funcs': unmatched_funcs,
-        'unmatched_baseline_funcs': unmatched_baseline_funcs
+    # Step C: Lifted-hash matching (only on leftovers from Step B)
+    baseline_lift_candidates = {
+        addr: funcs_baseline_lift[addr]
+        for addr in rem_b0
+        if addr in funcs_baseline_lift
+    }
+    target_lift_candidates = {
+        addr: funcs_target_lift[addr]
+        for addr in rem_t0
+        if addr in funcs_target_lift
     }
 
-    return result
+    lifted_matched_funcs, rem_b1, rem_t1 = lifted_hash_match(
+        baseline_file, baseline_lift_candidates,
+        target_file,   target_lift_candidates
+    )
 
-def get_unique_lifted_functions(file):
-    unique_lifted_funcs = {}
+    # Step D: ACFG matching on the addresses still remaining after lifted-match
+    matched_baseline_lift_addrs = {b for (b, _) in lifted_matched_funcs.keys()}
+    matched_target_lift_addrs   = {t for (_, t) in lifted_matched_funcs.keys()}
 
-    # Retrieve functions from fileA and group by hash.
-    lifted_funcs = api.retrieve("function_representations", file, {"lift_addrs": True})
-    lifted_func_hashes = {}
+    still_rem_b = rem_b0 - matched_baseline_lift_addrs
+    still_rem_t = rem_t0 - matched_target_lift_addrs
 
-    if lifted_funcs is None: return None
+    modified_funcs, unmatched_baseline_funcs, unmatched_target_funcs = acfg_match(
+        baseline_file,          acfg_baseline,        still_rem_b,
+        funcs_baseline_lift,
+        target_file,            acfg_target,          still_rem_t,
+        funcs_target_lift
+    )
 
-    for f in lifted_funcs:
-        hash_val = lifted_funcs[f].get('hash')
-        if hash_val:
-            lifted_func_hashes.setdefault(hash_val, []).append((f, lifted_funcs[f]))
+    # Package final result
+    return {
+        "matched_funcs":            matched_funcs,
+        "lifted_matched_funcs":     lifted_matched_funcs,
+        "modified_funcs":           modified_funcs,
+        "unmatched_baseline_funcs": unmatched_baseline_funcs,
+        "unmatched_target_funcs":   unmatched_target_funcs
+    }
 
-    # Only keep unique hash entries for fileA.
-    for hash_val, lifted_funcs in lifted_func_hashes.items():
-        if len(lifted_funcs) == 1:
-            unique_lifted_funcs[lifted_funcs[0][0]] = lifted_funcs[0][1]
+def retrieve_funcs(file: str, lift_addrs: bool) -> Dict[str, Dict[str, Any]]:
+    """
+    Wrapper around api.retrieve("function_representations", …).
+    Returns a dict mapping func_addr (as str) → { 'hash': str, 'name': str, … }.
+    """
+    return api.retrieve("function_representations", file, {"lift_addrs": lift_addrs}) or {}
 
-    return unique_lifted_funcs
 
-def get_unique_functions(file):
-    unique_funcs = {}
+def unique_hash_match(
+    baseline_file: str,
+    baseline_funcs: Dict[str, Dict[str, Any]],
+    target_file:   str,
+    target_funcs:   Dict[str, Dict[str, Any]]
+) -> Tuple[
+        Dict[Tuple[str,str], Dict[str, Any]],
+        Set[str],  # remaining baseline addresses
+        Set[str]   # remaining target addresses
+    ]:
+    """
+    1) Group baseline_funcs by hash, keep only hashes that occur exactly once.
+    2) Group target_funcs by hash, keep only unique.
+    3) For each hash present in both with exactly one address each, match (b_addr, t_addr).
+       Build matched[(b_addr, t_addr)] = { … }
+    4) Return matched dict, plus sets of addresses that did NOT get matched.
+    """
+    # (a) Build hash → [baseline_addrs]
+    hash_to_baseline: Dict[str, List[str]] = {}
+    for addr, data in baseline_funcs.items():
+        h = data.get("hash")
+        if h is None:
+            continue
+        hash_to_baseline.setdefault(h, []).append(addr)
 
-    # Retrieve functions from fileA and group by hash.
-    funcs = api.retrieve("function_representations", file, {"lift_addrs": False})
-    func_hashes = {}
+    # (b) Build hash → [target_addrs]
+    hash_to_target: Dict[str, List[str]] = {}
+    for addr, data in target_funcs.items():
+        h = data.get("hash")
+        if h is None:
+            continue
+        hash_to_target.setdefault(h, []).append(addr)
 
-    if funcs is None: return None
+    matched: Dict[Tuple[str,str], Dict[str, Any]] = {}
+    matched_baseline: Set[str] = set()
+    matched_target:   Set[str] = set()
 
-    for f in funcs:
-        hash_val = funcs[f].get('hash')
-        if hash_val:
-            func_hashes.setdefault(hash_val, []).append((f, funcs[f]))
+    # (c) For each hash present in both with exactly one addr each, match them
+    for h, b_list in hash_to_baseline.items():
+        t_list = hash_to_target.get(h)
+        if not t_list or len(b_list) != 1 or len(t_list) != 1:
+            continue
+        b_addr = b_list[0]
+        t_addr = t_list[0]
+        matched[(b_addr, t_addr)] = {
+            "similarity": 1.0,
+            "baseline_file": baseline_file,
+            "baseline_func_addr": b_addr,
+            "baseline_func_name": baseline_funcs[b_addr].get("name"),
+            "target_file": target_file,
+            "target_func_addr": t_addr,
+            "target_func_name": target_funcs[t_addr].get("name")
+        }
+        matched_baseline.add(b_addr)
+        matched_target.add(t_addr)
 
-    # Only keep unique hash entries for fileA.
-    for hash_val, funcs in func_hashes.items():
-        if len(funcs) == 1:
-            unique_funcs[funcs[0][0]] = funcs[0][1]
+    # (d) Compute remaining (unmatched) addresses
+    rem_baseline = set(baseline_funcs.keys()) - matched_baseline
+    rem_target   = set(target_funcs.keys())   - matched_target
 
-    return unique_funcs
+    return matched, rem_baseline, rem_target
 
-def pair_matched_functions(fileA, A_unique_funcs, fileB, B_unique_funcs):
-    results = {}
-    matched_A = []
-    matched_B = []
 
-    B_hashes = {}
-    for func in B_unique_funcs:
-        if B_unique_funcs[func] is None:  # Ensure it's not None
-            continue  # Skip invalid entries
+def lifted_hash_match(
+    baseline_file: str,
+    baseline_funcs_lift: Dict[str, Dict[str, Any]],
+    target_file:   str,
+    target_funcs_lift:   Dict[str, Dict[str, Any]]
+) -> Tuple[
+        Dict[Tuple[str,str], Dict[str, Any]],
+        Set[str],  # remaining baseline addresses after lifted-match
+        Set[str]   # remaining target addresses after lifted-match
+    ]:
+    """
+    Same logic as unique_hash_match, but using lifted-address representations.
+    Matches any hash that is unique in both lifted sets.
+    """
+    hash_to_baseline: Dict[str, List[str]] = {}
+    for addr, data in baseline_funcs_lift.items():
+        h = data.get("hash")
+        if h is None:
+            continue
+        hash_to_baseline.setdefault(h, []).append(addr)
 
-        hash_val = B_unique_funcs[func].get('hash')  # Use .get() to avoid KeyError
-        if hash_val is not None:  # Ensure hash is not None
-            B_hashes[hash_val] = func
+    hash_to_target: Dict[str, List[str]] = {}
+    for addr, data in target_funcs_lift.items():
+        h = data.get("hash")
+        if h is None:
+            continue
+        hash_to_target.setdefault(h, []).append(addr)
 
-    # Pair functions only if the hash is unique in both files.
-    for func in A_unique_funcs:
-        if A_unique_funcs[func]['hash'] in B_hashes:
-            A_addr = func
-            A_data = A_unique_funcs[func]
-            B_addr = B_hashes[A_data['hash']]
-            B_data = B_unique_funcs[B_addr]
-            results[A_addr] = {
-                'func_name': A_data.get('name'),
-                'baseline_func_name': B_data.get('name'),
-                'similarity': 1,
-                'baseline_file': fileB
+    matched: Dict[Tuple[str,str], Dict[str, Any]] = {}
+    matched_baseline: Set[str] = set()
+    matched_target:   Set[str] = set()
+
+    for h, b_list in hash_to_baseline.items():
+        t_list = hash_to_target.get(h)
+        if not t_list or len(b_list) != 1 or len(t_list) != 1:
+            continue
+        b_addr = b_list[0]
+        t_addr = t_list[0]
+        matched[(b_addr, t_addr)] = {
+            "similarity": 1.0,
+            "baseline_file": baseline_file,
+            "baseline_func_addr": b_addr,
+            "baseline_func_name": baseline_funcs_lift[b_addr].get("name"),
+            "target_file": target_file,
+            "target_func_addr": t_addr,
+            "target_func_name": target_funcs_lift[t_addr].get("name")
+        }
+        matched_baseline.add(b_addr)
+        matched_target.add(t_addr)
+
+    rem_baseline = set(baseline_funcs_lift.keys()) - matched_baseline
+    rem_target   = set(target_funcs_lift.keys())   - matched_target
+
+    return matched, rem_baseline, rem_target
+
+
+def acfg_match(
+    baseline_file: str,
+    baseline_acfg: Dict[str, np.ndarray],
+    rem_baseline_addrs: Set[str],
+    funcs_baseline_lift: Dict[str, Dict[str, Any]],
+    target_file: str,
+    target_acfg:   Dict[str, np.ndarray],
+    rem_target_addrs: Set[str],
+    funcs_target_lift: Dict[str, Dict[str, Any]]
+) -> Tuple[
+    Dict[Tuple[str,str], Dict[str, Any]],
+    Dict[Tuple[Optional[str],Optional[str]], Dict[str, Any]],
+    Dict[Tuple[Optional[str],Optional[str]], Dict[str, Any]]
+]:
+    """
+    1) Build matrices only for the “remaining” baseline and target addresses.
+    2) If either side is empty, mark all from the other side as unmatched.
+    3) Otherwise, run:
+         - Convert remaining addresses to lists: addrsA, addrsB
+         - A_keys = tuple(str(addr) for addr in addrsA), A_matrix = np.vstack([baseline_acfg[a] for a in addrsA])
+         - B_keys = tuple(str(addr) for addr in addrsB), B_matrix = np.vstack([target_acfg[b] for b in addrsB])
+         - Normalize, cosine_similarity, pad to square, Hungarian.
+    4) For each assignment (i,j):
+         - If A_keys[i] or B_keys[j] is a DUMMY → unmatched entry.
+         - Else → modified_funcs[(b_addr, t_addr)] with sim = sim_matrix[i,j].
+    5) Anything in rem_baseline_addrs not matched → unmatched_baseline
+       Anything in rem_target_addrs not matched → unmatched_target
+    """
+    modified_funcs: Dict[Tuple[str,str], Dict[str, Any]] = {}
+    unmatched_baseline: Dict[Tuple[Optional[str],Optional[str]], Dict[str, Any]] = {}
+    unmatched_target:   Dict[Tuple[Optional[str],Optional[str]], Dict[str, Any]] = {}
+
+    # Step 1: Prepare lists of addresses (convert to strings for DUMMY checks)
+    addrsA = [addr for addr in rem_baseline_addrs if addr in baseline_acfg]
+    addrsB = [addr for addr in rem_target_addrs if addr in target_acfg]
+
+    # If either is empty, mark the other side's remaining as unmatched
+    if not addrsA or not addrsB:
+        for b_addr in addrsA:
+            b_name = funcs_baseline_lift.get(b_addr, {}).get("name")
+            key = (b_addr, None)
+            unmatched_baseline[key] = {
+                "similarity": None,
+                "baseline_file": baseline_file,
+                "baseline_func_addr": b_addr,
+                "baseline_func_name": b_name,
+                "target_file": None,
+                "target_func_addr": None,
+                "target_func_name": None
             }
-            matched_A.append(A_addr)
-            matched_B.append(B_addr)
-    return results, matched_A, matched_B
+        for t_addr in addrsB:
+            t_name = funcs_target_lift.get(t_addr, {}).get("name")
+            key = (None, t_addr)
+            unmatched_target[key] = {
+                "similarity": None,
+                "baseline_file": None,
+                "baseline_func_addr": None,
+                "baseline_func_name": None,
+                "target_file": target_file,
+                "target_func_addr": t_addr,
+                "target_func_name": t_name
+            }
+        return modified_funcs, unmatched_baseline, unmatched_target
 
-def pair_modified_functions(fileA, fileA_vectors, fileB, fileB_vectors):
-    """
-    Matches functions from fileA to fileB using TLSH and cosine similarity with enhanced normalization,
-    dynamic thresholding applied **after Hungarian matching**, and backup KNN matching.
-    Handles files with different numbers of functions by explicitly tracking additions and removals.
-    """
+    # Step 2: Build NumPy matrices
+    A_mat = np.vstack([baseline_acfg[addr] for addr in addrsA])
+    B_mat = np.vstack([target_acfg[addr]   for addr in addrsB])
 
-    paired_functions = {}
-
-    # Retrieve function hashes
-    A_funcs = api.retrieve("function_representations", fileA, {"lift_addrs": True}) or {}
-    B_funcs = api.retrieve("function_representations", fileB, {"lift_addrs": True}) or {}
-
-    # Ensure both files have function vectors
-    if not fileA_vectors or not fileB_vectors:
-        return {}, A_funcs, B_funcs  # If no vectors, consider all as added/removed
-
-    # Convert function vectors to matrices for fast computation
-    A_keys, A_matrix = zip(*fileA_vectors.items())
-    B_keys, B_matrix = zip(*fileB_vectors.items())
-
-    # Convert lists into NumPy arrays
-    A_matrix = np.vstack(A_matrix)
-    B_matrix = np.vstack(B_matrix)
-
-    # Step 1: Normalize Vectors
+    # Normalize
     scaler = RobustScaler()
-    A_matrix = scaler.fit_transform(A_matrix)
-    B_matrix = scaler.fit_transform(B_matrix)
+    A_norm = normalize(scaler.fit_transform(A_mat), norm="l2")
+    B_norm = normalize(scaler.fit_transform(B_mat), norm="l2")
 
-    A_matrix = normalize(A_matrix, norm="l2")
-    B_matrix = normalize(B_matrix, norm="l2")
-
-    # Step 2: Compute Similarity Matrix
-    sim_matrix = cosine_similarity(A_matrix, B_matrix)
-
-    # Step 3: Handle Unequal List Sizes (Padding)
-    len_A, len_B = len(A_keys), len(B_keys)
+    sim_matrix = cosine_similarity(A_norm, B_norm)
+    len_A, len_B = len(addrsA), len(addrsB)
     max_size = max(len_A, len_B)
 
+    # Step 3: Pad with "-1" rows/columns if needed, and build keys
+    A_keys = tuple(str(addr) for addr in addrsA)
+    B_keys = tuple(str(addr) for addr in addrsB)
+
     if len_A < max_size:
-        padding = np.full((max_size - len_A, len_B), -1)  # High penalty for missing rows
-        sim_matrix = np.vstack([sim_matrix, padding])
-        A_keys += tuple(f"DUMMY_A_{i}" for i in range(max_size - len_A))
-
+        pad_rows = max_size - len_A
+        sim_matrix = np.vstack([sim_matrix, np.full((pad_rows, len_B), -1.0)])
+        A_keys = A_keys + tuple(f"DUMMY_A_{i}" for i in range(pad_rows))
     if len_B < max_size:
-        padding = np.full((max_size, max_size - len_B), -1)  # High penalty for missing columns
-        sim_matrix = np.hstack([sim_matrix, padding])
-        B_keys += tuple(f"DUMMY_B_{i}" for i in range(max_size - len_B))
+        pad_cols = max_size - len_B
+        sim_matrix = np.hstack([sim_matrix, np.full((max_size, pad_cols), -1.0)])
+        B_keys = B_keys + tuple(f"DUMMY_B_{i}" for i in range(pad_cols))
 
-    # Step 4: Convert to Cost Matrix
-    cost_matrix = np.where(sim_matrix >= 0, 1 - sim_matrix, 9999)  # Ensure high penalties for unmatched cases
-
-    # Step 5: Apply Hungarian Matching
+    cost_matrix = np.where(sim_matrix >= 0, 1.0 - sim_matrix, 9999.0)
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
-    unmacthed_A = {}
-    unmatched_B = {}
+    matched_A: Set[str] = set()
+    matched_B: Set[str] = set()
 
-    # Step 7: Filter Matches
+    # Step 4: Process each assignment
     for i, j in zip(row_ind, col_ind):
-        funcA, funcB = str(A_keys[i]), str(B_keys[j])  # Ensure they are strings
-        similarity = sim_matrix[i, j]
+        keyA = A_keys[i]
+        keyB = B_keys[j]
 
-        if "DUMMY" not in funcA and "DUMMY" not in funcB:
-            paired_functions[funcA] = {
-                "matched_function": funcB,
-                "similarity": similarity,
-                "func_name": A_funcs.get(int(funcA), {}).get('name', 'Unknown'),
-                "baseline_file": fileB,
-                "baseline_func_name": B_funcs.get(int(funcB), {}).get('name', 'Unknown')
+        # Both DUMMY: skip
+        if keyA.startswith("DUMMY_A_") and keyB.startswith("DUMMY_B_"):
+            continue
+
+        # keyA is DUMMY → unmatched target
+        if keyA.startswith("DUMMY_A_"):
+            # Map keyB back to original address
+            t_addr = addrsB[j]
+            t_name = funcs_target_lift.get(t_addr, {}).get("name")
+            unmatched_target[(None, t_addr)] = {
+                "similarity": None,
+                "baseline_file": None,
+                "baseline_func_addr": None,
+                "baseline_func_name": None,
+                "target_file": target_file,
+                "target_func_addr": t_addr,
+                "target_func_name": t_name
             }
-        elif "DUMMY" not in funcA:
-            unmacthed_A[funcA] = A_funcs.get(int(funcA), {}).get('name', 'Unknown')
-        elif "DUMMY" not in funcB:
-            unmatched_B[funcB] = B_funcs.get(int(funcB), {}).get('name', 'Unknown')
+            matched_B.add(t_addr)
+            continue
 
-    return paired_functions, unmacthed_A, unmatched_B
+        # keyB is DUMMY → unmatched baseline
+        if keyB.startswith("DUMMY_B_"):
+            b_addr = addrsA[i]
+            b_name = funcs_baseline_lift.get(b_addr, {}).get("name")
+            unmatched_baseline[(b_addr, None)] = {
+                "similarity": None,
+                "baseline_file": baseline_file,
+                "baseline_func_addr": b_addr,
+                "baseline_func_name": b_name,
+                "target_file": None,
+                "target_func_addr": None,
+                "target_func_name": None
+            }
+            matched_A.add(b_addr)
+            continue
+
+        # Real match: both keys are actual addresses (as strings)
+        b_addr = addrsA[i]
+        t_addr = addrsB[j]
+        sim = float(sim_matrix[i, j])
+        matched_A.add(b_addr)
+        matched_B.add(t_addr)
+        b_name = funcs_baseline_lift.get(b_addr, {}).get("name")
+        t_name = funcs_target_lift.get(t_addr, {}).get("name")
+        modified_funcs[(b_addr, t_addr)] = {
+            "similarity": sim,
+            "baseline_file": baseline_file,
+            "baseline_func_addr": b_addr,
+            "baseline_func_name": b_name,
+            "target_file": target_file,
+            "target_func_addr": t_addr,
+            "target_func_name": t_name
+        }
+
+    # Step 5: Any remaining in addrsA not in matched_A → unmatched baseline
+    for b_addr in addrsA:
+        if b_addr not in matched_A:
+            b_name = funcs_baseline_lift.get(b_addr, {}).get("name")
+            unmatched_baseline[(b_addr, None)] = {
+                "similarity": None,
+                "baseline_file": baseline_file,
+                "baseline_func_addr": b_addr,
+                "baseline_func_name": b_name,
+                "target_file": None,
+                "target_func_addr": None,
+                "target_func_name": None
+            }
+
+    # Any remaining in addrsB not in matched_B → unmatched target
+    for t_addr in addrsB:
+        if t_addr not in matched_B:
+            t_name = funcs_target_lift.get(t_addr, {}).get("name")
+            unmatched_target[(None, t_addr)] = {
+                "similarity": None,
+                "baseline_file": None,
+                "baseline_func_addr": None,
+                "baseline_func_name": None,
+                "target_file": target_file,
+                "target_func_addr": t_addr,
+                "target_func_name": t_name
+            }
+
+    return modified_funcs, unmatched_baseline, unmatched_target

@@ -42,16 +42,17 @@ def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         logger.error("Expected exactly two OIDs: baseline and target, got %d", len(oid_list))
         return {}
 
-    baseline_oid, target_oid = oid_list
+    target_oid = oid_list[0]
+    baseline_oid = oid_list[1]
 
     try:
         baseline_export = get_or_create_binexport(baseline_oid)
         target_export = get_or_create_binexport(target_oid)
 
-        diff_results = run_bindiff(baseline_export, target_export, api.scratch_dir)
+        diff_results = run_bindiff(target_oid, target_export, baseline_oid, baseline_export, api.scratch_dir)
         return diff_results or {}
     except Exception:
-        logger.exception("BinDiff execution failed for OIDs %s and %s", baseline_oid, target_oid)
+        logger.exception("BinDiff execution failed for OIDs %s and %s", target_oid, baseline_oid)
         return {}
 
 def get_or_create_binexport(oid: str) -> str:
@@ -62,7 +63,7 @@ def get_or_create_binexport(oid: str) -> str:
     # Return cached export if exists
     if api.exists(NAME, oid):
         cached = api.get_field(NAME, oid, oid)
-        return write_temp_file(cached, descriptor=f"{NAME}_{oid}")
+        return api.tmp_file(f"{NAME}_{oid}", cached)
 
     # Generate via Ghidra
     ghidra_path = api.ghidra_path
@@ -92,8 +93,8 @@ def write_temp_file_for_oid(oid: str) -> str:
     if not data:
         raise ValueError(f"No data found for OID {oid}")
 
-    names = api.get_field("file_meta", oid, "names") or []
-    filename = names[-1] if names else oid
+    names = api.get_field("file_meta", oid, "names") or {}
+    filename = names.pop() if names else oid
     return write_temp_file(data, descriptor=filename)
 
 def cache_binexport(oid: str, path: str) -> None:

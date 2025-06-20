@@ -4,6 +4,13 @@ import re
 import logging
 from collections import Counter
 from typing import List, Dict, Tuple, Optional, Any
+import os
+
+try:
+    from rank_bm25 import BM25Okapi
+except ImportError:
+    BM25Okapi = None
+
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -46,196 +53,293 @@ def fuse_batch(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     prompt_path = opts.get('prompt_path')
     if not comp_path or not prompt_path:
         print("Error: 'comp_path' or 'prompt_path' not provided.")
-        return {'error': "Use 'comp_path' and 'prompt_path' to specify JSON file."}
-    print(f"Loading component map from {comp_path} and prompts from {prompt_path}...")
-    try:
-        comp_map = json.load(open(comp_path))
-        prompt_map = json.load(open(prompt_path ))
-    except Exception as e:
-        print(f"Failed to load JSON: {e}")
-        return {'error': f'Failed to load JSON: {e}'}
+        return {'error': "Use 'comp_path' and 'prompt_path' to specify JSON file or directory."}
 
-    per_collection: Dict[str, Any] = {}
-    total, sum_p1, sum_h2, sum_h5, sum_mrr = 0, 0.0, 0.0, 0.0, 0.0
-
-    # Iterate over each collection
-    for cid, golds in comp_map.items():
-        colname = api.get_colname_from_oid(cid)
-        print(f"\nProcessing collection '{colname}' (CID: {cid})...")
-        # resolve and filter executables
-        oids, _ = api.valid_oids([cid])
-        exes = filter_executables(api.expand_oids(oids))
-
-        batch_res = []
-        num_prompts = len(golds)
-        for idx, (comp, gold) in enumerate(golds.items()):
-            prompt = prompt_map[comp]
-            print(f"  Prompt {idx+1}/{num_prompts}: '{prompt[:50]}{'...' if len(prompt)>50 else ''}'")
-            out = search_prompt(exes, prompt, use_tags=opts.get('use_tags', True))
-            # compute rank
-            cands = out['results']['candidates']
-            ranks = [c['oid'] for c in cands]
-            try:
-                rank = ranks.index(gold) + 1
-            except ValueError:
-                rank = None
-            out.update({'rank': rank, 'gold': {'oid': gold, 'names': get_names(gold)}})
-            batch_res.append(out)
-
-            # accumulate
-            sum_p1 += int(rank == 1)
-            sum_h2 += int(rank and rank <= 2)
-            sum_h5 += int(rank and rank <= 5)
-            sum_mrr += (1.0 / rank) if rank else 0.0
-            total += 1
-
-        # per-collection metrics
-        n = len(batch_res)
-        metrics = {
-            'P@1':   sum(int(r['rank'] == 1) for r in batch_res)/n,
-            'Hit@2': sum(int(r['rank'] and r['rank'] <= 2) for r in batch_res)/n,
-            'Hit@5': sum(int(r['rank'] and r['rank'] <= 5) for r in batch_res)/n,
-            'MRR':   sum((1.0/r['rank']) for r in batch_res if r['rank'])/n
-        }
-        per_collection[colname] = {'batch': batch_res, 'metrics': metrics}
-        print(f"Finished '{colname}'. Metrics: P@1={metrics['P@1']:.3f}, Hit@2={metrics['Hit@2']:.3f}, Hit@5={metrics['Hit@5']:.3f}, MRR={metrics['MRR']:.3f}")
-        break
-
-    if total == 0:
-        print("No prompts tested; check JSON structure.")
-        return {'error': 'No prompts tested; check JSON structure.'}
-
-    global_metrics = {
-        'P@1':   sum_p1/total,
-        'Hit@2': sum_h2/total,
-        'Hit@5': sum_h5/total,
-        'MRR':   sum_mrr/total
-    }
-    print(f"\nGlobal metrics: P@1={global_metrics['P@1']:.3f}, Hit@2={global_metrics['Hit@2']:.3f}, Hit@5={global_metrics['Hit@5']:.3f}, MRR={global_metrics['MRR']:.3f}")
-
-    return {'per_collection': per_collection, 'global_metrics': global_metrics}
-
-def baseline_fuse_strings(args, opts) -> Dict[str, Any]:
-    """
-    Run batch search per collection using string-overlap between each prompt
-    and the strings contained in each executable.
-
-    Returns:
-      - per_collection: detailed results (including per-prompt ranks and candidate scores)
-      - global_metrics: average P@1, Hit@2, Hit@5, and MRR across all prompts
-    """
-    import json
-
-    # 1) load your nested JSON: { collection_cid: { prompt: gold_oid, … }, … }
-    comp_path = opts.get("comp_path")
-    if not comp_path:
-        return {"error": "use the comp_path arg to pass in a path to your JSON file"}
+    print(f"Loading component map from {comp_path}...")
     try:
         comp_map = json.load(open(comp_path))
     except Exception as e:
-        return {"error": f"Failed to load JSON: {e}"}
+        print(f"Failed to load component JSON: {e}")
+        return {'error': f'Failed to load component JSON: {e}'}
 
-    per_collection = {}
-    total_prompts = 0
-    sum_p1 = sum_h2 = sum_h5 = sum_mrr = 0.0
+    results = {}
 
-    # 2) iterate each firmware build (top-level key in JSON)
-    for sample_cid, gold_map in comp_map.items():
-        print(f"\n[INFO] Starting collection CID {sample_cid}")
-        # resolve OIDs for this build, then get its executable OIDs
-        sample_oids, _ = api.valid_oids([sample_cid])
-        exes, _ = separate_oids(api.expand_oids(sample_oids))
-        build_name = api.get_colname_from_oid(sample_cid)
+    # Handle directory of prompts
+    prompt_files = []
+    if os.path.isdir(prompt_path):
+        prompt_files = [os.path.join(prompt_path, f) for f in os.listdir(prompt_path) if f.endswith(".json")]
+    else:
+        prompt_files = [prompt_path]
 
-        # prepare per-prompt results
-        batch_results = []
-        p1 = h2 = h5 = mrr_sum = 0.0
-        prompts = list(gold_map.keys())
-        n_prompts = len(prompts)
+    for prompt_file in prompt_files:
+        print(f"\nProcessing prompt file: {prompt_file}")
+        try:
+            prompt_map = json.load(open(prompt_file))
+        except Exception as e:
+            print(f"  Failed to load prompt JSON: {e}")
+            results[os.path.basename(prompt_file)] = {'error': str(e)}
+            continue
 
-        for idx, prompt in enumerate(prompts, start=1):
-            print(f"  [INFO] Prompt {idx}/{n_prompts}: \"{prompt}\"")
-            # tokenize prompt (simple whitespace split)
-            prompt_tokens = set(prompt.split())
+        per_collection: Dict[str, Any] = {}
+        total, sum_p1, sum_h2, sum_h5, sum_mrr = 0, 0.0, 0.0, 0.0, 0.0
 
-            # score each exe by |prompt_tokens ∩ strings(exe)|
-            scores = {}
-            for exe_oid in exes:
-                strings = set((api.get_field("strings", exe_oid, exe_oid) or {}).values())
-                scores[exe_oid] = len(prompt_tokens & strings)
+        for cid, golds in comp_map.items():
+            colname = api.get_colname_from_oid(cid)
+            print(f"  Processing collection '{colname}' (CID: {cid})...")
+            oids, _ = api.valid_oids([cid])
+            exes = filter_executables(api.expand_oids(oids))
 
-            # rank by descending score
-            ranked_oids = sorted(scores, key=lambda oid: scores[oid], reverse=True)
+            batch_res = []
+            for idx, (comp, gold) in enumerate(golds.items()):
+                prompt = prompt_map.get(comp)
+                if prompt is None:
+                    print(f"    Skipping missing prompt for component: {comp}")
+                    continue
+                print(f"    Prompt {idx+1}/{len(golds)}: '{prompt[:50]}{'...' if len(prompt) > 50 else ''}'")
+                out = search_prompt(exes, prompt, use_tags=opts.get('use_tags', True))
 
-            # find the gold OID and compute rank
-            gold_oid = gold_map.get(prompt)
-            try:
-                rank = ranked_oids.index(gold_oid) + 1
-            except (ValueError, TypeError):
-                rank = None
+                cands = out['results']['candidates']
+                ranks = [c['oid'] for c in cands]
+                try:
+                    rank = ranks.index(gold) + 1
+                except ValueError:
+                    rank = None
+                out.update({'rank': rank, 'gold': {'oid': gold, 'names': get_names(gold)}})
+                batch_res.append(out)
 
-            # accumulate metrics
-            p1   += int(rank == 1)
-            h2   += int(rank and rank <= 2)
-            h5   += int(rank and rank <= 5)
-            if rank:
-                mrr_sum += 1.0 / rank
+                sum_p1 += int(rank == 1)
+                sum_h2 += int(rank and rank <= 2)
+                sum_h5 += int(rank and rank <= 5)
+                sum_mrr += (1.0 / rank) if rank else 0.0
+                total += 1
 
-            # build a little candidate list for this prompt
-            candidates = [
-                {
-                    "oid": oid,
-                    "score": scores[oid],
-                    "names": get_names(oid)
+            if batch_res:
+                n = len(batch_res)
+                metrics = {
+                    'P@1':   sum(int(r['rank'] == 1) for r in batch_res)/n,
+                    'Hit@2': sum(int(r['rank'] and r['rank'] <= 2) for r in batch_res)/n,
+                    'Hit@5': sum(int(r['rank'] and r['rank'] <= 5) for r in batch_res)/n,
+                    'MRR':   sum((1.0/r['rank']) for r in batch_res if r['rank'])/n
                 }
-                for oid in ranked_oids
-            ]
+                per_collection[colname] = {'batch': batch_res, 'metrics': metrics}
+                print(f"  Finished '{colname}'. Metrics: P@1={metrics['P@1']:.3f}, Hit@2={metrics['Hit@2']:.3f}, Hit@5={metrics['Hit@5']:.3f}, MRR={metrics['MRR']:.3f}")
 
-            batch_results.append({
-                "prompt": prompt,
-                "gold": {
-                    "oid": gold_oid,
-                    "names": get_names(gold_oid) if gold_oid else None
-                },
-                "rank": rank,
-                "candidates": candidates
-            })
-
-        # compute per-build metrics
-        n = len(prompts)
-        per_collection[build_name] = {
-            "metrics": {
-                "P@1":   p1   / n if n else 0.0,
-                "Hit@2": h2   / n if n else 0.0,
-                "Hit@5": h5   / n if n else 0.0,
-                "MRR":   mrr_sum / n if n else 0.0
+        if total == 0:
+            print("  No prompts tested for this file.")
+            results[os.path.basename(prompt_file)] = {'error': 'No prompts tested.'}
+        else:
+            global_metrics = {
+                'P@1':   sum_p1/total,
+                'Hit@2': sum_h2/total,
+                'Hit@5': sum_h5/total,
+                'MRR':   sum_mrr/total
             }
-        }
+            print(f"Global metrics for {os.path.basename(prompt_file)}: "
+                  f"P@1={global_metrics['P@1']:.3f}, Hit@2={global_metrics['Hit@2']:.3f}, "
+                  f"Hit@5={global_metrics['Hit@5']:.3f}, MRR={global_metrics['MRR']:.3f}")
+            results[os.path.basename(prompt_file)] = {'global_metrics': global_metrics}
 
-        # accumulate for global metrics
-        sum_p1  += p1
-        sum_h2  += h2
-        sum_h5  += h5
-        sum_mrr += mrr_sum
-        total_prompts += n
+    return results
 
-    if total_prompts == 0:
-        return {"error": "No prompts tested; check your JSON structure."}
+def baseline_fuse_strings(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run batch search per collection using string-overlap ranking,
+    returning per-file global metrics if prompt_path is a directory.
+    """
+    comp_path = opts.get("comp_path")
+    prompt_path = opts.get("prompt_path")
+    if not comp_path or not prompt_path:
+        print("Error: 'comp_path' or 'prompt_path' not provided.")
+        return {"error": "Use 'comp_path' and 'prompt_path' to specify JSON files."}
 
-    # 3) compute global averages
-    global_metrics = {
-        "P@1":   sum_p1  / total_prompts,
-        "Hit@2": sum_h2  / total_prompts,
-        "Hit@5": sum_h5  / total_prompts,
-        "MRR":   sum_mrr / total_prompts
-    }
+    print(f"Loading component map from {comp_path}...")
+    try:
+        comp_map = json.load(open(comp_path))
+    except Exception as e:
+        print(f"Failed to load component JSON: {e}")
+        return {"error": f"Failed to load component JSON: {e}"}
 
-    return {
-        "per_collection": per_collection,
-        "global_metrics": global_metrics
-    }
+    results = {}
+    prompt_files = []
 
-exports = [fuse, fuse_batch, baseline_fuse_strings]
+    # Support both single prompt JSON and directory of prompts
+    if os.path.isdir(prompt_path):
+        prompt_files = [os.path.join(prompt_path, f) for f in os.listdir(prompt_path) if f.endswith('.json')]
+    else:
+        prompt_files = [prompt_path]
+
+    for prompt_file in prompt_files:
+        print(f"\nProcessing prompt file: {prompt_file}")
+        try:
+            prompt_map = json.load(open(prompt_file))
+        except Exception as e:
+            print(f"  Failed to load prompt JSON: {e}")
+            results[os.path.basename(prompt_file)] = {'error': str(e)}
+            continue
+
+        total_prompts = 0
+        sum_p1 = sum_h2 = sum_h5 = sum_mrr = 0.0
+
+        for cid, gold_map in comp_map.items():
+            colname = api.get_colname_from_oid(cid)
+            print(f"  Processing collection '{colname}' (CID: {cid})...")
+            oids, _ = api.valid_oids([cid])
+            exes = filter_executables(api.expand_oids(oids))
+
+            n_prompts = len(gold_map)
+            for idx, (comp, gold_oid) in enumerate(gold_map.items(), start=1):
+                prompt = prompt_map.get(comp)
+                if not prompt:
+                    print(f"    Skipping missing prompt for component: {comp}")
+                    continue
+
+                print(f"    Prompt {idx}/{n_prompts}: '{prompt[:50]}{'...' if len(prompt) > 50 else ''}'")
+                prompt_tokens = set(prompt.split())
+
+                scores = {}
+                for exe_oid in exes:
+                    strings = set((api.get_field("strings", exe_oid, exe_oid) or {}).values())
+                    scores[exe_oid] = len(prompt_tokens & strings)
+
+                ranked_oids = sorted(scores, key=lambda o: scores[o], reverse=True)
+
+                try:
+                    rank = ranked_oids.index(gold_oid) + 1
+                except (ValueError, TypeError):
+                    rank = None
+
+                sum_p1  += int(rank == 1)
+                sum_h2  += int(rank and rank <= 2)
+                sum_h5  += int(rank and rank <= 5)
+                sum_mrr += (1.0 / rank) if rank else 0.0
+                total_prompts += 1
+
+        if total_prompts == 0:
+            print("  No prompts tested for this file.")
+            results[os.path.basename(prompt_file)] = {'error': 'No prompts tested.'}
+        else:
+            global_metrics = {
+                "P@1":   sum_p1  / total_prompts,
+                "Hit@2": sum_h2  / total_prompts,
+                "Hit@5": sum_h5  / total_prompts,
+                "MRR":   sum_mrr / total_prompts
+            }
+            print(f"Global metrics for {os.path.basename(prompt_file)}: "
+                  f"P@1={global_metrics['P@1']:.3f}, Hit@2={global_metrics['Hit@2']:.3f}, "
+                  f"Hit@5={global_metrics['Hit@5']:.3f}, MRR={global_metrics['MRR']:.3f}")
+            results[os.path.basename(prompt_file)] = {'global_metrics': global_metrics}
+
+    return results
+
+def baseline_fuse_bm25(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run batch search per collection using BM25 ranking over
+    the set of strings in each executable.
+    """
+    comp_path = opts.get("comp_path")
+    prompt_path = opts.get("prompt_path")
+    if not comp_path or not prompt_path:
+        print("Error: 'comp_path' or 'prompt_path' not provided.")
+        return {"error": "Use 'comp_path' and 'prompt_path' to specify JSON files."}
+
+    # Load component → gold OID map
+    try:
+        comp_map = json.load(open(comp_path))
+    except Exception as e:
+        print(f"Failed to load component JSON: {e}")
+        return {"error": f"Failed to load component JSON: {e}"}
+
+    results: Dict[str, Any] = {}
+    # Determine prompt files
+    if os.path.isdir(prompt_path):
+        prompt_files = [os.path.join(prompt_path, f)
+                        for f in os.listdir(prompt_path) if f.endswith(".json")]
+    else:
+        prompt_files = [prompt_path]
+
+    for prompt_file in prompt_files:
+        print(f"\nProcessing prompt file: {prompt_file}")
+        try:
+            prompt_map = json.load(open(prompt_file))
+        except Exception as e:
+            results[os.path.basename(prompt_file)] = {'error': str(e)}
+            continue
+
+        total_prompts = 0
+        sum_p1 = sum_h2 = sum_h5 = sum_mrr = 0.0
+
+        # Iterate over each collection ID
+        for cid, oid_map in comp_map.items():
+            colname = api.get_colname_from_oid(cid)
+            print(f"  Collection '{colname}' (CID: {cid})")
+
+            # Expand and filter executables
+            oids, _ = api.valid_oids([cid])
+            exes = filter_executables(api.expand_oids(oids))
+
+            # Build a per-collection corpus
+            exe_oids: List[str] = []
+            corpus: List[List[str]] = []
+            for comp_name, exe_oid in oid_map.items():
+                if exe_oid in exes:
+                    strings = api.get_field("strings", exe_oid, exe_oid) or {}
+                    tokens = list(strings.values())
+                    if tokens:
+                        exe_oids.append(exe_oid)
+                        corpus.append(tokens)
+
+            # Initialize BM25 for this collection
+            bm25 = None
+            if BM25Okapi and corpus:
+                try:
+                    bm25 = BM25Okapi(corpus)
+                except Exception:
+                    print("    Warning: BM25 init failed; falling back to overlap.")
+            elif BM25Okapi:
+                print("    Warning: empty corpus; falling back to overlap.")
+
+            # Evaluate each component prompt within this collection
+            for comp_name, gold_oid in oid_map.items():
+                prompt = prompt_map.get(comp_name)
+                if not prompt:
+                    print(f"    Skipping missing prompt for: {comp_name}")
+                    continue
+
+                query_tokens = prompt.split()
+                scores = bm25.get_scores(query_tokens)
+                ranked = sorted(zip(exe_oids, scores), key=lambda x: x[1], reverse=True)
+                ranked_oids = [oid for oid, _ in ranked]
+
+                try:
+                    rank = ranked_oids.index(gold_oid) + 1
+                except ValueError:
+                    rank = None
+
+                sum_p1 += int(rank == 1)
+                sum_h2 += int(rank and rank <= 2)
+                sum_h5 += int(rank and rank <= 5)
+                sum_mrr += (1.0 / rank) if rank else 0.0
+                total_prompts += 1
+
+        if total_prompts == 0:
+            print("  No prompts tested for this file.")
+            results[os.path.basename(prompt_file)] = {'error': 'No prompts tested.'}
+        else:
+            metrics = {
+                "P@1":  sum_p1 / total_prompts,
+                "Hit@2": sum_h2 / total_prompts,
+                "Hit@5": sum_h5 / total_prompts,
+                "MRR":   sum_mrr / total_prompts
+            }
+            print(
+                f"  Metrics: P@1={metrics['P@1']:.3f}, Hit@2={metrics['Hit@2']:.3f}, "
+                f"Hit@5={metrics['Hit@5']:.3f}, MRR={metrics['MRR']:.3f}"
+            )
+            results[os.path.basename(prompt_file)] = {'global_metrics': metrics}
+
+    return results
+
+exports = [fuse, fuse_batch, baseline_fuse_strings, baseline_fuse_bm25]
 
 # -------------------------------------------------------------
 # Embedding & Search
