@@ -23,6 +23,9 @@ def diff_features(target_file, target_function, target_func_insts, baseline_file
     func_calls = num_target_func_calls - num_baseline_func_calls
 
     added_instr, removed_instr, opcode_modifications, operand_modifications = _instruction_changes(target_func_insts, baseline_func_insts)
+
+    # Function Call targets +/-
+
     return added_instr, removed_instr, opcode_modifications, operand_modifications, basic_blocks, func_calls
 
 def _get_bb(file, func):

@@ -35,16 +35,16 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     logger.debug("process()")
     oid_list = api.expand_oids(oid_list)
     results = {}
-    fileA = oid_list[0]
-    funcA = opts['target']
-    funcA_insts = retrieve_function_instructions(fileA, funcA)
+    target_file = oid_list[0]
+    target_func_insts = opts['target']
+    target_func_insts = retrieve_function_instructions(target_file, target_func_insts)
 
-    fileB = oid_list[1]
-    funcB = opts['baseline']
-    funcB_insts = retrieve_function_instructions(fileB, funcB)
+    baseline_file = oid_list[1]
+    baseline_func = opts['baseline']
+    baseline_func_insts = retrieve_function_instructions(baseline_file, baseline_func)
 
-    if funcA_insts and funcB_insts:
-        added_instr, removed_instr, opcode_modifications, operand_modifications, basic_blocks, func_calls = diff_features(fileA, funcA, funcA_insts, fileB, funcB, funcB_insts)
+    if target_func_insts and baseline_func_insts:
+        added_instr, removed_instr, opcode_modifications, operand_modifications, basic_blocks, func_calls = diff_features(target_file, target_func_insts, target_func_insts, baseline_file, baseline_func, baseline_func_insts)
     else:
         added_instr = 0
         removed_instr = 0
