@@ -237,7 +237,8 @@ def set_oxide_config_defaults() -> None:
                     "ghidra_path5"   : "",
                     "ida_path"       : "",
                     "ghidra_project" : str(DATA_DIRECTORY / "scratch"),
-                    "scripts"        : str(dir_root.parent.parent / "scripts")  # actual oxide_root
+                    "scripts"        : str(dir_root.parent.parent / "scripts"),  # actual oxide_root
+                    "local_llm_path": "",
                     }
     ALL_DEFAULTS['dir'] = DIR_DEFAULTS
     ALL_DEFAULTS['history']['file'] = str(DATA_DIRECTORY / '.history.txt')

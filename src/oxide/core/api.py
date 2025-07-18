@@ -169,6 +169,7 @@ ghidra_path4 = ""
 ghidra_path5 = ""
 ghidra_project = ""
 pharos_image = ""
+local_llm_path = ""
 def source(oid: str, dir_override: Optional[str] = None) -> Optional[str]:
     ...
 def store(mod_name: str, oid: str, data: dict[object,object], opts: dict[str,object] = {},
