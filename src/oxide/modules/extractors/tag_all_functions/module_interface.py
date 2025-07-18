@@ -46,18 +46,16 @@ def process(oid: str, opts: Dict[str, Any]) -> bool:
     logger.debug("Starting tag-file process for %s", oid)
 
     call_graph: nx.DiGraph = api.get_field("call_graph", oid, oid)
-    if call_graph.number_of_nodes() == 0:
-        api.store(NAME, oid, "FAILED", opts)
+    if call_graph is None or call_graph.number_of_nodes() == 0:
         return False
 
     # Ensure decompilation is available before we begin
     decmap = api.retrieve("ghidra_decmap", [oid], {"org_by_func": True})
     if decmap is None:
-        api.store(NAME, oid, "FAILED", opts)
         return False
 
     # Prepare to collect tags
-    results: Dict[str, Any] = {}
+    results: Dict[str, Any] = {'func_tags': {}, "total_gpu_time_sec": 0}
     p = progress.Progress(call_graph.number_of_nodes())
 
     # Walk the call-graph bottom-up (post-order: callees before callers)
@@ -69,37 +67,16 @@ def process(oid: str, opts: Dict[str, Any]) -> bool:
             continue
 
         # Resolve a human-readable name
-        name = _get_function_name(oid, node) or f"sub_{node:x}"
-        entry: Dict[str, Any] = {"offset": node}
-
-        # Retrieve leaf tags and context tags
-        tag = api.retrieve("tag_function", oid, {"func_name": name})
-        tag_context = api.retrieve("tag_function_context", oid, {"func_name": name})
-
-        if tag:
-            entry["tag"] = tag
-        if tag_context:
-            entry["tag_context"] = tag_context
-
-        results[name] = entry
+        func_result = api.retrieve("llm_function_analysis", oid, {"func_offset": node, "prompt": "tag"})
+        results['func_tags'][node] = func_result['tag']
+        results['total_gpu_time_sec'] += func_result['gpu_time_sec']
 
     # Store all collected tags in one shot
     api.store(NAME, oid, results, opts)
     logger.debug("Finished tag-file process for %s", oid)
     return True
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# Helper functions (identical to previous version unless noted)              │
-# ────────────────────────────────────────────────────────────────────────────
-
-
-def _get_function_name(oid: str, offset: Any) -> Optional[str]:
-    funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
-    return funcs.get(offset, {}).get("name")
-
-
-def _is_valid_function(oid: str, offset: Any, *, min_instructions: int = 5) -> bool:
+def _is_valid_function(oid: str, offset: Any, min_instructions: int = 5) -> bool:
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
     orig_blocks = api.get_field("ghidra_disasm", oid, "original_blocks") or {}
     blk_ids = funcs.get(offset, {}).get("blocks", [])

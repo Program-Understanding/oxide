@@ -36,22 +36,20 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     oid_list = api.expand_oids(oid_list)
     results = {}
     target_file = oid_list[0]
-    target_func_insts = opts['target']
-    target_func_insts = retrieve_function_instructions(target_file, target_func_insts)
+    target_func = opts['target']
+    target_func_insts = retrieve_function_instructions(target_file, target_func)
 
     baseline_file = oid_list[1]
     baseline_func = opts['baseline']
     baseline_func_insts = retrieve_function_instructions(baseline_file, baseline_func)
 
+    diff = api.retrieve("bindiff", [target_file, baseline_file]) or {}
+
     if target_func_insts and baseline_func_insts:
-        added_instr, removed_instr, opcode_modifications, operand_modifications, basic_blocks, func_calls = diff_features(target_file, target_func_insts, target_func_insts, baseline_file, baseline_func, baseline_func_insts)
+        return diff_features(diff, target_file, target_func, target_func_insts, baseline_file, baseline_func, baseline_func_insts)
+        # added_instr, removed_instr, opcode_modifications, operand_modifications, basic_blocks, func_calls = diff_features(diff, target_file, target_func, target_func_insts, baseline_file, baseline_func, baseline_func_insts)
     else:
-        added_instr = 0
-        removed_instr = 0
-        opcode_modifications = 0
-        operand_modifications = 0
-        basic_blocks = 0
-        func_calls = 0
+        return None
 
     results = {
         'added_instr': added_instr,

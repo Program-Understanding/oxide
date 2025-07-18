@@ -5,152 +5,62 @@ import textwrap
 from oxide.core import api
 from llm_service import runner
 import re
-import os
+import time
 
 
 def run(oid, func_offset):
     func_name = get_func_name(oid, func_offset)
-
-    full_graph: nx.DiGraph = api.get_field("call_graph", oid, oid)
-    if full_graph.has_node(func_offset):
-        children = list(full_graph.successors(func_offset))
-    else:
-        children = []
-
-    sub_nodes = set(children) | {func_offset}
-    func_call_graph = full_graph.subgraph(sub_nodes).copy()
-
     func_decomp = decomp_for_func(oid, func_name)
     if func_decomp is None:
-        return False
+        return False, 0
+    return semantic_function_tag(func_decomp)
 
-    excl_tags, shared_tags = descendants_tags(func_call_graph, oid, func_offset)
-    tag = semantic_function_tag(func_decomp, excl_tags, shared_tags, oid, func_name)
-    return tag
+def semantic_function_tag(decomp: str, temperature: float = 0.15, max_new_tokens: int = 150) -> str:
 
-def descendants_tags(G: nx.DiGraph, oid: str, root: int) -> List:
-    """
-    Collect two buckets of tags for the call-tree under *root*.
-
-    Returns
-    -------
-    (exclusive, shared)
-        exclusive : tags whose function has **exactly one in-edge** and that
-                    edge comes from *root*            → high-signal
-        shared    : tags for every other reachable node (≥1 extra caller) → low-signal
-    """
-    excl_tags: List[str]   = []
-    shared_tags: List[str] = []
-
-    # --- all nodes reachable from *root* (children, grandchildren, …) -----------
-    reachable = nx.descendants(G, root)
-    for fn in reachable:
-        if not valid_function(oid, fn):
-            continue
-
-        func_name = get_func_name(oid, fn)
-        if not func_name:
-            continue
-
-        try:
-            if api.exists("tag_function_context", oid, {"func_name": func_name}):
-                tag = api.retrieve("tag_function_context", oid, {"func_name": func_name})
-            else:
-                print("No tag with context")
-                tag = api.retrieve("tag_function", oid, {"func_name": func_name})
-        except Exception as exc:                  # pragma: no cover – stub error handling
-            logger.warning("LLM tag_function failed for %s: %s", func_name, exc)
-            continue
-
-        if tag:
-            # ---------- exclusive vs shared  ----------------------------------------
-            preds = list(G.predecessors(fn))
-            if len(preds) == 1 and preds[0] == root:
-                excl_tags.append(tag)
-            else:
-                shared_tags.append(tag)
-
-    excl_tags = list(dict.fromkeys(excl_tags))
-    shared_tags = list(dict.fromkeys(shared_tags))
-
-    return excl_tags, shared_tags
-
-
-def semantic_function_tag(
-    decomp: str,
-    excl_tags: List[str],
-    shared_tags: List[str],
-    oid: str,
-    func_name: str,
-    temperature: float = 0.15,
-    max_new_tokens: int = 150
-) -> str:
-    excl_block = "\n".join(sorted(excl_tags)) or "<no exclusive descendants>"
-    shared_block = "\n".join(sorted(shared_tags)) or "<no shared descendants>"
-
+    # Build the prompt
     prompt = textwrap.dedent(f"""
-FUNCTION SOURCE:
+FUNCTION SOURCE (C)
 ```c
 {decomp}
 
-Exclusive Direct-callee function tags:
-{excl_block}
-
-Shared Direct-callee function tags:
-{shared_block}
-
 ─────────────────────────────────────────────────────────
 Your task:
-• Read only the C body and the callee tags above.
-• Produce exactly one 2-6 word descriptive tag stating clearly what the function *does*.
-• Produce exactly one ≤ 15-word justification clearly explaining the chosen tag.
+• Read only on the function body above.
+• Produce one 2-6-word tag that states what the function *does*  
+• Produce one ≤ 15-word justification
 
 ─────────────────────────────────────────────────────────
 Rules:
 1. Tag must describe the *function's runtime behaviour*.
-    ✗ Do **not** mention “reverse engineering”, “C code”, or these instructions.
+    ✗ Do **not** mention “reverse engineering”, "<tag>", “C code”, or variables/instructions found in the code.
 2. Lower-case words, single spaces, no underscores/hyphens.
-3. No hedging, placeholders, or speculation language.
-4. If the purpose is completely unclear or uncertain, output exactly:
+3. No hedging or speculation language.
+4. If the purpose is completely unclear, output exactly "unknown".
+5. Output exactly two lines in the following format, nothing else:
 
-Tag: unknown
-Why: function's behavior unclear from provided information
+Tag: <tag>
+Why: <justification>
+""").strip()
 
-5. Output exactly two lines, nothing else:
-
-Tag: your tag here
-Why: one concise justification
-""")
-
+    t0 = time.time()
     response = runner.generate(
         user_input=prompt,
         temperature=temperature,
         max_new_tokens=max_new_tokens
     )
+    t1 = time.time()
+    gpu_time_sec = t1 - t0
 
     raw_text = ("\n".join(response).strip()
                 if isinstance(response, list)
                 else response.strip())
 
-    # Ensure the prompts directory exists
-    prompts_dir = "llm_prompts"
-    try:
-        os.makedirs(prompts_dir, exist_ok=True)
-        filename = os.path.join(prompts_dir, f"{oid}_{func_name}.txt")
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write("Prompt:\n")
-            f.write(prompt + "\n\n")
-            f.write("Response:\n")
-            f.write(raw_text + "\n")
-    except Exception as e:
-        logger.error(f"Failed to save prompt and response: {e}")
-
     for line in raw_text.splitlines():
         if line.lower().startswith("tag:"):
             raw_tag = line.split(":", 1)[1].strip()
-            return normalize_tag(raw_tag)
+            return normalize_tag(raw_tag), gpu_time_sec
 
-    return None
+    return None, gpu_time_sec
     
 def get_func_offset(oid, name):
     functions = api.get_field("ghidra_disasm", oid, "functions")
