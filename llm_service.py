@@ -8,9 +8,12 @@ import torch
 from fastapi import FastAPI
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+import sys
 
 # —— USER CONFIG ——
-MODEL_PATH = oxide.api.local_llm_path
+MODEL_PATH = getattr(oxide.api, "local_llm_path")
+if not MODEL_PATH:
+    raise ImportError("oxide.api.local_llm_path is not configured")
 
 print("Model Path: ", MODEL_PATH)
 SYSTEM_PROMPT = "You are an expert reverse-engineer"

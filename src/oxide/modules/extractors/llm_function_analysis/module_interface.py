@@ -8,7 +8,6 @@ from typing import Dict, Any, List, Tuple
 import networkx as nx
 import textwrap
 from oxide.core import api
-from llm_service import runner
 import prompts
 import re
 import os

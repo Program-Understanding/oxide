@@ -3,11 +3,6 @@ from typing import Any, Dict, Optional, List
 from collections import deque
 
 import networkx as nx
-try:
-    from llm_service import runner
-    llm_enabled = True
-except ImportError:
-    llm_enabled = False
 
 from oxide.core import api, progress
 import textwrap
