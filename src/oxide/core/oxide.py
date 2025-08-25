@@ -22,7 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-
 import os
 import sys
 import importlib.util
@@ -32,16 +31,25 @@ import logging
 from oxide.core import config, sys_utils, ologger, api, progress, options, tags, otypes
 
 # Datstore settings
-from oxide.core.local_datastore import (local_store, local_retrieve, local_exists, local_available_data,
-                                  local_retrieve_all, local_count_records, local_delete_data,
-                                  local_delete_function_data)
+from oxide.core.local_datastore import (
+    local_store,
+    local_retrieve,
+    local_exists,
+    local_available_data,
+    local_retrieve_all,
+    local_count_records,
+    local_delete_data,
+    local_delete_function_data,
+)
 
 if "filesystem" == config.datastore_datastore:
     from oxide.core import datastore_filesystem as datastore
 elif "sqlite" == config.datastore_defaults:
     from oxide.core import datastore_sqlite as datastore
 else:
-    raise ShellRuntimeError(f"Invalid datastore option selected ({config.datastore_defaults})")
+    raise ShellRuntimeError(
+        f"Invalid datastore option selected ({config.datastore_defaults})"
+    )
 
 from typing import List, Dict, Union, Any, Tuple, Optional, Set, Iterable
 
@@ -60,7 +68,7 @@ logger.debug("Starting oxide (3.1)")
 try:
     import multiproc as mp
 except ImportError:
-    config.multiproc_on  = False
+    config.multiproc_on = False
     config.multiproc_max = 1
     logger.info("Not able to import multiproc, multiprocessing will be disabled")
 
@@ -74,22 +82,37 @@ module_types = ["source", "extractors", "analyzers", "map_reducers"]
 modules_available = {}
 for mod_type in module_types:
     modules_available[mod_type] = []
-
+module_import_errors = {}
 
 # ------------- CORE FUNCTIONS -------------------------------------------------------------
 
+
 def get_oid_from_data(data: bytes) -> str:
-    """ Given the a blob of data return the <oid>. This is hard coded to sha1sum
-        for now.
+    """Given the a blob of data return the <oid>. This is hard coded to sha1sum
+    for now.
     """
     return hashlib.sha1(data).hexdigest()
 
 
 def documentation(mod_name: str) -> Optional[dict]:
-    """ Return the documentaton of a module
-    """
+    """Return the documentaton of a module"""
     if mod_name not in initialized_modules:
-        logger.warning("Documentation::Module %s not found.", mod_name)
+        if mod_name in module_import_errors:
+            reason = module_import_errors[mod_name]
+            if "No module named" in reason:
+                # Extract the missing package name from the error text
+                pkg = reason.split("'")[1] if "'" in reason else reason
+                logger.warning(
+                    "Documentation::Module %s not found.\n\t╰─> Missing %s package – please pip install or add to toml.",
+                    mod_name,
+                    pkg,
+                )
+            else:
+                logger.warning(
+                    "Documentation::Module %s not found.\n\t╰─> %s", mod_name, reason
+                )
+        else:
+            logger.warning("Documentation::Module %s not found.", mod_name)
         return None
     # Catch syntax errors
     try:
@@ -102,17 +125,17 @@ def documentation(mod_name: str) -> Optional[dict]:
 
 
 def get_mod_type(mod_name: str) -> Optional[str]:
-    """ Return the type of a module (extracts, analyzers, etc)
-    """
+    """Return the type of a module (extracts, analyzers, etc)"""
     for module_type in module_types:
         if mod_name in modules_available[module_type]:
             return module_type
     return None
 
 
-def single_call_module(module_type: str, mod_name: str, oid_list: List[str], opts: dict) -> dict:
-    """ Calls any module type with one oid_list
-    """
+def single_call_module(
+    module_type: str, mod_name: str, oid_list: List[str], opts: dict
+) -> dict:
+    """Calls any module type with one oid_list"""
     if module_type in ["extractors", "source"]:
         return initialized_modules[mod_name].process(oid_list, opts)
 
@@ -131,10 +154,14 @@ def single_call_module(module_type: str, mod_name: str, oid_list: List[str], opt
     raise otypes.UnrecognizedModule("Attempt to call module not in module list")
 
 
-def process(mod_name: str, oid_list: List[str], opts: dict = {},
-            force: bool = False, dir_override: Optional[str] = None) -> bool:
-    """ Calls a module over an oid_list without returning results.
-    """
+def process(
+    mod_name: str,
+    oid_list: List[str],
+    opts: dict = {},
+    force: bool = False,
+    dir_override: Optional[str] = None,
+) -> bool:
+    """Calls a module over an oid_list without returning results."""
     if dir_override:
         change_db_dir(dir_override)
 
@@ -171,9 +198,12 @@ def process(mod_name: str, oid_list: List[str], opts: dict = {},
             # Process the oid_list
             # Check module documentation to determine whether it can be parellized
             mod_doc = documentation(mod_name)
-            if ((len(new_list) == 1) or (not config.multiproc_on) or
-                (module_type in ["analyzers"]) or
-                (mod_doc and ('multiproc' in mod_doc) and (not mod_doc['multiproc']))):
+            if (
+                (len(new_list) == 1)
+                or (not config.multiproc_on)
+                or (module_type in ["analyzers"])
+                or (mod_doc and ("multiproc" in mod_doc) and (not mod_doc["multiproc"]))
+            ):
                 ret_val = True
                 if module_type in ["extractors", "source"]:
                     p = progress.Progress(len(new_list))
@@ -193,7 +223,9 @@ def process(mod_name: str, oid_list: List[str], opts: dict = {},
                 elif module_type in ["map_reducers"]:
                     func = initialized_modules[mod_name].mapper
                 else:
-                    raise otypes.UnrecognizedModule("Attempt to call module not of known type.")
+                    raise otypes.UnrecognizedModule(
+                        "Attempt to call module not of known type."
+                    )
                 ret_val = mp.multi_map(func, new_list, opts, True)
     except:
         if dir_override:
@@ -207,8 +239,7 @@ def process(mod_name: str, oid_list: List[str], opts: dict = {},
 
 
 def single_retrieve(mod_name: str, oid: str, opts: dict, lock: bool) -> Optional[dict]:
-    """ Retrieve module results for a single <oid>
-    """
+    """Retrieve module results for a single <oid>"""
     if not datastore.exists(mod_name, oid, opts):
         if not options.validate_opts(mod_name, opts):
             logger.warning("Failed to validate opts for %s : %s", mod_name, opts)
@@ -219,19 +250,24 @@ def single_retrieve(mod_name: str, oid: str, opts: dict, lock: bool) -> Optional
     return datastore.retrieve(mod_name, oid, opts)
 
 
-def multi_retrieve(mod_name: str, oid_list: List[str], opts: dict, lock: bool) -> Dict[str, dict]:
-    """ Retrieve module results for a list of <oid>
-    """
+def multi_retrieve(
+    mod_name: str, oid_list: List[str], opts: dict, lock: bool
+) -> Dict[str, dict]:
+    """Retrieve module results for a list of <oid>"""
     results = {}
     for oid in oid_list:
         results[oid] = single_retrieve(mod_name, oid, opts, lock)
     return results
 
 
-def retrieve(mod_name: str, oid_list: List[str], opts: dict = {},
-             lock: bool = False, dir_override: Optional[str] = None) -> Optional[dict]:
-    """ Returns the results of calling a module over an oid_list.
-    """
+def retrieve(
+    mod_name: str,
+    oid_list: List[str],
+    opts: dict = {},
+    lock: bool = False,
+    dir_override: Optional[str] = None,
+) -> Optional[dict]:
+    """Returns the results of calling a module over an oid_list."""
     if dir_override:
         change_db_dir(dir_override)
 
@@ -257,7 +293,7 @@ def retrieve(mod_name: str, oid_list: List[str], opts: dict = {},
         return None
 
     try:
-        if ((not config.multiproc_on) or (module_type in ["analyzers"])):
+        if (not config.multiproc_on) or (module_type in ["analyzers"]):
             if module_type in ["extractors", "source"]:
                 if len(oid_list) == 1:
                     ret_val = single_retrieve(mod_name, oid_list[0], opts, lock)
@@ -278,7 +314,9 @@ def retrieve(mod_name: str, oid_list: List[str], opts: dict = {},
                             restore_db_dir()
                         return ret_val
                 if not options.validate_opts(mod_name, opts):
-                    logger.warning("Failed to validate opts for %s : %s", mod_name, opts)
+                    logger.warning(
+                        "Failed to validate opts for %s : %s", mod_name, opts
+                    )
                     ret_val = False
                     if dir_override:
                         restore_db_dir()
@@ -287,7 +325,7 @@ def retrieve(mod_name: str, oid_list: List[str], opts: dict = {},
                 if dir_override:
                     restore_db_dir()
                 return ret_val
-        else:   # Multiprocessing is on and not an analysis module
+        else:  # Multiprocessing is on and not an analysis module
             if module_type in ["extractors", "source"]:
                 if len(oid_list) == 1:
                     ret_val = single_retrieve(mod_name, oid_list[0], opts, lock)
@@ -300,7 +338,9 @@ def retrieve(mod_name: str, oid_list: List[str], opts: dict = {},
                     if not exists(mod_name, oid, opts):
                         new_list.append(oid)
                 if new_list and not options.validate_opts(mod_name, opts):
-                    logger.warning("Failed to validate opts for %s : %s", mod_name, opts)
+                    logger.warning(
+                        "Failed to validate opts for %s : %s", mod_name, opts
+                    )
                     if dir_override:
                         restore_db_dir()
                     return None
@@ -319,14 +359,18 @@ def retrieve(mod_name: str, oid_list: List[str], opts: dict = {},
                             restore_db_dir()
                         return ret_val
                 if not options.validate_opts(mod_name, opts):
-                    logger.warning("Failed to validate opts for %s : %s", mod_name, opts)
+                    logger.warning(
+                        "Failed to validate opts for %s : %s", mod_name, opts
+                    )
                     if dir_override:
                         restore_db_dir()
                     return None
                 jobid = get_cid_from_oid_list(oid_list)
                 map_func = initialized_modules[mod_name].mapper
                 reduce_func = initialized_modules[mod_name].reducer
-                ret_val = mp.multi_mapreduce(map_func, reduce_func, oid_list, opts, jobid)
+                ret_val = mp.multi_mapreduce(
+                    map_func, reduce_func, oid_list, opts, jobid
+                )
                 if dir_override:
                     restore_db_dir()
                 return ret_val
@@ -340,7 +384,9 @@ def retrieve(mod_name: str, oid_list: List[str], opts: dict = {},
         restore_db_dir()
 
 
-def exists(mod_name: str, oid: str, opts={}, dir_override: Optional[str] = None) -> bool:
+def exists(
+    mod_name: str, oid: str, opts={}, dir_override: Optional[str] = None
+) -> bool:
     if dir_override:
         change_db_dir(dir_override)
     if not options.validate_opts(mod_name, opts, only_mangle=True):
@@ -357,10 +403,14 @@ def exists(mod_name: str, oid: str, opts={}, dir_override: Optional[str] = None)
     return val
 
 
-def get_field(mod_name: str, oid: str, field: str, opts: dict = {},
-              dir_override: Optional[str] = None) -> Optional[Any]:
-    """ Given a module name, oid and a field return the value of that field
-    """
+def get_field(
+    mod_name: str,
+    oid: str,
+    field: str,
+    opts: dict = {},
+    dir_override: Optional[str] = None,
+) -> Optional[Any]:
+    """Given a module name, oid and a field return the value of that field"""
     if dir_override:
         change_db_dir(dir_override)
     ds = retrieve(mod_name, oid, opts)
@@ -387,8 +437,14 @@ def retrieve_all(mod_name: str, dir_override: Optional[str] = None) -> dict:
     return return_val
 
 
-def store(mod_name: str, oid: str, data: Dict[str|int,Any], opts: dict = {}, block: bool = True,
-          dir_override: Optional[str] = None) -> bool:
+def store(
+    mod_name: str,
+    oid: str,
+    data: Dict[str | int, Any],
+    opts: dict = {},
+    block: bool = True,
+    dir_override: Optional[str] = None,
+) -> bool:
     if dir_override:
         change_db_dir(dir_override)
     return_val = datastore.store(mod_name, oid, data, opts, block)
@@ -412,21 +468,18 @@ def source(oid: str, dir_override: Optional[str] = None) -> Optional[str]:
 
 
 def change_db_dir(directory: str) -> None:
-    """ Overwrite current datastore directory
-    """
+    """Overwrite current datastore directory"""
     datastore.datastore_dir = directory
 
 
 def restore_db_dir() -> None:
-    """ Update datastore directory using config value
-    """
+    """Update datastore directory using config value"""
     datastore.datastore_dir = config.dir_datastore
 
 
 # ------------------------ DELETE FUNCTIONS ----------------------------------------
 def flush_oid(oid: str) -> None:
-    """ Clears data for a particular OID accross all modules that can currently be loaded
-    """
+    """Clears data for a particular OID accross all modules that can currently be loaded"""
     logger.warning("Flushing data for oid %s", oid)
     for cid in collection_cids():
         if oid in expand_oids(cid):
@@ -437,14 +490,15 @@ def flush_oid(oid: str) -> None:
         for mod_name in modules_available[module_type]:
             datastore.delete_oid_data(mod_name, oid)
 
+
 def flush_module(mod_name: str) -> None:
-    """ Clears data for module (drop table)
-    """
+    """Clears data for module (drop table)"""
     logger.warning("Flushing data for module %s", mod_name)
     datastore.delete_module_data(mod_name)
 
+
 def flush_oid_for_module(oid: str, mod_name: str) -> None:
-    """ Given an oid and module, clears out the data for that oid """
+    """Given an oid and module, clears out the data for that oid"""
     logger.warning(f"Deleting data of {oid} from {mod_name}")
 
 
@@ -461,7 +515,7 @@ def modules_list(module_type: str = "all", show_private: bool = False):
             for mod in modules_available[mt]:
                 """For each module of that type"""
                 d = documentation(mod)
-                if ((show_private is False) and (d is not None) and ("private" in d)):
+                if (show_private is False) and (d is not None) and ("private" in d):
                     if d["private"]:
                         continue
                     mod_list.append(mod)
@@ -483,15 +537,17 @@ def modules_stats(modules="all", module_type="all", show_private=True):
 
 
 # ---------------------------------- FILE RELATED FUNCTIONS --------------------------------------
-def import_file(file_location: str, dir_override: Optional[str] = None) -> Tuple[Optional[str], bool]:
+def import_file(
+    file_location: str, dir_override: Optional[str] = None
+) -> Tuple[Optional[str], bool]:
     fd = sys_utils.import_file(file_location, config.file_max)
     if not fd:
-        print('no file descriptor')
+        print("no file descriptor")
         return None, False
 
     oid = get_oid_from_data(fd["data"])
     if not oid:
-        print('Not able to get OID')
+        print("Not able to get OID")
         logger.error("Not able to get and oid for %s", file_location)
         return None, False
 
@@ -501,13 +557,13 @@ def import_file(file_location: str, dir_override: Optional[str] = None) -> Tuple
     if not exists("files", oid, opts_file, dir_override=dir_override):
         new_file = True
         if not process("files", oid, opts_file, dir_override=dir_override):
-            print('not able to process')
+            print("not able to process")
             logger.error("Not able to process file data %s", file_location)
             return None, False
     else:
         new_file = False
     if not process("file_meta", oid, opts_meta, force=True, dir_override=dir_override):
-        print('Not able to process meta data')
+        print("Not able to process meta data")
         logger.error("Not able to process file metadata %s", file_location)
         return None, False
 
@@ -515,7 +571,9 @@ def import_file(file_location: str, dir_override: Optional[str] = None) -> Tuple
     return oid, new_file
 
 
-def import_files(files_list: List[str], dir_override: Optional[str] = None) -> Tuple[List[str], int]:
+def import_files(
+    files_list: List[str], dir_override: Optional[str] = None
+) -> Tuple[List[str], int]:
     if not isinstance(files_list, list):
         logger.error("files must be of type list.")
         return None, 0
@@ -523,13 +581,13 @@ def import_files(files_list: List[str], dir_override: Optional[str] = None) -> T
         # Blocking?
         oids = []
         new_file_count = 0
-        
-#        if config.multiproc_on:
-#            files, _ = mp.multi_map_callable(import_file, files_list, {}, False)
-#            for oid, new_file in files:
-#                oids.append(oid)
-#                new_file_count += 1 if new_file else 0
-#        else:
+
+        #        if config.multiproc_on:
+        #            files, _ = mp.multi_map_callable(import_file, files_list, {}, False)
+        #            for oid, new_file in files:
+        #                oids.append(oid)
+        #                new_file_count += 1 if new_file else 0
+        #        else:
         p = progress.Progress(len(files_list))
         for file_location in files_list:
             oid, new_file = import_file(file_location, dir_override=dir_override)
@@ -546,7 +604,9 @@ def import_files(files_list: List[str], dir_override: Optional[str] = None) -> T
     return oids, new_file_count
 
 
-def import_directory(directory: str, dir_override: Optional[str] = None) -> Tuple[List[str], int]:
+def import_directory(
+    directory: str, dir_override: Optional[str] = None
+) -> Tuple[List[str], int]:
     files = sys_utils.get_files_from_directory(directory)
     if files is None:
         return None, 0
@@ -581,25 +641,35 @@ def initialize_all_modules() -> None:
                 this_mod_dir = os.path.join(dev_dir, mod_name)
             init_file = os.path.join(this_mod_dir, "__init__.py")
             interface_file = os.path.join(this_mod_dir, "module_interface.py")
-            if (os.path.isdir(this_mod_dir) and os.path.isfile(init_file) and os.path.isfile(interface_file)):
+            if (
+                os.path.isdir(this_mod_dir)
+                and os.path.isfile(init_file)
+                and os.path.isfile(interface_file)
+            ):
                 if initialize_module(mod_name, os.path.split(this_mod_dir)[0]):
                     modules_available[module_type].append(mod_name)
                 else:
                     logger.debug("Not able to initalize module %s", mod_name)
                 # Debug warning to alert user loaded module is private
                 mod_doc = documentation(mod_name)
-                if (mod_doc and 'private' in mod_doc and mod_doc['private']):
+                if mod_doc and "private" in mod_doc and mod_doc["private"]:
                     logger.debug("%s is set to private in option dictionary", mod_name)
             else:
-                logger.debug("%s, init file or interface file does not exist.", mod_name)
-                logger.debug("\t %s:%s module: %s, init: %s, mod_interface: %s",
-                    mod_dir, mod_name,
+                logger.debug(
+                    "%s, init file or interface file does not exist.", mod_name
+                )
+                logger.debug(
+                    "\t %s:%s module: %s, init: %s, mod_interface: %s",
+                    mod_dir,
+                    mod_name,
                     os.path.isdir(this_mod_dir),
                     os.path.isfile(init_file),
-                    os.path.isfile(interface_file))
+                    os.path.isfile(interface_file),
+                )
 
     # ugly hack to make source module lookup faster, places collections and files first in the list
-    modules_available['source'].sort()
+    modules_available["source"].sort()
+
 
 def initialize_module(mod_name: str, mod_dir: str) -> bool:
     global initialized_modules
@@ -607,25 +677,35 @@ def initialize_module(mod_name: str, mod_dir: str) -> bool:
     try:
         module_path = os.path.join(mod_dir, mod_name)
         init_path = os.path.join(module_path, "__init__.py")
-        
+
         spec = importlib.util.spec_from_file_location(mod_name, init_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        
+
         interface_path = os.path.join(module_path, "module_interface.py")
-        sub_spec = importlib.util.spec_from_file_location(mod_name, os.path.abspath(interface_path))
+        sub_spec = importlib.util.spec_from_file_location(
+            mod_name, os.path.abspath(interface_path)
+        )
         submod = importlib.util.module_from_spec(sub_spec)
         sub_spec.loader.exec_module(submod)
 
         submod.api = api
         initialized_modules[mod_name] = submod
     except TypeError as err:
-        logger.debug('TypeError: %s in module(%s)', err, mod_name)
+        logger.debug("TypeError: %s in module(%s)", err, mod_name)
         return False
     except ModuleNotFoundError as err:
+        missing_mod = err.name
+        module_import_errors[mod_name] = (
+            f"Missing {missing_mod} package – please pip install or add to toml."
+        )
         logger.debug("ModuleNotFound:%s in module(%s)", err, mod_name)
         return False
     except ImportError as err:
+        missing_mod = err.name
+        module_import_errors[mod_name] = (
+            f"Missing {missing_mod} package – please pip install or add to toml."
+        )
         logger.debug("ImportError:%s in module(%s)", err, mod_name)
         return False
     except AttributeError as err:
@@ -682,8 +762,9 @@ def delete_collection_by_cid(cid):
     if cid not in source_set_dict:
         logger.error("Cannot delete this collection, cid not found:%s", cid)
         return False
-    if ( not datastore.delete_oid_data("collections_meta", cid)
-         or not datastore.delete_oid_data("collections", cid)):
+    if not datastore.delete_oid_data(
+        "collections_meta", cid
+    ) or not datastore.delete_oid_data("collections", cid):
         logger.error("Collection deletion failed")
         return False
     return True
@@ -751,8 +832,8 @@ def get_cid_from_name(col_name):
 
 
 def get_cid_from_oid_list(oid_list):
-    oid_list = list(set(oid_list)) # Assert uniqueness
-    oid_list.sort() # Assert always in the same order
+    oid_list = list(set(oid_list))  # Assert uniqueness
+    oid_list.sort()  # Assert always in the same order
     oid_string = "".join(oid_list)
     cid = get_oid_from_data(oid_string.encode())
     return cid
@@ -768,7 +849,7 @@ def get_orphan_oids() -> List[str]:
         return set()
     oids = set(oids)
     for cid in collection_cids():
-        ids = get_field('collections', cid, 'oid_list')
+        ids = get_field("collections", cid, "oid_list")
         if ids:
             ids = set(ids)
             oids = oids - ids
@@ -778,11 +859,11 @@ def get_orphan_oids() -> List[str]:
 def get_set_names() -> dict:
     source_set_dict = {}
     for source_mod in modules_available["source"]:
-            doc = documentation(source_mod)
-            if doc["set"]: # Currently only source set is collections
-                data = retrieve_all(source_mod)
-                for oid in data:
-                    source_set_dict[oid] = get_colname_from_oid(oid)
+        doc = documentation(source_mod)
+        if doc["set"]:  # Currently only source set is collections
+            data = retrieve_all(source_mod)
+            for oid in data:
+                source_set_dict[oid] = get_colname_from_oid(oid)
     return source_set_dict
 
 
@@ -806,31 +887,31 @@ def get_collection_info(col_name: str, view: str) -> dict:
     cid = get_cid_from_name(str(col_name))
     num_files = get_field("collections_meta", cid, "num_oids")
     notes = get_field("collections_meta", cid, "notes")
-    result['name'] = col_name
-    result['id'] = cid
-    result['num_files'] = num_files
-    result['notes'] = notes
+    result["name"] = col_name
+    result["id"] = cid
+    result["num_files"] = num_files
+    result["notes"] = notes
     oid_list = None
 
-    if view == 'all' or view == 'files':
+    if view == "all" or view == "files":
         flist = []
         oid_list = get_field("collections", cid, "oid_list")
         for oid in oid_list:
             names = get_field("file_meta", oid, "names")
             flist.extend(names)
             flist.sort()
-        result['files'] = flist
+        result["files"] = flist
 
-    if view == 'all' or view == 'oids':
+    if view == "all" or view == "oids":
         if not oid_list:
             oid_list = get_field("collections", cid, "oid_list")
-        result['oid_list'] = oid_list
+        result["oid_list"] = oid_list
 
-    if view == 'all' or view == 'memberships':
+    if view == "all" or view == "memberships":
         cid = get_cid_from_name(col_name)
         oid_list = expand_oids(cid)
-        exclude_cids = [ o for o in oid_list if exists("collections", o) ]
-        cids = [ c for c in collection_cids() if c not in exclude_cids]
+        exclude_cids = [o for o in oid_list if exists("collections", o)]
+        cids = [c for c in collection_cids() if c not in exclude_cids]
         results = {}
         for c in cids:
             this_oids = set(expand_oids(c))
@@ -838,14 +919,16 @@ def get_collection_info(col_name: str, view: str) -> dict:
             if this_intersection:
                 results[c] = this_intersection
 
-        result['memberships'] = {}
+        result["memberships"] = {}
         for new_cid in results:
             if len(results[new_cid]) == 0:
                 continue
             new_col_name = get_colname_from_oid(new_cid)
-            result['memberships'][new_col_name] = []
+            result["memberships"][new_col_name] = []
             for oid in results[new_cid]:
-                result['memberships'][new_col_name].append( (oid, list(get_names_from_oid(oid))) )
+                result["memberships"][new_col_name].append(
+                    (oid, list(get_names_from_oid(oid)))
+                )
 
     return result
 
@@ -861,14 +944,14 @@ def get_file_info(file: str) -> None:
             col_name = get_colname_from_oid(cid)
             col_names.append(col_name)
         meta = retrieve("file_meta", oid, {})
-        result[oid] = {'names': list(meta['names']), 'membership': col_names}
+        result[oid] = {"names": list(meta["names"]), "membership": col_names}
     return result
 
 
-#-------  OID LOOKUP FUNCTIONS -------------------------------------------------------------------
+# -------  OID LOOKUP FUNCTIONS -------------------------------------------------------------------
 def cleanup_oid_list(mod_name: str, oid_list: List[str]) -> List[str]:
-    """ Sanitize oid_list and convert any oids necessary to insure that module's
-        requirements are met.
+    """Sanitize oid_list and convert any oids necessary to insure that module's
+    requirements are met.
     """
     # Handle single oids and lists both as lists.
     if isinstance(oid_list, str):
@@ -887,20 +970,22 @@ def cleanup_oid_list(mod_name: str, oid_list: List[str]) -> List[str]:
         for oid in oid_list:
             try:
                 if source(oid) not in ["collections"]:
-                    raise otypes.BadOIDList("Atomic OIDs passed to module that only handles sets")
+                    raise otypes.BadOIDList(
+                        "Atomic OIDs passed to module that only handles sets"
+                    )
             except otypes.OxideError:
                 break
     return oid_list
 
 
 def flatten_list(l: Iterable[Union[str, List, Tuple, Set, Dict]]) -> List[str]:
-    """ Given a list containing lists, sets or tuples
-        return a list of strings. Note: dicts are passed over and kept as dict
+    """Given a list containing lists, sets or tuples
+    return a list of strings. Note: dicts are passed over and kept as dict
     """
     new_list = []
     for i in l:
         if isinstance(i, str):
-           new_list.append(i)
+            new_list.append(i)
         elif isinstance(i, (list, set, tuple)):
             new_list.extend(flatten_list(i))
         else:
@@ -909,8 +994,7 @@ def flatten_list(l: Iterable[Union[str, List, Tuple, Set, Dict]]) -> List[str]:
 
 
 def valid_oids(l: List[str]) -> Tuple[List[str], List[str]]:
-    """ Given an interable object return the tuple (valid_oids, invalid_items)
-    """
+    """Given an interable object return the tuple (valid_oids, invalid_items)"""
     l = flatten_list(l)
     valid = []
     invalid = []
@@ -926,8 +1010,7 @@ def valid_oids(l: List[str]) -> Tuple[List[str], List[str]]:
 
 
 def expand_oids(oids: Union[str, List[str]]) -> List[str]:
-    """ Given a list of oids expand each collection id to the ids in that collection
-    """
+    """Given a list of oids expand each collection id to the ids in that collection"""
     if isinstance(oids, str):
         oids = [oids]
 
@@ -946,8 +1029,8 @@ def expand_oids(oids: Union[str, List[str]]) -> List[str]:
 
 
 def get_oids_with_name(some_name: str) -> Dict[str, str]:
-    """ Given a name search all source modules that have the field 'names' for
-        the given name. Return a dict of oid:source
+    """Given a name search all source modules that have the field 'names' for
+    the given name. Return a dict of oid:source
     """
     logger.debug("Getting oids with the name: %s", some_name)
     oids = {}
@@ -965,15 +1048,15 @@ def get_oids_with_name(some_name: str) -> Dict[str, str]:
 
 
 def get_colname_from_oid(oid: str) -> Set[str]:
-    """ Given an oid for a collection search the source modules and return
-        the name belonging to that oid
+    """Given an oid for a collection search the source modules and return
+    the name belonging to that oid
     """
     logger.debug("Getting name for collection oid:%s", oid)
 
     for s in modules_available["source"]:
         if s == "collections":
             s = "collections_meta"
-        ds = datastore.retrieve(s,oid)
+        ds = datastore.retrieve(s, oid)
         if not ds or not isinstance(ds, dict):
             continue
         if "name" in ds:
@@ -983,8 +1066,8 @@ def get_colname_from_oid(oid: str) -> Set[str]:
 
 
 def get_names_from_oid(oid: str) -> Set[str]:
-    """ Given an oid search the source modules and return a set of names
-        belonging to that oid
+    """Given an oid search the source modules and return a set of names
+    belonging to that oid
     """
     logger.debug("Getting names for oid:%s ", oid)
 
@@ -1006,22 +1089,24 @@ def load_reference(ref_name: str) -> Optional[bytes]:
     return ref
 
 
-def get_available_modules(category: Optional[str] = 'all') -> List[str]:
-    """ Fetch list of all modules that have `category` matches for.
+def get_available_modules(category: Optional[str] = "all") -> List[str]:
+    """Fetch list of all modules that have `category` matches for.
 
-        Defaults to "all" where all loaded are not fetched.
+    Defaults to "all" where all loaded are not fetched.
     """
     mod_list = []
     for mod_name in initialized_modules:
         mod_doc = documentation(mod_name)
-        if (mod_doc and (category == 'all' or ('category' in mod_doc and mod_doc['category'] == category))):
+        if mod_doc and (
+            category == "all"
+            or ("category" in mod_doc and mod_doc["category"] == category)
+        ):
             mod_list.append(mod_name)
     return mod_list
 
 
 def wire_api():
-    """ Updates api placeholder references to intended functionality
-    """
+    """Updates api placeholder references to intended functionality"""
     global scratch_dir
     global tag_filter
     global retrieve_all_keys
@@ -1030,75 +1115,75 @@ def wire_api():
     global tmp_file
 
     logger.debug("wire api")
-    api.store     = store
-    api.source    = source
-    api.process   = process
-    api.exists    = exists
-    api.retrieve  = retrieve
+    api.store = store
+    api.source = source
+    api.process = process
+    api.exists = exists
+    api.retrieve = retrieve
     api.get_field = get_field
 
-    api.expand_oids               = expand_oids
-    api.get_oids_with_name        = get_oids_with_name
-    api.get_colname_from_oid      = get_colname_from_oid
-    api.delete_collection_by_cid  = delete_collection_by_cid
+    api.expand_oids = expand_oids
+    api.get_oids_with_name = get_oids_with_name
+    api.get_colname_from_oid = get_colname_from_oid
+    api.delete_collection_by_cid = delete_collection_by_cid
     api.delete_collection_by_name = delete_collection_by_name
-    api.get_names_from_oid        = get_names_from_oid
-    api.get_oid_from_data         = get_oid_from_data
-    api.get_available_modules     = get_available_modules
-    api.create_collection         = create_collection
-    api.scratch_dir               = config.dir_scratch
+    api.get_names_from_oid = get_names_from_oid
+    api.get_oid_from_data = get_oid_from_data
+    api.get_available_modules = get_available_modules
+    api.create_collection = create_collection
+    api.scratch_dir = config.dir_scratch
 
-    scratch_dir           = config.dir_scratch
-    api.modules_dir       = config.dir_modules
-    api.ida_path          = config.dir_ida_path
-    api.ghidra_path       = config.dir_ghidra_path
-    api.ghidra_path2       = config.dir_ghidra_path2
-    api.ghidra_path3       = config.dir_ghidra_path3
-    api.ghidra_path4       = config.dir_ghidra_path4
-    api.ghidra_path5       = config.dir_ghidra_path5
-    api.ghidra_project    = config.ghidra_project_project_name
-    api.pharos_image      = config.pharos_docker_image
-    api.local_llm_path   = config.dir_local_llm_path
-    api.probdisasm_image  = config.probdisasm_docker_image
-    api.scripts_dir       = config.dir_scripts
-    api.documentation     = documentation
+    scratch_dir = config.dir_scratch
+    api.modules_dir = config.dir_modules
+    api.ida_path = config.dir_ida_path
+    api.ghidra_path = config.dir_ghidra_path
+    api.ghidra_path2 = config.dir_ghidra_path2
+    api.ghidra_path3 = config.dir_ghidra_path3
+    api.ghidra_path4 = config.dir_ghidra_path4
+    api.ghidra_path5 = config.dir_ghidra_path5
+    api.ghidra_project = config.ghidra_project_project_name
+    api.pharos_image = config.pharos_docker_image
+    api.local_llm_path = config.dir_local_llm_path
+    api.probdisasm_image = config.probdisasm_docker_image
+    api.scripts_dir = config.dir_scripts
+    api.documentation = documentation
     api.get_cid_from_name = get_cid_from_name
-    api.modules_list      = modules_list
-    api.import_file       = import_file
-    api.import_directory  = import_directory
+    api.modules_list = modules_list
+    api.import_file = import_file
+    api.import_directory = import_directory
 
-    retrieve_all_keys         = datastore.retrieve_all_keys
-    api.retrieve_all_keys     = retrieve_all_keys
-    api.apply_tags            = tags.apply_tags
-    apply_tags                = tags.apply_tags
-    api.get_tags              = tags.get_tags
+    retrieve_all_keys = datastore.retrieve_all_keys
+    api.retrieve_all_keys = retrieve_all_keys
+    api.apply_tags = tags.apply_tags
+    apply_tags = tags.apply_tags
+    api.get_tags = tags.get_tags
 
-    get_tags                  = tags.get_tags
-    api.tag_filter            = tags.tag_filter
-    tag_filter                = tags.tag_filter
-    api.collection_names      = collection_names
-    api.collection_cids       = collection_cids
+    get_tags = tags.get_tags
+    api.tag_filter = tags.tag_filter
+    tag_filter = tags.tag_filter
+    api.collection_names = collection_names
+    api.collection_cids = collection_cids
     api.get_cid_from_oid_list = get_cid_from_oid_list
-    api.get_orphan_oids       = get_orphan_oids
-    api.valid_oids            = valid_oids
-    api.flush_module          = flush_module
-    api.flush_oid             = flush_oid
-    api.flush_oid_for_module  = flush_oid_for_module
+    api.get_orphan_oids = get_orphan_oids
+    api.valid_oids = valid_oids
+    api.flush_module = flush_module
+    api.flush_oid = flush_oid
+    api.flush_oid_for_module = flush_oid_for_module
 
-    api.local_store                = local_store
-    api.local_retrieve             = local_retrieve
-    api.local_exists               = local_exists
-    api.local_available_data       = local_available_data
-    api.local_retrieve_all         = local_retrieve_all
-    api.local_count_records        = local_count_records
+    api.local_store = local_store
+    api.local_retrieve = local_retrieve
+    api.local_exists = local_exists
+    api.local_available_data = local_available_data
+    api.local_retrieve_all = local_retrieve_all
+    api.local_count_records = local_count_records
     api.local_delete_function_data = local_delete_function_data
-    api.local_delete_data          = local_delete_data
+    api.local_delete_data = local_delete_data
 
-    api.libraries_dir              = config.dir_libraries
-    api.load_reference             = load_reference
+    api.libraries_dir = config.dir_libraries
+    api.load_reference = load_reference
 
-    tmp_file                       = sys_utils.tmp_file
-    api.tmp_file                   = sys_utils.tmp_file
+    tmp_file = sys_utils.tmp_file
+    api.tmp_file = sys_utils.tmp_file
 
     tags.api = api
     options.api = api

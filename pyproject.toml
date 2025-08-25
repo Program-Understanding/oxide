@@ -8,9 +8,7 @@ version = "4.0.0"
 description = "Oxide is a flexible, modular, distributed framework for performing analysis of data files, including executables."
 readme = "README.md"
 requires-python = ">=3.6"
-classifiers=[
-    "Programming Language :: Python :: 3"
-]
+classifiers = ["Programming Language :: Python :: 3"]
 dependencies = []
 
 [project.optional-dependencies]
@@ -18,11 +16,11 @@ full = [
     "colorama",
     "termcolor",
     "r2pipe",
-    "flare-capa"
-]  # or include minimal dependencies if there are any
+    "flare-capa",
+] # or include minimal dependencies if there are any
 
 
-[project.urls]  # Optional
+[project.urls] # Optional
 # "Homepage" = "https://myhomepage.com"
 "HomePage" = "https://github.com/Program-Understanding/oxide"
 "Bug Reports" = "https://github.com/Program-Understanding/oxide/issues"

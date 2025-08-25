@@ -1,9 +1,10 @@
 # these files are ignored by git
 
 src/oxide.egg-info/
+src/oxide_re.egg-info/
 env/
 .venv/
-
+uv.lock
 api_server/config.ini
 web_app/node_modules/
 web_app/client/node_modules/
