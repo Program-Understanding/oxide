@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Any, List, Set, Tuple
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from oxide.core import api
+from oxide.core import api, progress
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -25,14 +25,14 @@ def results(collection_list: List[str], opts: dict) -> Dict[str, Any]:
     """Categorize files, returning full BinDiff results for each modified executable."""
     # Expand collections
     target_cid = collection_list[0]
-    baseline_cid = collection_list[1] if len(collection_list) > 1 else None
+    baseline_cid = collection_list[1]
     target_oids = set(api.expand_oids(target_cid))
-    baseline_oids = set(api.expand_oids(baseline_cid)) if baseline_cid else set()
+    baseline_oids = set(api.expand_oids(baseline_cid))
 
     # Split executables vs non-executables
     target_exes, target_non = separate_oids(list(target_oids))
     baseline_exes, baseline_non = separate_oids(list(baseline_oids))
-
+    
     # Tier 0: Exact matches
     exact_exes = target_exes & baseline_exes
     rem_t_exes = target_exes - exact_exes
@@ -43,6 +43,8 @@ def results(collection_list: List[str], opts: dict) -> Dict[str, Any]:
 
     # Tier 2A: Name-tier BinDiff
     name_bindiff: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    print("BINDIFF FOR FILE NAME MATCHES")
+    p = progress.Progress(len(name_exes))
     for t_oid, b_oid in name_exes.items():
         try:
             diff = api.retrieve("bindiff", [t_oid, b_oid]) or {}
@@ -54,6 +56,7 @@ def results(collection_list: List[str], opts: dict) -> Dict[str, Any]:
             "method": "name",
             "diff": diff
         }
+        p.tick()
 
     # Tier 2B: BinDiff on remaining executables
     bindiff_exes = match_by_bindiff(rem_t_exes, rem_b_exes)
@@ -127,9 +130,7 @@ def match_by_filename(
                     break
     return matched, rem_t, rem_b
 
-def match_by_bindiff(
-    target_set: Set[str], baseline_set: Set[str]
-) -> Dict[Tuple[str, str], Dict[str, Any]]:
+def match_by_bindiff(target_set: Set[str], baseline_set: Set[str]) -> Dict[Tuple[str, str], Dict[str, Any]]:
     """Run full BinDiff on each pair and return matches with their diffs."""
     if not target_set or not baseline_set:
         return {}
@@ -137,6 +138,8 @@ def match_by_bindiff(
 
     raw_diffs: Dict[Tuple[str, str], Any] = {}
     scores: Dict[Tuple[str, str], float] = {}
+    print("MATCH BY BINDIFF")
+    p = progress.Progress(len(t_list))
     for t in t_list:
         for b in b_list:
             try:
@@ -146,6 +149,7 @@ def match_by_bindiff(
                 diff = {}
             raw_diffs[(t, b)] = diff
             scores[(t, b)] = diff.get("file_stats", {}).get("similarity", 0.0)
+        p.tick()
 
     M = max(len(t_list), len(b_list))
     cost = np.full((M, M), 1e6)

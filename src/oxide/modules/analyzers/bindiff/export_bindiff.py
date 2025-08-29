@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import shutil
 from bindiff import BinDiff
-from bindiff.types import function_algorithm_str, basicblock_algorithm_str
+from bindiff.types import function_algorithm_str
 from pathlib import Path
 from oxide.core.libraries.ghidra_utils import get_file_offset
 from oxide.core import api
@@ -50,7 +50,8 @@ def run_ghidra_binexport(ghidra_path, input_file, output_dir, script_path, use_x
         subprocess.run(cmd, check=True, env=env)
 
     if not os.path.exists(output_binexport):
-        raise FileNotFoundError(f"Expected BinExport not found at: {output_binexport}")
+        return None
+
     return output_binexport
 
 
@@ -77,9 +78,7 @@ def run_bindiff(primary_oid, primary,  secondary_oid, secondary, output_dir):
             text=True
         )
     except subprocess.CalledProcessError as e:
-        print("Bindiff failed with return code", e.returncode)
-        print("STDOUT:\n", e.stdout)
-        print("STDERR:\n", e.stderr)
+        return {}
 
     base1 = os.path.splitext(os.path.basename(primary))[0]
     base2 = os.path.splitext(os.path.basename(secondary))[0]

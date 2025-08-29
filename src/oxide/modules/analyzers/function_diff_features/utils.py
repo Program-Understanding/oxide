@@ -1,6 +1,6 @@
 from oxide.core import api
 from difflib import unified_diff
-from typing import Tuple, Dict, Any
+
 
 def retrieve_function_instructions(file, func):
     """
@@ -23,11 +23,10 @@ def diff_features(diff, target_file, target_function,
     new-vs-removed call counts.
     """
     # 1) instruction-level changes
-    added_instr, removed_instr, opcode_mods, operand_mods = \
-        _instruction_changes(target_func_insts, baseline_func_insts)
+    added_instr, removed_instr = _instruction_changes(target_func_insts, baseline_func_insts)
 
     # 2) basic-block delta
-    basic_blocks = _get_bb_delta(
+    bb_nodes, bb_edges = _get_bb_delta(
         target_file, target_function,
         baseline_file, baseline_func
     )
@@ -49,34 +48,64 @@ def diff_features(diff, target_file, target_function,
     return {
         'added_instr':               added_instr,
         'removed_instr':             removed_instr,
-        'modified_opcode_instr':     opcode_mods,
-        'modified_operand_instr':    operand_mods,
-        'basic_blocks':              basic_blocks,
-        'fc_add_existing':     new_exist,
-        'fc_add_new':          new_new,
-        'fc_removed_existing': removed_exist,
-        'fc_removed_deleted':     removed_deleted,
+        'bb_nodes':                  bb_nodes,
+        'bb_edges':                  bb_edges,
+        'fc_add_existing':           new_exist,
+        'fc_add_new':                new_new,
+        'fc_removed_existing':       removed_exist,
+        'fc_removed_deleted':        removed_deleted
     }
 
 def _get_bb_delta(target_file, target_func, baseline_file, baseline_func):
-    target_num_bb = None
-    baseline_num_bb = None
+    """
+    Returns a tuple:
+      (Δ#basic_blocks, Δ#internal_edges)
+    between target_func in target_file and baseline_func in baseline_file.
+    """
+    # — TARGET —
+    target_disasm = api.retrieve('ghidra_disasm', target_file) or {}
+    target_blocks = set()
+    target_edges = 0
 
-    # TARGET FILE FUNCS
-    file_disasm = api.retrieve('ghidra_disasm', target_file) or {}
-    if file_disasm and target_func in file_disasm['functions']:
-        call_mappings = api.get_field("function_call_targets", target_file, target_func)
-        target_num_bb = len(file_disasm['functions'][target_func]['blocks'])
-    
-    # BASELINE FILE FUNCS
-    file_disasm = api.retrieve('ghidra_disasm', baseline_file) or {}
-    if file_disasm and baseline_func in file_disasm['functions']:
-        call_mappings = api.get_field("function_call_targets", baseline_file, baseline_func)
-        baseline_num_bb = len(file_disasm['functions'][baseline_func]['blocks'])
-    
-    if target_num_bb and baseline_num_bb:
-        return target_num_bb - baseline_num_bb
-    return 0 
+    if target_disasm and target_func in target_disasm['functions']:
+        target_blocks = set(target_disasm['functions'][target_func]['blocks'])
+        target_bb_count = len(target_blocks)
+
+        # need the global original_blocks map for edge info
+        target_orig_blocks = api.get_field("ghidra_disasm", target_file, "original_blocks") or {}
+
+        for b in target_blocks:
+            for dst in target_orig_blocks.get(b, {}).get("dests", []):
+                if dst in target_blocks:
+                    target_edges += 1
+    else:
+        target_bb_count = None
+
+    # — BASELINE —
+    base_disasm = api.retrieve('ghidra_disasm', baseline_file) or {}
+    baseline_edges = 0
+
+    if base_disasm and baseline_func in base_disasm['functions']:
+        base_blocks = set(base_disasm['functions'][baseline_func]['blocks'])
+        baseline_bb_count = len(base_blocks)
+
+        base_orig_blocks = api.get_field("ghidra_disasm", baseline_file, "original_blocks") or {}
+
+        for b in base_blocks:
+            for dst in base_orig_blocks.get(b, {}).get("dests", []):
+                if dst in base_blocks:
+                    baseline_edges += 1
+    else:
+        baseline_bb_count = None
+
+    # — DELTAS —
+    if target_bb_count is not None and baseline_bb_count is not None:
+        bb_delta   = target_bb_count   - baseline_bb_count
+        edge_delta = target_edges      - baseline_edges
+        return bb_delta, edge_delta
+
+    # fallback if one side is missing
+    return 0, 0
 
 def _get_fc_new(diff, target_file: str, target_func: str, baseline_file: str, baseline_func: str):
     """
@@ -85,11 +114,9 @@ def _get_fc_new(diff, target_file: str, target_func: str, baseline_file: str, ba
       • fc_add_new:      calls to brand-new functions
     """
     # Get list of all callees from target function
-    target_calls = api.get_field('function_call_targets',
-                                 target_file, target_func) or []
+    target_calls = api.get_field('function_call_targets', target_file, target_func) or []
     # Get list of callees from baseline function
-    baseline_calls = api.get_field('function_call_targets',
-                                   baseline_file, baseline_func) or []
+    baseline_calls = api.get_field('function_call_targets', baseline_file, baseline_func) or []
 
     # function_matches: keys are (t_addr, b_addr)
     matches = diff.get('function_matches', {})
@@ -176,87 +203,20 @@ def parse_instruction(line):
     return opcode, operands
 
 def _instruction_changes(func_insts, ref_func_insts):
-    u_diff = unified_diff(ref_func_insts, func_insts, n=0)
+    """
+    Returns (lines_added, lines_removed) between ref_func_insts and func_insts.
+    """
+    total_added = 0
+    total_removed = 0
 
-    # High-level counters
-    total_lines_added = 0
-    total_lines_removed = 0
-
-    # Detailed counters for the "modified" lines
-    total_opcode_modifications = 0
-    total_operand_modifications = 0
-
-    # For tracking lines within the current diff hunk
-    minus_lines = []  # lines that start with '-'
-    plus_lines = []   # lines that start with '+'
-
-    def process_hunk(minus_list, plus_list):
-        """
-        Pair up the minus_list and plus_list lines (which should be
-        the same length if they truly represent modifications),
-        then figure out whether the opcode changed or just the operands.
-        Returns (opcode_mod_count, operand_mod_count, leftover_minus, leftover_plus)
-        """
-        opcode_mod_count = 0
-        operand_mod_count = 0
-
-        # We will pair up as many lines as we can in one-to-one fashion
-        pairs_to_check = min(len(minus_list), len(plus_list))
-        for i in range(pairs_to_check):
-            opcode_minus, operands_minus = parse_instruction(minus_list[i])
-            opcode_plus, operands_plus = parse_instruction(minus_list[i])
-
-            if opcode_minus == opcode_plus:
-                # Same opcode => operand modification
-                operand_mod_count += 1
-            else:
-                # Different opcode => opcode modification
-                opcode_mod_count += 1
-
-        # Return how many lines remain unpaired (i.e. purely added or removed)
-        leftover_minus = len(minus_list) - pairs_to_check
-        leftover_plus = len(plus_list) - pairs_to_check
-
-        return opcode_mod_count, operand_mod_count, leftover_minus, leftover_plus
-
-    # We'll process the diff line by line
-    for line in u_diff:
-        # Skip file header lines in the diff
-        if line.startswith("---") or line.startswith("+++"):
+    for line in unified_diff(ref_func_insts, func_insts, n=0):
+        # skip diff metadata
+        if line.startswith('+++') or line.startswith('---'):
             continue
+        # count additions/removals
+        if line.startswith('+'):
+            total_added += 1
+        elif line.startswith('-'):
+            total_removed += 1
 
-        if line.startswith("@@"):
-            # We’ve hit a new diff hunk. First, process the old one:
-            if minus_lines or plus_lines:
-                # Determine how many lines are purely added/removed vs. modified
-                opcode_mod, operand_mod, leftover_minus, leftover_plus = process_hunk(minus_lines, plus_lines)
-                total_opcode_modifications += opcode_mod
-                total_operand_modifications += operand_mod
-
-                # Lines that didn’t match up one-to-one are added or removed
-                total_lines_removed += leftover_minus
-                total_lines_added += leftover_plus
-
-            # Reset lists for the new hunk
-            minus_lines = []
-            plus_lines = []
-            continue
-
-        # Collect lines in the current hunk
-        if line.startswith("-"):
-            minus_lines.append(line)
-        elif line.startswith("+"):
-            plus_lines.append(line)
-        else:
-            # Context line (no + or -), just ignore
-            pass
-
-    # After the loop, handle the final hunk (if any)
-    if minus_lines or plus_lines:
-        opcode_mod, operand_mod, leftover_minus, leftover_plus = process_hunk(minus_lines, plus_lines)
-        total_opcode_modifications += opcode_mod
-        total_operand_modifications += operand_mod
-        total_lines_removed += leftover_minus
-        total_lines_added += leftover_plus
-
-    return total_lines_added, total_lines_removed, total_opcode_modifications, total_operand_modifications
+    return total_added, total_removed

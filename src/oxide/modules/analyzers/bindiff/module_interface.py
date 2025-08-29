@@ -38,6 +38,7 @@ def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     Expects exactly two OIDs: the baseline and the target.
     Computes differences using BinDiff and returns the results.
     """
+    results = {}
     if len(oid_list) != 2:
         logger.error("Expected exactly two OIDs: baseline and target, got %d", len(oid_list))
         return {}
@@ -45,15 +46,26 @@ def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     target_oid = oid_list[0]
     baseline_oid = oid_list[1]
 
+    if api.exists(NAME, target_oid):
+        data = api.retrieve(NAME, target_oid)
+        if baseline_oid in data:
+            return data[baseline_oid]
+
     try:
         baseline_export = get_or_create_binexport(baseline_oid)
         target_export = get_or_create_binexport(target_oid)
 
-        diff_results = run_bindiff(target_oid, target_export, baseline_oid, baseline_export, api.scratch_dir)
-        return diff_results or {}
+        results = run_bindiff(target_oid, target_export, baseline_oid, baseline_export, api.scratch_dir)
     except Exception:
         logger.exception("BinDiff execution failed for OIDs %s and %s", target_oid, baseline_oid)
         return {}
+    if api.exists(NAME, target_oid):
+        data = api.retrieve(NAME, target_oid)
+        data[baseline_oid] = results
+        api.store(NAME, target_export, data)
+    else:
+        api.store(NAME, target_oid, {target_oid: results})
+    return results
 
 def get_or_create_binexport(oid: str) -> str:
     """
