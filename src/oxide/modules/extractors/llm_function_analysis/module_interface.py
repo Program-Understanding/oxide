@@ -20,7 +20,7 @@ logger.debug("init")
 
 opts_doc = {
     "func_offset": {"type": str, "mangle": True},
-    "prompt_name": {"type": str, "mangle": True, "default": "tag"}
+    "prompt": {"type": str, "mangle": True, "default": "tag"}
     }
 
 """
@@ -69,8 +69,8 @@ def process(oid: str, opts: dict) -> bool:
         logger.error("Unknown prompt type: %s", prompt_key)
         return False
 
-    tag, gpu_time_sec = prompt_func(oid, func_offset)
-    api.store(NAME, oid, {'tag': tag, 'gpu_time_sec': gpu_time_sec}, opts)
+    tag, why, gpu_time_sec = prompt_func(oid, func_offset)
+    api.store(NAME, oid, {'tag': tag, 'why': why, 'gpu_time_sec': gpu_time_sec}, opts)
     return True
 
         

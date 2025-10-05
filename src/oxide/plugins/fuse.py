@@ -2,34 +2,30 @@ import json
 import math
 import re
 import logging
-from collections import Counter, defaultdict
-from typing import List, Dict, Tuple, Optional, Any
 import os
-from pathlib import Path
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.stats import pearsonr
 import time
+import textwrap
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import List, Dict, Tuple, Optional, Any
+
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from typing import List, Dict, Any
-import textwrap
+from scipy.stats import pearsonr, spearmanr
 
 try:
     from rank_bm25 import BM25Okapi
 except ImportError:
     BM25Okapi = None
 
-
-import numpy as np
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
 
 from oxide.core import api
 
-AUTHOR="Nathan"
-NAME="fuse"
+AUTHOR = "Nathan"
+NAME = "fuse"
 
 # -------------------------------------------------------------
 # Configuration & Setup
@@ -57,13 +53,13 @@ def fuse(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             prompt = fp.read().strip()
     except OSError as e:
         return {'error': f'Failed to read prompt: {e}'}
-    
+
     cid = api.valid_oids(args)[0]
     return search_prompt(cid, prompt, use_tags=opts.get('use_tags', True))
 
 def fuse_batch(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """Run batch NL search across collections, returning per-collection and global metrics plus avg retrieval time in ms."""
-    comp_path   = opts.get('comp_path')
+    comp_path = opts.get('comp_path')
     prompt_path = opts.get('prompt_path')
     if not comp_path or not prompt_path:
         print("Error: 'comp_path' or 'prompt_path' not provided.")
@@ -110,9 +106,9 @@ def fuse_batch(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
             batch_res.append({'component': comp, 'rank': rank, 'gold': gold_oid})
 
-            sum_p1  += (rank == 1)
-            sum_h2  += (rank <= 2)
-            sum_h5  += (rank <= 5)
+            sum_p1 += (rank == 1)
+            sum_h2 += (rank <= 2)
+            sum_h5 += (rank <= 5)
             sum_mrr += (1.0 / rank)
             sum_rank += rank
             total_queries += 1
@@ -123,10 +119,10 @@ def fuse_batch(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             n = len(batch_res)
             per_collection[colname] = {
                 'metrics': {
-                    'P@1':   sum(1 for r in batch_res if r['rank']==1) / n,
-                    'Hit@2': sum(1 for r in batch_res if r['rank']<=2) / n,
-                    'Hit@5': sum(1 for r in batch_res if r['rank']<=5) / n,
-                    'MRR':   sum((1.0/r['rank']) for r in batch_res) / n,
+                    'P@1':   sum(1 for r in batch_res if r['rank'] == 1) / n,
+                    'Hit@2': sum(1 for r in batch_res if r['rank'] <= 2) / n,
+                    'Hit@5': sum(1 for r in batch_res if r['rank'] <= 5) / n,
+                    'MRR':   sum((1.0 / r['rank']) for r in batch_res) / n,
                     'mean':  sum(r['rank'] for r in batch_res) / n
                 },
                 'ranks_by_prompt': ranks_map
@@ -137,9 +133,9 @@ def fuse_batch(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         return {'error': 'No prompts tested.'}
 
     global_metrics = {
-        'P@1':   sum_p1  / total_queries,
-        'Hit@2': sum_h2  / total_queries,
-        'Hit@5': sum_h5  / total_queries,
+        'P@1':   sum_p1 / total_queries,
+        'Hit@2': sum_h2 / total_queries,
+        'Hit@5': sum_h5 / total_queries,
         'MRR':   sum_mrr / total_queries,
         'Mean':  sum_rank / total_queries
     }
@@ -157,6 +153,7 @@ def fuse_batch(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 def baseline_fuse_bm25(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
     BM25 baseline outputting per_collection, global_metrics, and avg query time in ms.
+    Uses strings + (optionally) tags as the BM25 document.
     """
     comp_path = opts.get("comp_path")
     prompt_path = opts.get("prompt_path")
@@ -172,7 +169,9 @@ def baseline_fuse_bm25(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": f"Failed to load prompt JSON: {e}"}
 
     comp_map = create_ground_truth(comp_path)
-    
+
+    include_tags = opts.get("use_tags", True)
+
     # global accumulators
     global_acc = {'total': 0, 'sum_p1': 0, 'sum_h2': 0, 'sum_h5': 0, 'sum_mrr': 0.0}
     per_collection: Dict[str, Any] = {}
@@ -183,19 +182,17 @@ def baseline_fuse_bm25(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
     for cid, oid_map in comp_map.items():
         colname = api.get_colname_from_oid(cid)
-        oids, _ = api.valid_oids([cid])
-        exes = filter_executables(api.expand_oids(oids))
+        exes = set(filter_executables(api.expand_oids(cid)))
 
-        # build corpus for BM25
+        # build corpus for BM25 (locked to exe_oids order)
         exe_oids: List[str] = []
         corpus: List[List[str]] = []
         for comp_name, exe_oid in oid_map.items():
             if exe_oid in exes:
-                strings = api.get_field("strings", exe_oid, exe_oid) or {}
-                tokens = list(strings.values())
-                if tokens:
+                doc = generate_doc(extract_tokens(exe_oid, use_tags=include_tags))
+                if doc:
                     exe_oids.append(exe_oid)
-                    corpus.append(tokens)
+                    corpus.append(doc)
 
         bm25 = None
         bm25_construction_time = None  # in seconds
@@ -275,8 +272,8 @@ def baseline_fuse_bm25(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
 
-    # 4) nanoseconds → ms, then format as a string to avoid any timestamp conversion
-    avg_retrieval_time_ms = (total_search_time_ns / total_queries) / 1_000_000.0
+    # nanoseconds → ms
+    avg_retrieval_time_ms = (total_search_time_ns / max(total_queries, 1)) / 1_000_000.0
     avg_retrieval_time_ms_str = f"{avg_retrieval_time_ms:.3f}"
 
     return {
@@ -290,6 +287,7 @@ def baseline_fuse_bm25_best(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
     """
     BM25-best baseline outputting per_collection and global_metrics
     in the same format as fuse_batch_dual.
+    Uses strings + (optionally) tags as the BM25 document.
     """
     comp_path = opts.get("comp_path")
     prompt_path = opts.get("prompt_path")
@@ -305,42 +303,47 @@ def baseline_fuse_bm25_best(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
         return {"error": f"Failed to load prompt JSON: {e}"}
 
     comp_map = create_ground_truth(comp_path)
+    include_tags = opts.get("use_tags", True)
+
     global_acc = {'total': 0, 'sum_p1': 0, 'sum_h2': 0, 'sum_h5': 0, 'sum_mrr': 0.0}
     per_collection: Dict[str, Any] = {}
 
     for cid, oid_map in comp_map.items():
         colname = api.get_colname_from_oid(cid)
-        oids, _ = api.valid_oids([cid])
-        exes = filter_executables(api.expand_oids(oids))
+        exes = set(filter_executables(api.expand_oids(cid)))
 
-        # corpus for BM25
+        # corpus for BM25 (locked to exe_oids)
         exe_oids: List[str] = []
         corpus: List[List[str]] = []
         for comp_name, exe_oid in oid_map.items():
             if exe_oid in exes:
-                strings = api.get_field("strings", exe_oid, exe_oid) or {}
-                tokens = list(strings.values())
-                if tokens:
+                doc = generate_doc(extract_tokens(exe_oid, use_tags=include_tags))
+                if doc:
                     exe_oids.append(exe_oid)
-                    corpus.append(tokens)
+                    corpus.append(doc)
 
-        if BM25Okapi and corpus:
-            try:
-                bm25 = BM25Okapi(corpus)
-            except Exception:
-                bm25 = None
+        if not (BM25Okapi and corpus):
+            per_collection[colname] = {'metrics': {}, 'ranks_by_prompt': {}}
+            continue
+
+        try:
+            bm25 = BM25Okapi(corpus)
+        except Exception:
+            bm25 = None
 
         batch_res: List[Dict[str, Optional[int]]] = []
         ranks_map: Dict[str, Optional[int]] = {}
 
         for comp_name, gold_oid in oid_map.items():
             prompt = prompt_map.get(comp_name)
-            if not prompt:
+            if not prompt or bm25 is None:
+                ranks_map[comp_name] = None
                 continue
-            query_tokens = prompt.split()
 
+            query_tokens = prompt.split()
             best_rank: Optional[int] = None
 
+            # full query
             scores_full = bm25.get_scores(query_tokens)
             ranked_full = sorted(zip(exe_oids, scores_full), key=lambda x: x[1], reverse=True)
             ranked_oids_full = [oid for oid, _ in ranked_full]
@@ -350,11 +353,9 @@ def baseline_fuse_bm25_best(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
                 rank_full = None
             best_rank = rank_full
 
-            # each token
+            # token-level UB
             for tok in set(query_tokens):
                 scores_tok = bm25.get_scores([tok])
-
-                # look up the gold_oid’s score and skip if zero or negative
                 try:
                     gold_idx = exe_oids.index(gold_oid)
                 except ValueError:
@@ -362,7 +363,7 @@ def baseline_fuse_bm25_best(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
                 if scores_tok[gold_idx] <= 0:
                     continue
 
-                ranked_tok = sorted(zip(exe_oids, scores_tok),key=lambda x: x[1],reverse=True)
+                ranked_tok = sorted(zip(exe_oids, scores_tok), key=lambda x: x[1], reverse=True)
                 ranked_oids_tok = [oid for oid, _ in ranked_tok]
                 try:
                     rank_tok = ranked_oids_tok.index(gold_oid) + 1
@@ -408,36 +409,25 @@ def baseline_fuse_bm25_best(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
     }
 
     return {'per_collection': per_collection, 'global_metrics': global_metrics}
-
+    # return {'global_metrics': global_metrics}
 
 def run_all(args, opts):
     results = {}
     results['FUSE'] = fuse_batch(args, opts)
+    results['BM25'] = baseline_fuse_bm25_best(args, opts)
     opts['use_tags'] = False
     results['FUSE-S'] = fuse_batch(args, opts)
-    results['BM25'] = baseline_fuse_bm25(args, opts)
-    results['BM25-UB'] = baseline_fuse_bm25_best(args, opts)
-
+    results['BM25-S'] = baseline_fuse_bm25_best(args, opts)
     return results
-
 
 def effort_analysis(args, opts):
     """
     Compute analyst-effort statistics and save CDF plot.
-
-    Args:
-        args, opts: forwarded to run_all()
-
-    Returns:
-        table_data: dict mapping system →
-            {'median', 'mean', 'p75', 'p90'}
     """
     data = run_all(args, opts)
-    systems = ['BM25', 'BM25-UB', 'FUSE-S', 'FUSE']
+    systems = ['BM25', 'FUSE']
 
-    # --------------------------------------------------
-    # Collect ranks for each system
-    # --------------------------------------------------
+    # Collect ranks
     all_ranks = {}
     for sys in systems:
         ranks = []
@@ -448,17 +438,16 @@ def effort_analysis(args, opts):
     stats = {
         sys: {
             'median': float(np.median(r)),
-            'mean'  : float(np.mean(r)),
-            'p75'   : float(np.percentile(r, 75)),
-            'p90'   : float(np.percentile(r, 90)),
+            'mean': float(np.mean(r)),
+            'p75': float(np.percentile(r, 75)),
+            'p90': float(np.percentile(r, 90)),
         }
         for sys, r in all_ranks.items()
     }
 
-    # Table-friendly dict (same keys, but only the needed fields)
     table_data = {
         sys: {k: v for k, v in stats[sys].items()
-                     if k in ('median', 'mean', 'p75', 'p90')}
+              if k in ('median', 'mean', 'p75', 'p90')}
         for sys in systems
     }
 
@@ -485,123 +474,146 @@ def effort_analysis(args, opts):
 
 def component_analysis(args, opts):
     """
-    Compute per-component retrieval metrics + avg size / #strings / #tags / tag density,
-    and Pearson correlation between features and median rank.
+    Comparative per-component analysis for FUSE vs BM25-UB.
 
-    Args:
-        args, opts: forwarded to fuse_batch()
+    For each component, compute retrieval metrics (median/mean/p75/p90, P@1, Hit@2, Hit@5, MRR)
+    separately for:
+      • FUSE    (semantic; uses tags if opts['use_tags'] True)
+      • BM25-UB (lexical upper-bound; strings + optional tags, token-level best)
 
-    Returns:
-        metrics: dict mapping
-          component → {
-            'median', 'mean', 'p75', 'p90',
-            'P@1', 'Hit@2', 'Hit@5', 'MRR',
-            'avg_size', 'avg_strings', 'avg_tags', 'tag_density'
-          }
-        Plus a reserved '__correlation__' key with Pearson r values.
+    Also compute avg size / #strings / #tags / tag density per component, and
+    Pearson correlation between these features and MEDIAN RANK — separately for each system.
     """
-    # 1) Run the search
-    data = fuse_batch(args, opts)
 
-    # 2) Load ground truth: {collection → {component: oid, ...}}
+    # -------- 1) Run searches --------
+    data_fuse  = fuse_batch(args, opts)
+    data_bm25  = baseline_fuse_bm25_best(args, opts)
+
+    if 'per_collection' not in data_fuse or 'per_collection' not in data_bm25:
+        return {'error': 'Search results missing per_collection (check inputs).'}
+
+    # -------- 2) Ground truth / features --------
     ground_truth = create_ground_truth(opts['comp_path'])
 
-    # 3) Gather raw feature lists per component
-    feat_map = defaultdict(list)
+    # Collect basic features per component across all collections
+    feat_map = defaultdict(list)  # comp -> list of (size, strings, tags)
     for cid, oid_map in ground_truth.items():
         for comp, oid in oid_map.items():
             size = api.get_field("file_meta", oid, "size")
-            strings = len(api.get_field("strings", oid, oid))
-            tags = len(api.retrieve("tag_all_functions", oid))
+            strings = len(api.get_field("strings", oid, oid) or {})
+            tags = len((api.retrieve("tag_all_functions", oid) or {}).get('func_tags', {}))
             feat_map[comp].append((size, strings, tags))
 
-    # 4) Gather all retrieval ranks per component
-    comp_ranks = defaultdict(list)
-    for col_data in data['per_collection'].values():
-        for comp, rank in col_data['ranks_by_prompt'].items():
-            comp_ranks[comp].append(rank)
-
-    # 5) Compute metrics
-    metrics = {}
-    for comp, ranks in comp_ranks.items():
-        arr = np.asarray(ranks, dtype=float)
-
-        feats = np.asarray(feat_map.get(comp, []), dtype=float)
-        if feats.size:
-            sizes, strings, tags = feats.T
-        else:
-            sizes = strings = tags = np.array([], dtype=float)
-
+    def _avg_feats(triples):
+        if not triples:
+            return (None, None, None, None)
+        arr = np.asarray(triples, dtype=float)
+        sizes, strings, tags = arr.T
         avg_size = float(sizes.mean()) if sizes.size else None
         avg_strings = float(strings.mean()) if strings.size else None
         avg_tags = float(tags.mean()) if tags.size else None
-        tag_density = avg_tags / avg_strings if avg_strings else None
+        tag_density = (avg_tags / avg_strings) if (avg_strings and avg_strings > 0) else None
+        return (avg_size, avg_strings, avg_tags, tag_density)
 
-        stats = {
-            'median'     : float(np.median(arr)),
-            'mean'       : float(np.mean(arr)),
-            'p75'        : float(np.percentile(arr, 75)),
-            'p90'        : float(np.percentile(arr, 90)),
-            'P@1'        : float((arr == 1).mean()),
-            'Hit@2'      : float((arr <= 2).mean()),
-            'Hit@5'      : float((arr <= 5).mean()),
-            'MRR'        : float((1.0 / arr).mean()),
-            'avg_size'   : avg_size,
-            'avg_strings': avg_strings,
-            'avg_tags'   : avg_tags,
-            'tag_density': tag_density,
+    # -------- 3) Gather per-component ranks for each system --------
+    comp_ranks = { 'FUSE': defaultdict(list), 'BM25_UB': defaultdict(list) }
+
+    # FUSE ranks
+    for col_data in data_fuse['per_collection'].values():
+        for comp, rank in (col_data.get('ranks_by_prompt') or {}).items():
+            if rank is not None:
+                comp_ranks['FUSE'][comp].append(rank)
+
+    # BM25-UB ranks
+    for col_data in data_bm25['per_collection'].values():
+        for comp, rank in (col_data.get('ranks_by_prompt') or {}).items():
+            if rank is not None:
+                comp_ranks['BM25_UB'][comp].append(rank)
+
+    # -------- 4) Metric computation helper --------
+    def _metrics_from_ranks(ranks: List[int]) -> Dict[str, float]:
+        if not ranks:
+            return {
+                'median': None, 'mean': None, 'p75': None, 'p90': None,
+                'P@1': None, 'Hit@2': None, 'Hit@5': None, 'MRR': None
+            }
+        arr = np.asarray(ranks, dtype=float)
+        return {
+            'median': float(np.median(arr)),
+            'mean':   float(np.mean(arr)),
+            'p75':    float(np.percentile(arr, 75)),
+            'p90':    float(np.percentile(arr, 90)),
+            'P@1':    float((arr == 1).mean()),
+            'Hit@2':  float((arr <= 2).mean()),
+            'Hit@5':  float((arr <= 5).mean()),
+            'MRR':    float((1.0 / arr).mean())
         }
-        metrics[comp] = stats
 
-    # 6) Compute Pearson correlation between median rank and features
-    x_ranks = []
-    x_size = []
-    x_strings = []
-    x_tags = []
-    x_density = []
+    # -------- 5) Build per-component comparison table --------
+    per_component: Dict[str, Dict[str, Any]] = {}
+    all_components = set(list(comp_ranks['FUSE'].keys()) + list(comp_ranks['BM25_UB'].keys()))
+    for comp in sorted(all_components):
+        fuse_stats  = _metrics_from_ranks(comp_ranks['FUSE'].get(comp, []))
+        bm25_stats  = _metrics_from_ranks(comp_ranks['BM25_UB'].get(comp, []))
+        avg_size, avg_strings, avg_tags, tag_density = _avg_feats(feat_map.get(comp, []))
 
-    for comp, stats in metrics.items():
-        if any(v is None for v in [stats['avg_size'], stats['avg_strings'], stats['avg_tags'], stats['tag_density']]):
-            continue
-        x_ranks.append(stats['median'])
-        x_size.append(stats['avg_size'])
-        x_strings.append(stats['avg_strings'])
-        x_tags.append(stats['avg_tags'])
-        x_density.append(stats['tag_density'])
+        # handy deltas (FUSE - BM25-UB) for rank-1 and MRR
+        deltas = {}
+        if fuse_stats['P@1'] is not None and bm25_stats['P@1'] is not None:
+            deltas['ΔP@1'] = float(fuse_stats['P@1'] - bm25_stats['P@1'])
+        if fuse_stats['MRR'] is not None and bm25_stats['MRR'] is not None:
+            deltas['ΔMRR'] = float(fuse_stats['MRR'] - bm25_stats['MRR'])
 
-    corr = {
-        'avg_size':    pearsonr(x_ranks, x_size)[0],
-        'avg_strings': pearsonr(x_ranks, x_strings)[0],
-        'avg_tags':    pearsonr(x_ranks, x_tags)[0],
-        'tag_density': pearsonr(x_ranks, x_density)[0],
+        per_component[comp] = {
+            'FUSE': fuse_stats,
+            'BM25_UB': bm25_stats,
+            'features': {
+                'avg_size': avg_size,
+                'avg_strings': avg_strings,
+                'avg_tags': avg_tags,
+                'tag_density': tag_density
+            },
+            'deltas': deltas
+        }
+
+    # -------- 6) Correlations vs. median rank (per system) --------
+    def _corr_vs_median(system_key: str) -> Dict[str, Optional[float]]:
+        xs_rank = []
+        xs_size = []
+        xs_str  = []
+        xs_tag  = []
+        xs_den  = []
+        for comp, row in per_component.items():
+            med = row[system_key].get('median')
+            feats = row['features']
+            if med is None:
+                continue
+            if any(v is None for v in (feats['avg_size'], feats['avg_strings'], feats['avg_tags'], feats['tag_density'])):
+                continue
+            xs_rank.append(med)
+            xs_size.append(feats['avg_size'])
+            xs_str.append(feats['avg_strings'])
+            xs_tag.append(feats['avg_tags'])
+            xs_den.append(feats['tag_density'])
+
+        if not xs_rank:
+            return {'avg_size': None, 'avg_strings': None, 'avg_tags': None, 'tag_density': None}
+
+        return {
+            'avg_size':   float(pearsonr(xs_rank, xs_size)[0]),
+            'avg_strings':float(pearsonr(xs_rank, xs_str)[0]),
+            'avg_tags':   float(pearsonr(xs_rank, xs_tag)[0]),
+            'tag_density':float(pearsonr(xs_rank, xs_den)[0]),
+        }
+
+    correlations = {
+        'FUSE': _corr_vs_median('FUSE'),
+        'BM25': _corr_vs_median('BM25_UB')
     }
 
-    metrics['__correlation__'] = corr
-    return metrics
-
-def measure_search_latency(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Retrieves the average per-query latency (in ms) reported by
-    baseline_fuse_bm25 and fuse_batch themselves.
-    """
-    if not opts.get('comp_path') or not opts.get('prompt_path'):
-        return {"error": "Use 'comp_path' and 'prompt_path' in opts for latency measurement."}
-
-    # run BM25 baseline and grab its avg_retrieval_time_ms
-    bm25_res = baseline_fuse_bm25(args, opts)
-    bm25_ms = bm25_res.get('avg_retrieval_time_ms')
-    if bm25_ms is None:
-        return {"error": "baseline_fuse_bm25 did not return avg_retrieval_time_ms"}
-
-    # run FUSE semantic search and grab its avg_retrieval_time_ms
-    fuse_res = fuse_batch(args, opts)
-    fuse_ms = fuse_res.get('avg_retrieval_time_ms')
-    if fuse_ms is None:
-        return {"error": "fuse_batch did not return avg_retrieval_time_ms"}
-
     return {
-        'bm25_ms': bm25_ms,
-        'fuse_ms': fuse_ms
+        'per_component': per_component,
+        'correlations': correlations
     }
 
 def process_collection(args, opts):
@@ -647,24 +659,6 @@ def process_collection(args, opts):
             total_data_cpu_hours += data_cpu
             total_data_gpu_hours += data_gpu
             count += 1
-
-def collection_embedding(args, opts):
-    results = {}
-    cid = api.valid_oids(args)[0]
-    use_tags = opts.get("use_tags", True)
-
-    oids = api.expand_oids(cid)
-    exes, _ = separate_oids(oids)
-
-    _, total_emb_cpu_sec, total_emb_gpu_sec = build_embedding_matrix(exes, use_tags)
-
-    # Results dictionary
-    results = {
-        "Embedding CPU-seconds": f"{total_emb_cpu_sec:.2f}",
-        "Embedding GPU-seconds": f"{total_emb_gpu_sec:.2f}",
-    }
-
-    return results
 
 def experiment_semantic_variants(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
@@ -788,11 +782,11 @@ def experiment_semantic_variants(args: List[str], opts: Dict[str, Any]) -> Dict[
 
 def search_semantic_variants(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     cid = args[0]
-    gold_oid = args[1]
+    gold_oid = api.expand_oids(args[1])[0]
 
     prompt_path = opts.get("prompt_path")
     if not prompt_path:
-        return {"error": "Use 'comp_path' and 'prompt_path' to specify both JSON files."}
+        return {"error": "Use 'prompt_path' to specify a JSON file."}
 
     if not os.path.isfile(prompt_path) or not prompt_path.endswith('.json'):
         return {"error": "The 'prompt_path' must be an existing .json file."}
@@ -819,21 +813,22 @@ def search_semantic_variants(args: List[str], opts: Dict[str, Any]) -> Dict[str,
             except ValueError:
                 rank = None
             fuse_ranks[component][prompt] = rank
-
-    # 3) collect BM25-UB raw ranks via the helper
-    bm25_ranks: Dict[str, Dict[str, int]] = {}
+    
+    # 2) collect BM25-UB raw ranks over strings+tags
+    bm25_ranks: Dict[str, Dict[str, Optional[int]]] = {}
     for component, prompts in prompt_map.items():
-        bm25_ranks[component] = get_bm25_ub_raw_ranks(cid, prompts, gold_oid)
+        bm25_ranks[component] = get_bm25_ub_raw_ranks_tokens(
+            cid=cid,
+            prompts=prompts,
+            gold_oid=gold_oid,
+            include_tags=use_tags
+        )
 
-    # 4) return both sets of ranks
-    return {
-        "fuse_ranks": fuse_ranks,
-        "bm25_ranks": bm25_ranks,
-    }
+    return {"fuse_ranks": fuse_ranks, "bm25_ranks": bm25_ranks}
 
-
-
-exports = [fuse, fuse_batch, baseline_fuse_bm25, baseline_fuse_bm25_best, run_all, effort_analysis, component_analysis, measure_search_latency, process_collection, collection_embedding, experiment_semantic_variants, search_semantic_variants]
+exports = [
+    fuse, fuse_batch, baseline_fuse_bm25, baseline_fuse_bm25_best, run_all,
+    effort_analysis, component_analysis, experiment_semantic_variants, process_collection, search_semantic_variants]
 
 # -------------------------------------------------------------
 # Embedding & Search
@@ -842,19 +837,14 @@ exports = [fuse, fuse_batch, baseline_fuse_bm25, baseline_fuse_bm25_best, run_al
 def build_embedding_matrix(oids: List[str], use_tags: bool = True) -> Tuple[np.ndarray, float, float]:
     """
     Generate fused embedding matrix and IDF maps for oids.
-    Returns: (embedding matrix, cpu_hours, gpu_hours)
+    Returns: embedding matrix
     """
-    t_cpu_start = time.time()
 
     tokens_map = {oid: extract_tokens(oid, use_tags) for oid in oids}
     str_idf = compute_idf({k: v['str'] for k, v in tokens_map.items()})
     tag_idf = compute_idf({k: v['tag'] for k, v in tokens_map.items()}) if use_tags else {}
 
-    t_cpu_end = time.time()  # all preprocessing up to this point is CPU
-    cpu_time = t_cpu_end - t_cpu_start
-
     vectors = []
-    gpu_time = 0.0
     eps = 1e-8
 
     for oid in oids:
@@ -862,20 +852,11 @@ def build_embedding_matrix(oids: List[str], use_tags: bool = True) -> Tuple[np.n
         strs = select_until(tokens_map[oid]['str'], str_idf, MAX_TOKENS)
         str_doc = ' '.join(strs)
 
-        # GPU: encode string embedding
-        t0 = time.time()
         str_emb = model.encode(str_doc, normalize_embeddings=True)
-        t1 = time.time()
-        gpu_time += (t1 - t0)
-
         if use_tags:
             tags = select_until(tokens_map[oid]['tag'], tag_idf, MAX_TOKENS)
             tag_doc = ' '.join(tags)
-
-            t0 = time.time()
             tag_emb = model.encode(tag_doc, normalize_embeddings=True)
-            t1 = time.time()
-            gpu_time += (t1 - t0)
 
             n_s = len(tokenizer.tokenize(str_doc))
             n_t = len(tokenizer.tokenize(tag_doc))
@@ -886,10 +867,7 @@ def build_embedding_matrix(oids: List[str], use_tags: bool = True) -> Tuple[np.n
 
         vectors.append(vec / (np.linalg.norm(vec) + eps))
 
-    total_cpu_sec = cpu_time
-    total_gpu_sec = gpu_time
-
-    return np.vstack(vectors).astype('float32'), total_cpu_sec, total_gpu_sec
+    return np.vstack(vectors).astype('float32')
 
 
 def search_prompt(cid: str, prompt: str, use_tags: bool = True) -> Dict[str, Any]:
@@ -900,7 +878,7 @@ def search_prompt(cid: str, prompt: str, use_tags: bool = True) -> Dict[str, Any
     if api.local_exists(NAME, f"{cid}_{use_tags}"):
         emb_mat = api.local_retrieve(NAME, f"{cid}_{use_tags}")[cid]
     else:
-        emb_mat, _, _ = build_embedding_matrix(exes, use_tags)
+        emb_mat = build_embedding_matrix(exes, use_tags)
         api.local_store(NAME, f"{cid}_{use_tags}", {cid: emb_mat})
 
     q = model.encode(prompt, normalize_embeddings=True).astype('float32')
@@ -967,7 +945,7 @@ def build_col_gt(exes, basename_map):
     return col_gt
 
 def normalize(text: str) -> str:
-    """Normalize tag or context text."""
+
     try:
         from unicodedata import normalize as u_norm
         text = u_norm('NFC', text)
@@ -1006,7 +984,7 @@ def filter_executables(oids: List[str]) -> List[str]:
     return filtered
 
 
-def extract_tokens(oid: str, use_tags: bool = True, tags_context: bool = False) -> Dict[str, List[str]]:
+def extract_tokens(oid: str, use_tags: bool = True) -> Dict[str, List[str]]:
     """Extract and normalize strings and tags for an OID."""
     raw_strs = api.get_field('strings', oid, oid) or {}
     strings = [s.lower() for s in raw_strs.values()
@@ -1015,29 +993,16 @@ def extract_tokens(oid: str, use_tags: bool = True, tags_context: bool = False) 
     tags: List[str] = []
     if use_tags:
         inf = api.retrieve('tag_all_functions', oid) or {}
-        if inf != 'FAILED':
-            for entry in inf.values():
-                text = entry.get('tag' if tags_context else 'tag')
+        if 'func_tags' in inf:
+            for entry in inf['func_tags'].values():
+                text = entry
                 if isinstance(text, str):
-                    tags.append(normalize(text))
+                    norm = normalize(text)
+                    for term in norm.split():
+                        if ALNUM.fullmatch(term):
+                            tags.append(term)
 
     return {'str': strings, 'tag': tags}
-
-# def extract_tokens(oid: str, use_tags: bool = True) -> Dict[str, List[str]]:
-#     """Extract and normalize strings and tags for an OID."""
-#     raw_strs = api.get_field('strings', oid, oid) or {}
-#     strings = [s.lower() for s in raw_strs.values()
-#                if ALNUM.search(s) and len(s) < 60]
-
-#     tags: List[str] = []
-#     if use_tags:
-#         inf = api.get_field('tag_all_functions', oid, 'func_tags') or {}
-#         if inf != 'FAILED':
-#             for entry in inf.values():
-#                 if isinstance(entry, str):
-#                     tags.append(normalize(entry))
-
-#     return {'str': strings, 'tag': tags}
 
 
 def compute_idf(docs: Dict[str, List[str]]) -> Dict[str, float]:
@@ -1063,154 +1028,204 @@ def select_until(tokens: List[str], idf: Dict[str, float], budget: int) -> List[
             break
     return picked
 
-def experiment_bm25_ub(comp_path: str, prompt_path: str) -> Dict[str, Dict[str, float]]:
+def generate_doc(tokens: Dict):
+    return tokens['str'] + tokens['tag']
+
+def experiment_bm25_ub(comp_path: str, prompt_path: str, include_tags: bool = True) -> Dict[str, Dict[str, float]]:
     """
     Run the BM25-UB (upper-bound) variant experiment for all components in the prompt JSON.
-    Returns a mapping from prompt to its metrics: { 'P@1', 'Hit@2', 'Hit@5', 'MRR', 'Mean' }.
+    Uses strings + (optionally) tags as the BM25 document (via bm25_tokens_for_oid).
+
+    Returns: { prompt: { 'P@1', 'Hit@2', 'Hit@5', 'MRR', 'Mean' } }
     """
+    if not BM25Okapi:
+        return {"error": "rank_bm25 is not available; install `rank-bm25` to run this experiment."}
+
     # 1) Load prompts and ground-truth
     with open(prompt_path, 'r') as f:
         prompt_map: Dict[str, List[str]] = json.load(f)
     ground_truth = create_ground_truth(comp_path)
 
-    # 2) Flatten all prompts and initialize raw ranks
+    # 2) Flatten all prompts and init raw ranks accumulator
     all_prompts = [p for comp_prompts in prompt_map.values() for p in comp_prompts]
     raw_ranks: Dict[str, List[int]] = {p: [] for p in all_prompts}
 
-    # 3) For each collection ID, build BM25 index once and score all component prompts
-    for cid, oid_map in ground_truth.items():
-        # Build corpus: a list of token lists, one per component in this collection
+    # 3) For each collection ID, build a BM25 index (strings+tags) once and score all prompts
+    for cid, component_to_oid in ground_truth.items():
+        # Build corpus and the aligned oid list for THIS collection
         exe_oids: List[str] = []
         corpus: List[List[str]] = []
-        oids = []
-        for comp, oid in oid_map.items():
-            toks = list(api.get_field("strings", oid, oid).values() or [])
-            oids.append(oid)
-            if not toks:
-                continue
-            corpus.append(toks)
-        exe_oids = filter_executables(oids)
+
+        # Only consider executables present in this collection's ground truth
+        # Keep order stable and skip OIDs with empty docs
+        for comp_name, oid in component_to_oid.items():
+            # Ensure OID is an executable and gather tokens like baseline_fuse_bm25_best
+            tokens = generate_doc(extract_tokens(oid, use_tags=include_tags))
+            if tokens:
+                exe_oids.append(oid)
+                corpus.append(tokens)
 
         if not corpus:
+            # No indexable docs in this collection — treat all prompts as max-rank here
+            for p in all_prompts:
+                raw_ranks[p].append(1)  # degenerate: only 0 docs; define as rank 1 to avoid inf/NaN
             continue
 
-        bm25 = BM25Okapi(corpus)
+        try:
+            bm25 = BM25Okapi(corpus)
+        except Exception as e:
+            logging.warning(f"BM25 index construction failed for cid={cid}: {e}")
+            # If we cannot build an index, push max ranks for this collection
+            max_rank = len(exe_oids) + 1
+            for p in all_prompts:
+                raw_ranks[p].append(max_rank)
+            continue
 
-        # Score each component's prompts
+        # 4) Score each component's prompts against this collection
+        max_rank = len(exe_oids) + 1
         for component, comp_prompts in prompt_map.items():
-            gold_oid = oid_map.get(component)
+            gold_oid = component_to_oid.get(component)
             if gold_oid is None:
+                # This component not present in this collection
+                for p in comp_prompts:
+                    raw_ranks[p].append(max_rank)
                 continue
 
+            # If the gold OID wasn't indexable (e.g., empty doc), it's not in exe_oids
+            try:
+                gold_idx_in_exe = exe_oids.index(gold_oid)
+                gold_present = True
+            except ValueError:
+                gold_present = False
+
             for prompt in comp_prompts:
-                q_tokens = prompt.split()
-                # full-query scoring
-                full_scores = bm25.get_scores(q_tokens)
-                ranked_full = sorted(zip(exe_oids, full_scores), key=lambda x: x[1], reverse=True)
-                ranked_oids_full = [oid for oid, _ in ranked_full]
-                try:
-                    best_rank = ranked_oids_full.index(gold_oid) + 1
-                except ValueError:
-                    best_rank = None
+                # Default: worst case rank if we cannot place the gold
+                best_rank = max_rank
 
-                # token-level upper-bound scoring
-                for tok in set(q_tokens):
-                    tok_scores = bm25.get_scores([tok])
+                if gold_present:
+                    q_tokens = prompt.split()
 
-                    try:
-                        gold_idx = exe_oids.index(gold_oid)
-                    except ValueError:
-                        continue  # gold_oid not in this list for some reason
+                    # Full-query scoring
+                    full_scores = bm25.get_scores(q_tokens)
+                    ranked_full = sorted(zip(exe_oids, full_scores), key=lambda x: x[1], reverse=True)
+                    ranked_oids_full = [oid for oid, _ in ranked_full]
+                    if gold_oid in ranked_oids_full:
+                        best_rank = ranked_oids_full.index(gold_oid) + 1
 
-                    gold_score = tok_scores[gold_idx]
-                    if gold_score <= 0:
-                        # skip tokens that give the gold binary zero score
-                        continue
+                    # Token-level upper bound: try each unique token independently
+                    for tok in set(q_tokens):
+                        tok_scores = bm25.get_scores([tok])
 
-                    ranked_tok = sorted(
-                        zip(exe_oids, tok_scores), key=lambda x: x[1], reverse=True
-                    )
-                    ranked_oids_tok = [oid for oid, _ in ranked_tok]
-                    try:
-                        r = ranked_oids_tok.index(gold_oid) + 1
-                        if best_rank is None or r < best_rank:
-                            best_rank = r
-                    except ValueError:
-                        pass
+                        gold_score = tok_scores[gold_idx_in_exe]
+                        if gold_score <= 0:
+                            # Tokens that don't give the gold any score can't improve the bound
+                            continue
 
-                rank = best_rank if best_rank is not None else (len(exe_oids) + 1)
-                raw_ranks[prompt].append(rank)
+                        ranked_tok = sorted(zip(exe_oids, tok_scores), key=lambda x: x[1], reverse=True)
+                        ranked_oids_tok = [oid for oid, _ in ranked_tok]
+                        try:
+                            r_tok = ranked_oids_tok.index(gold_oid) + 1
+                            if r_tok < best_rank:
+                                best_rank = r_tok
+                        except ValueError:
+                            pass  # Shouldn't happen since gold_present True
 
-    # 4) Compute metrics per prompt
+                raw_ranks[prompt].append(best_rank)
+
+    # 5) Compute metrics per prompt
     metrics: Dict[str, Dict[str, float]] = {}
     for prompt, ranks in raw_ranks.items():
         arr = np.array(ranks, dtype=float)
+        if arr.size == 0:
+            metrics[prompt] = {'P@1': 0.0, 'Hit@2': 0.0, 'Hit@5': 0.0, 'MRR': 0.0, 'Mean': float('nan')}
+            continue
+
         metrics[prompt] = {
             'P@1':   float((arr == 1).mean()),
             'Hit@2': float((arr <= 2).mean()),
             'Hit@5': float((arr <= 5).mean()),
             'MRR':   float((1.0 / arr).mean()),
-            'Mean':  float(arr.mean())
+            'Mean':  float(arr.mean()),
         }
+
     return metrics
 
-def get_bm25_ub_raw_ranks(cid: str, prompts: List[str], gold_oid: str) -> Dict[str, int]:
+def get_bm25_ub_raw_ranks_tokens(
+    cid: str,
+    prompts: List[str],
+    gold_oid: str,
+    include_tags: bool = True
+    ) -> Dict[str, Optional[int]]:
     """
-    For collection `cid`, build a BM25-UB index over all executables
-    and return the raw best rank of `gold_oid` for each prompt.
-    Ranks are 1-based; if `gold_oid` never appears, returns len(executables)+1.
+    Build a BM25-UB index over executables in `cid` using strings + (optional) tags
+    via bm25_tokens_for_oid. Return raw best rank of `gold_oid` for each prompt.
+    Ranks are 1-based; if `gold_oid` never appears, returns len(exe_oids)+1.
     """
-    # 1) get and filter the list of OIDs
-    all_oids = api.expand_oids(cid)
-    exe_oids = filter_executables(all_oids)
+    if not BM25Okapi:
+        return {p: None for p in prompts}
 
-    # 2) build the BM25 corpus in lockstep with exe_oids
+    # 1) get executables and build (exe_oids, corpus) in lockstep, skipping empty docs
+    all_oids = api.expand_oids(cid)
+    exe_oids_all = filter_executables(all_oids)
+
+    exe_oids: List[str] = []
     corpus: List[List[str]] = []
-    for oid in exe_oids:
-        toks = list(api.get_field("strings", oid, oid).values() or [])
+    for oid in exe_oids_all:
+        toks = generate_doc(extract_tokens(oid, use_tags=include_tags))
         if toks:
+            exe_oids.append(oid)
             corpus.append(toks)
-    print(len(corpus))
 
     if not corpus:
-        return {prompt: None for prompt in prompts}
+        return {p: None for p in prompts}
 
-    bm25 = BM25Okapi(corpus)
+    try:
+        bm25 = BM25Okapi(corpus)
+    except Exception as e:
+        logging.warning(f"BM25 index construction failed for cid={cid}: {e}")
+        return {p: None for p in prompts}
+
     max_rank = len(exe_oids) + 1
 
-    # 3) score each prompt
-    ranks: Dict[str, int] = {}
+    # 2) pre-check if gold is in index
+    try:
+        gold_idx = exe_oids.index(gold_oid)
+        gold_present = True
+    except ValueError:
+        gold_present = False
+
+    # 3) score each prompt (full query + per-token upper bound)
+    ranks: Dict[str, Optional[int]] = {}
     for prompt in prompts:
-        best = None
+        if not gold_present:
+            ranks[prompt] = max_rank
+            continue
 
-        # full-query
-        scores = bm25.get_scores(prompt.split())
-        ranked = sorted(zip(exe_oids, scores), key=lambda x: x[1], reverse=True)
-        order = [oid for oid, _ in ranked]
-        if gold_oid in order:
-            best = order.index(gold_oid) + 1
-            print(best)
+        best: Optional[int] = None
+        q_tokens = prompt.split()
 
-        # token-level upper bound
-        for tok in set(prompt.split()):
+        # Full-query
+        scores_full = bm25.get_scores(q_tokens)
+        ranked_full = sorted(zip(exe_oids, scores_full), key=lambda x: x[1], reverse=True)
+        order_full = [oid for oid, _ in ranked_full]
+        if gold_oid in order_full:
+            best = order_full.index(gold_oid) + 1
+
+        # Token-level
+        for tok in set(q_tokens):
             tok_scores = bm25.get_scores([tok])
-
-            try:
-                gold_idx = exe_oids.index(gold_oid)
-            except ValueError:
-                continue  # gold_oid not in this list for some reason
-
             gold_score = tok_scores[gold_idx]
             if gold_score <= 0:
-                # skip tokens that give the gold binary zero score
                 continue
 
             ranked_tok = sorted(zip(exe_oids, tok_scores), key=lambda x: x[1], reverse=True)
             order_tok = [oid for oid, _ in ranked_tok]
-            if gold_oid in order_tok:
-                r = order_tok.index(gold_oid) + 1
-                if best is None or r < best:
-                    best = r
+            try:
+                r_tok = order_tok.index(gold_oid) + 1
+                if best is None or r_tok < best:
+                    best = r_tok
+            except ValueError:
+                pass
 
         ranks[prompt] = best if best is not None else max_rank
 

@@ -35,8 +35,8 @@ from oxide.core import api
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {"function": {"type": str, "mangle": True, "default": "None"},
-            "baseline_function": {"type": str, "mangle": True, "default": "None"}
+opts_doc = {"target": {"type": int, "mangle": True, "default": "None"},
+            "baseline": {"type": int, "mangle": True, "default": "None"}
 }
 
 
@@ -72,7 +72,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         u_diff = unified_diff(baseline_func_insts, target_func_insts, n=max_context)
     else:
         u_diff = None
-    
     unified_diff_result = []
     if u_diff:
         for line in u_diff:
@@ -89,5 +88,5 @@ def retrieve_function_instructions(file, func):
     """
     function_data = api.retrieve('function_representations', file, {'lift_addrs': True})
     if func in function_data:
-        return function_data[func].get('modified_fun_instructions', None)
+        return function_data[int(func)].get('modified_fun_instructions', None)
     return None

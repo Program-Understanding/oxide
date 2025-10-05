@@ -3,7 +3,7 @@ from typing import Dict, Any, List, Tuple
 import networkx as nx
 import textwrap
 from oxide.core import api
-from llm_service import runner
+from ollama_service import runner
 import re
 import time
 
@@ -12,7 +12,7 @@ def run(oid, func_offset):
     func_name = get_func_name(oid, func_offset)
     func_decomp = decomp_for_func(oid, func_name)
     if func_decomp is None:
-        return False, 0
+        return False, False, 0
     return semantic_function_tag(func_decomp)
 
 def semantic_function_tag(decomp: str, temperature: float = 0.15, max_new_tokens: int = 150) -> str:
@@ -27,7 +27,7 @@ FUNCTION SOURCE (C)
 Your task:
 • Read only on the function body above.
 • Produce one 2-6-word tag that states what the function *does*  
-• Produce one ≤ 15-word justification
+• Produce one ≤ 15-word justification (why)
 
 ─────────────────────────────────────────────────────────
 Rules:
@@ -39,7 +39,7 @@ Rules:
 5. Output exactly two lines in the following format, nothing else:
 
 Tag: <tag>
-Why: <justification>
+Why: <why>
 """).strip()
 
     t0 = time.time()
@@ -58,17 +58,10 @@ Why: <justification>
     for line in raw_text.splitlines():
         if line.lower().startswith("tag:"):
             raw_tag = line.split(":", 1)[1].strip()
-            return normalize_tag(raw_tag), gpu_time_sec
+        if line.lower().startswith("why:"): 
+            why = line.split(":", 1)[1].strip()
 
-    return None, gpu_time_sec
-    
-def get_func_offset(oid, name):
-    functions = api.get_field("ghidra_disasm", oid, "functions")
-    if functions:
-        for func in functions:
-            if functions[func]['name'] == name:
-                return func
-    return None
+    return raw_tag, why, gpu_time_sec
         
 def get_func_name(oid, offset):
     functions = api.get_field("ghidra_disasm", oid, "functions")
@@ -126,39 +119,3 @@ def decomp_for_func(oid:str, function_name:str):
         return return_str
     else:
         return None
-    
-def normalize_tag(raw: str) -> str:
-    # replace underscores/hyphens with spaces
-    t = raw.replace("_", " ").replace("-", " ")
-    # strip all other punctuation
-    t = re.sub(r"[^\w\s]", " ", t)
-    # collapse whitespace
-    t = " ".join(t.split())
-    return t.lower()
-
-def valid_function(oid, offset):
-    functions = api.get_field("ghidra_disasm", oid, "functions")
-    if offset in functions:
-        fn_blocks = functions[offset]['blocks']
-    else:
-        return False
-    blocks = api.get_field("ghidra_disasm", oid, "original_blocks")
-    num_instructions = 0
-    for b in fn_blocks:
-        if b in blocks:
-            num_instructions += len(blocks[b])
-    if num_instructions > 5:
-        return True
-    return False
-
-def split_child_tags(G: nx.DiGraph, node_tags: dict[int, list[str]], parent: int) -> tuple[list[str], list[str]]:
-    """Return (exclusive_tags, shared_tags) for *parent*’s direct callees."""
-    ex, sh = [], []
-    for child in G.successors(parent):
-        tags = node_tags.get(child, [])
-        if G.in_degree(child) == 1:       # ← exclusive
-            ex.extend(tags)
-        else:                             # ← shared
-            sh.extend(tags)
-    # dedupe but preserve order
-    return list(dict.fromkeys(ex)), list(dict.fromkeys(sh))
