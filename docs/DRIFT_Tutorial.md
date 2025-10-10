@@ -91,44 +91,136 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
 
 ## Running DRIFT
 
-DRIFT is a plugin in oxide, so it is run from within the oxide interactive shell.
+DRIFT is a plugin, so it is used from the Oxide interactive shell.
 
-1. **Download and Install [Dataset(s)](https://github.com/Program-Understanding/Firmware-Dataset)**  
-    Dataset I: OpenWRT  
-    Dataset II: Commercial Firmware  
-    Dataset III: Backdoored vs. Normal OpenWRT
+1. **Download and Install Datasets**  
+   Example datasets: [DRIFT-Dataset](https://github.com/Program-Understanding/DRIFT-Dataset)
 
-2. **Load DRIFT Into Oxide**  
-    Use the command ```plugin drift``` to load the drift plugin into oxide
+   - **Dataset I:** OpenWRT (multi-version evolution)
+   - **Dataset II:** WAGO PLC (clean vs. backdoored Dropbear)
 
-3. **Run DRIFT**  
-Drift has three possible commands:
+2. **Load DRIFT**
 
-    1. **import_product:**  
-    imports every firmware image for a given product into oxide as collections.  
+   ```text
+   plugin drift
+   ```
 
-        Each Firmware version is imported as it's own collection.
+3. **Run DRIFT Commands**
 
-        Usage:  
-        ```import_product /path/to/product```
+### 3.1 `compare_collections`
 
-    2. **compare_collections:**  
-    Compares two specified collections  
+Compares two firmware collections and classifies **files** and **functions** as matched, modified, or unmatched.
 
-        Usage:  
+**Usage:**
 
-        ```text
-        compare_collections &target &baseline
-        compare_collections &target &baseline --view=modified
-        compare_collections &target &baseline file --view=modified
-        compare_collections &target &baseline file --function=function_name
-        ```
+```text
+compare_collections &target &baseline
+compare_collections &target &baseline --view=FILE_CLASSIFICATIONS
+compare_collections &target &baseline --view=FUNCTION_CLASSIFICATION
+compare_collections &target &baseline --filter=Structurally_Modified
+compare_collections &target &baseline --filter=Control_Call_Modified
+```
 
-        *Remember, you can see all of the collections in Oxide with*  
-        ```show collections```
+**Views:**
+- `FILE_CLASSIFICATIONS` - summary of matched, modified, added, and removed files.
+- `FUNCTION_CLASSIFICATION` - counts per function category.
 
-    3. **compare_collections_series:**  
-    Iterates through and compares every collection that shares the specified product name
+**Filters:**  
+DRIFT now includes feature-based filters to refine which functions are flagged as modified:
+- `Structurally_Modified`: triggered by control-flow graph structure changes.
+- `Control_Call_Modified`: triggered by both structural and call-level changes.
 
-        Usage:  
-    ```compare_collections_series --filter=<product_prefix>```
+**Examples:**
+
+```text
+compare_collections &v2 &v1
+compare_collections &v2 &v1 --filter=Structurally_Modified
+```
+
+**Output:** Structured dict containing file-level and function-level counts, plus filtered modifications when specified.
+
+---
+
+### 3.2 `compare_all_collections`
+
+Runs `compare_collections` sequentially over all versions in a predefined series (e.g., OpenWRT releases), generating a **CSV** and **stacked bar charts**.
+
+**Usage:**
+
+```text
+compare_all_collections --csv_path=output.csv --func_chart_path=func.png --file_chart_path=file.png
+```
+
+**Outputs:**
+- `compare_all_collections.csv` - summary table with file/function diffs per version.
+- `function_classification.png` - stacked bar chart of function classifications.
+- `file_classification.png` - stacked bar chart of file classifications.
+
+**Default series includes**:
+```
+22.03.0 -> 24.10.2
+```
+
+(Adjustable in the plugin code if needed.)
+
+---
+
+### 3.3 `compare_collections_series` *(legacy)*
+
+Iterates through and compares every collection matching a product prefix.
+
+```text
+compare_collections_series --filter=<product_prefix>
+```
+
+---
+
+## Classification and Filtering Details
+
+DRIFT uses Oxide’s binary diffing and semantic analysis features to classify changes:
+
+| Category                | Description                                                   |
+|--------------------------|----------------------------------------------------------------|
+| `matched`                | Identical functions/files across versions                      |
+| `modified`               | Changed functions with similarity < 1.0                         |
+| `unmatched_target`       | Added in the target firmware                                   |
+| `unmatched_baseline`     | Removed from the baseline firmware                             |
+| `Structurally_Modified`  | Modified functions with structural CFG or call changes         |
+| `Control_Call_Modified`  | Modified functions with combined structural and call changes   |
+
+Filtering uses feature thresholds on function-level diff metadata:
+- Basic Block nodes/edges
+- Function calls added/removed
+- Control flow structure changes
+
+---
+
+## Example Workflow
+
+```text
+plugin drift
+compare_collections &23.05.5 &23.05.4 --filter=Structurally_Modified
+compare_all_collections --csv_path=out.csv --func_chart_path=funcs.png --file_chart_path=files.png
+```
+
+This:
+1. Loads DRIFT
+2. Compares two versions with structural filtering
+3. Runs an entire version series comparison
+4. Produces summary CSV and visualization charts.
+
+---
+
+## Output Files
+
+- `compare_all_collections.csv` — tabular summary of diff results.
+- `function_classification.png` — stacked bar chart of modified/matched/unmatched functions.
+- `file_classification.png` — stacked bar chart of file-level changes.
+
+---
+
+## Notes
+
+- Results are cached locally for speed; reruns are fast once a diff has been computed.
+- To change the filtering rules, edit the `rules` dictionary in the plugin source.
+- Ghidra analysis must be working for function-level diffing to succeed.
