@@ -107,7 +107,7 @@ DRIFT is a plugin, so it is used from the Oxide interactive shell.
 
 3. **Run DRIFT Commands**
 
-### 3.1 `compare_collections`
+### 3 `compare_collections`
 
 Compares two firmware collections and classifies **files** and **functions** as matched, modified, or unmatched.
 
@@ -141,40 +141,6 @@ compare_collections &v2 &v1 --filter=Structurally_Modified
 
 ---
 
-### 3.2 `compare_all_collections`
-
-Runs `compare_collections` sequentially over all versions in a predefined series (e.g., OpenWRT releases), generating a **CSV** and **stacked bar charts**.
-
-**Usage:**
-
-```text
-compare_all_collections --csv_path=output.csv --func_chart_path=func.png --file_chart_path=file.png
-```
-
-**Outputs:**
-- `compare_all_collections.csv` - summary table with file/function diffs per version.
-- `function_classification.png` - stacked bar chart of function classifications.
-- `file_classification.png` - stacked bar chart of file classifications.
-
-**Default series includes**:
-```
-22.03.0 -> 24.10.2
-```
-
-(Adjustable in the plugin code if needed.)
-
----
-
-### 3.3 `compare_collections_series` *(legacy)*
-
-Iterates through and compares every collection matching a product prefix.
-
-```text
-compare_collections_series --filter=<product_prefix>
-```
-
----
-
 ## Classification and Filtering Details
 
 DRIFT uses Oxide’s binary diffing and semantic analysis features to classify changes:
@@ -200,7 +166,6 @@ Filtering uses feature thresholds on function-level diff metadata:
 ```text
 plugin drift
 compare_collections &23.05.5 &23.05.4 --filter=Structurally_Modified
-compare_all_collections --csv_path=out.csv --func_chart_path=funcs.png --file_chart_path=files.png
 ```
 
 This:
@@ -208,19 +173,3 @@ This:
 2. Compares two versions with structural filtering
 3. Runs an entire version series comparison
 4. Produces summary CSV and visualization charts.
-
----
-
-## Output Files
-
-- `compare_all_collections.csv` — tabular summary of diff results.
-- `function_classification.png` — stacked bar chart of modified/matched/unmatched functions.
-- `file_classification.png` — stacked bar chart of file-level changes.
-
----
-
-## Notes
-
-- Results are cached locally for speed; reruns are fast once a diff has been computed.
-- To change the filtering rules, edit the `rules` dictionary in the plugin source.
-- Ghidra analysis must be working for function-level diffing to succeed.
