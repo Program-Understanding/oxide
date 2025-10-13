@@ -54,13 +54,14 @@ DRIFT was created as a plugin for oxide, so it depends on oxide's core functiona
       ```text
       bindiff --help
       ```
-      should work from any shell.  
+      should work from any shell.
+      
    **Xvfb (Linux)**  
-   If running on a headless server or CI environment, install:
+   &nbsp;&nbsp;&nbsp;If running on a headless server or CI environment, install:  
    ```text
    sudo apt-get install xvfb
    ```
-   DRIFT wraps headless Ghidra calls with `xvfb-run` to avoid GUI errors.
+   &nbsp;&nbsp;&nbsp;DRIFT wraps headless Ghidra calls with `xvfb-run` to avoid GUI errors.
 
 4. **Initialize Oxide**  
     After all dependancies are installed:  
