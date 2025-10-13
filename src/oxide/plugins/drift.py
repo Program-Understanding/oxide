@@ -78,7 +78,7 @@ def full_comparison(args: Any, opts: Dict[str, Any]) -> Dict[str, Any]:
     Entry for computing or retrieving a cached comparison.
     Returns:
       - PAIR_FILES_RESULTS: raw pairing output
-      - FUNCTION_DIFFS:      per‐file function diff details
+      - FUNCTION_DIFFS:      per-file function diff details
     """
     if len(args) < 2:
         print("ERROR: Enter two collections to compare")
@@ -105,13 +105,15 @@ def full_comparison(args: Any, opts: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def compare_all_collections(args: Any, opts: Dict[str, Any]) -> Any:
-    # entries = ['03.10.08', '03.10.10', '03.10.08-clean', '03.10.10-backdoor']
-    entries = [
-        '22.03.0', '22.03.1', '22.03.2', '22.03.3',
-        '22.03.4', '22.03.5', '22.03.6', '22.03.7',
-        '23.05.2', '23.05.3', '23.05.4', '23.05.5',
-        '24.10.0', '24.10.1', '24.10.2'
-    ]
+    entries_file = opts["entries"] # Path to text file with sequence of comparisons.
+
+    # Read each line, strip whitespace, and ignore empty lines
+    with open(entries_file, "r") as f:
+        entries = [line.strip() for line in f if line.strip()]
+
+    # Optional: print or log to verify
+    print(f"Loaded {len(entries)} entries from {entries_file}")
+
     colname_to_cid = {api.get_colname_from_oid(cid): cid for cid in api.collection_cids()}
     rows = []
 
