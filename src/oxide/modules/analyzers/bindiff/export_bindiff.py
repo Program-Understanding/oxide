@@ -55,7 +55,7 @@ def run_ghidra_binexport(ghidra_path, input_file, output_dir, script_path, use_x
     return output_binexport
 
 
-def run_bindiff(primary_oid, primary,  secondary_oid, secondary, output_dir):
+def run_bindiff(primary_oid, primary,  secondary_oid, secondary, output_dir, use_func_names=False):
     """
     Run BinDiff on two BinExport files, ensuring the output_dir exists.
     """
@@ -66,7 +66,8 @@ def run_bindiff(primary_oid, primary,  secondary_oid, secondary, output_dir):
         raise PermissionError(f"Output directory not writable: {output_dir}")
 
     try:
-        subprocess.run(
+        if use_func_names:
+            subprocess.run(
             [
                 "bindiff",
                 "--primary", primary,
@@ -76,7 +77,21 @@ def run_bindiff(primary_oid, primary,  secondary_oid, secondary, output_dir):
             check=True,
             capture_output=True,
             text=True
-        )
+            )
+        else:
+            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),"bindiff_configs", "exclude_function_names.json")
+            subprocess.run(
+                [
+                    "bindiff",
+                    "--config", config_path,
+                    "--primary", primary,
+                    "--secondary", secondary,
+                    "--output_dir", output_dir
+                ],
+                check=True,
+                capture_output=True,
+                text=True
+            )
     except subprocess.CalledProcessError as e:
         return {}
 
