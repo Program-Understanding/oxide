@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-function_semantic_diff — unified diff with target-centric call syncing + post-diff annotations.
+function_decomp_diff — unified diff with target-centric call syncing + post-diff annotations.
 
 Pipeline:
   1) Get baseline/target decompiler text.
@@ -19,7 +19,7 @@ Notes:
 """
 
 DESC = ""
-NAME = "function_semantic_diff"
+NAME = "function_decomp_diff"
 
 import logging
 import re
@@ -38,7 +38,8 @@ logger.debug("init")
 opts_doc = {
     "target":   {"type": str, "mangle": True, "default": "None"},
     "baseline": {"type": str, "mangle": True, "default": "None"},
-    "annotate": {"type": bool, "mangle": True, "default": True}
+    "annotate": {"type": bool, "mangle": True, "default": True},
+    "normalize": {"type": bool, "mangle": True, "default": True}
 }
 
 def documentation() -> Dict[str, Any]:
@@ -56,7 +57,7 @@ _RE_PTR   = re.compile(r"\bPTR_[0-9a-fA-F]+\b")
 _RE_OFF   = re.compile(r"\boff_[0-9a-fA-F]+\b")
 _RE_HEX   = re.compile(r"\b0x[0-9a-fA-F]+\b")
 _RE_NUM   = re.compile(r"\b\d+\b")
-_RE_TMP   = re.compile(r"\b(?:[iu]Var\d+|bVar\d+|pcVar\d+|pvVar\d+|sVar\d+|lVar\d+|uVar\d+)\b")
+_RE_TMP   = re.compile(r"\b(?:[iu]Var\d+|bVar\d+|pcVar\d+|pvVar\d+|sVar\d+|lVar\d+|uVar\d+|plVar\d+)\b")
 _RE_LOCAL = re.compile(r"\blocal_[A-Za-z0-9_]+\b")
 _RE_WS    = re.compile(r"\s+")
 
@@ -89,8 +90,12 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     base_proj = _project_fun_tokens(base_orig, projmap_base)
 
     # Normalize (for alignment) using stable labels shared by both sides
-    base_norm = _normalize_lines(base_orig)
-    tgt_norm  = _normalize_lines(tgt_orig)
+    if opts["normalize"]:
+        base_norm = _normalize_lines(base_orig)
+        tgt_norm  = _normalize_lines(tgt_orig)
+    else:
+        base_norm = base_orig
+        tgt_norm = tgt_orig
 
     # Alignment over normalized text
     sm = SequenceMatcher(None, [l + "\n" for l in base_norm], [l + "\n" for l in tgt_norm], autojunk=False)
@@ -128,7 +133,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     if opts["annotate"]:
         name_to_addr = _get_function_calls(target_oid, baseline_oid, target_addr, baseline_addr)
         if name_to_addr:
-            unified = _annotate_unified_with_tags(unified, name_to_addr, target_oid, annotate_kinds=(" ", "+"))
+            unified = _annotate_unified_with_tags(unified, name_to_addr, target_oid, annotate_kinds=(" ", "+", "-" ))
 
     return {
         "unified": unified,
@@ -467,7 +472,7 @@ def _annotate_unified_with_tags(
     unified: str,
     name_to_addr: dict[str, int],
     target_oid: str,
-    annotate_kinds: tuple[str, ...] = (" ", "+"),  # annotate context and additions; skip deletions
+    annotate_kinds: tuple[str, ...] = (" ", "+", "-"),  # annotate context and additions; skip deletions
 ) -> str:
     """
     Append short tags to lines that start with ' ' or '+' and that contain calls
