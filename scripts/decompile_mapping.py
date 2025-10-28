@@ -18,6 +18,7 @@ import sys
 import os
 import json
 import string
+import codecs
 
 printable = string.ascii_letters + string.digits + string.punctuation + ' '
 def hex_escape(s):
@@ -49,12 +50,19 @@ for fun in functionManager.getFunctions(True):
     # iterate in entry point order
     funEntry = fun.getEntryPoint()
     function = functionManager.getFunctionContaining(funEntry)
+    if function is None:
+        continue
     # Organize results by function name
     functionName = function.getName()
     output_map[functionName] = {}
 
     results = decomp.decompileFunction(function, 120, monitor)
+    if not results or not results.decompileCompleted():
+        # skip functions that failed to decompile
+        continue
     markup = results.getCCodeMarkup()
+    if markup is None:
+        continue
     highfun = markup.getHighFunction()
     clang = markup.getClangFunction()
 
