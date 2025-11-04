@@ -516,7 +516,7 @@ def component_analysis(args, opts):
         return (avg_size, avg_strings, avg_tags, tag_density)
 
     # -------- 3) Gather per-component ranks for each system --------
-    comp_ranks = { 'FUSE': defaultdict(list), 'BM25_UB': defaultdict(list) }
+    comp_ranks = { 'FUSE': defaultdict(list), 'BM25': defaultdict(list) }
 
     # FUSE ranks
     for col_data in data_fuse['per_collection'].values():
@@ -528,7 +528,7 @@ def component_analysis(args, opts):
     for col_data in data_bm25['per_collection'].values():
         for comp, rank in (col_data.get('ranks_by_prompt') or {}).items():
             if rank is not None:
-                comp_ranks['BM25_UB'][comp].append(rank)
+                comp_ranks['BM25'][comp].append(rank)
 
     # -------- 4) Metric computation helper --------
     def _metrics_from_ranks(ranks: List[int]) -> Dict[str, float]:
@@ -551,10 +551,10 @@ def component_analysis(args, opts):
 
     # -------- 5) Build per-component comparison table --------
     per_component: Dict[str, Dict[str, Any]] = {}
-    all_components = set(list(comp_ranks['FUSE'].keys()) + list(comp_ranks['BM25_UB'].keys()))
+    all_components = set(list(comp_ranks['FUSE'].keys()) + list(comp_ranks['BM25'].keys()))
     for comp in sorted(all_components):
         fuse_stats  = _metrics_from_ranks(comp_ranks['FUSE'].get(comp, []))
-        bm25_stats  = _metrics_from_ranks(comp_ranks['BM25_UB'].get(comp, []))
+        bm25_stats  = _metrics_from_ranks(comp_ranks['BM25'].get(comp, []))
         avg_size, avg_strings, avg_tags, tag_density = _avg_feats(feat_map.get(comp, []))
 
         # handy deltas (FUSE - BM25-UB) for rank-1 and MRR
@@ -563,10 +563,18 @@ def component_analysis(args, opts):
             deltas['ΔP@1'] = float(fuse_stats['P@1'] - bm25_stats['P@1'])
         if fuse_stats['MRR'] is not None and bm25_stats['MRR'] is not None:
             deltas['ΔMRR'] = float(fuse_stats['MRR'] - bm25_stats['MRR'])
+        if fuse_stats['mean'] is not None and bm25_stats['mean'] is not None:
+            deltas['mean'] = float(fuse_stats['mean'] - bm25_stats['mean'])
+        if fuse_stats['median'] is not None and bm25_stats['median'] is not None:
+            deltas['median'] = float(fuse_stats['median'] - bm25_stats['median'])
+        if fuse_stats['Hit@2'] is not None and bm25_stats['Hit@2'] is not None:
+            deltas['Hit@2'] = float(fuse_stats['Hit@2'] - bm25_stats['Hit@2'])
+        if fuse_stats['Hit@5'] is not None and bm25_stats['Hit@5'] is not None:
+            deltas['Hit@5'] = float(fuse_stats['Hit@5'] - bm25_stats['Hit@5'])
 
         per_component[comp] = {
             'FUSE': fuse_stats,
-            'BM25_UB': bm25_stats,
+            'BM25': bm25_stats,
             'features': {
                 'avg_size': avg_size,
                 'avg_strings': avg_strings,
@@ -608,7 +616,7 @@ def component_analysis(args, opts):
 
     correlations = {
         'FUSE': _corr_vs_median('FUSE'),
-        'BM25': _corr_vs_median('BM25_UB')
+        'BM25': _corr_vs_median('BM25')
     }
 
     return {
@@ -617,17 +625,11 @@ def component_analysis(args, opts):
     }
 
 def process_collection(args, opts):
-    results = {}
     cids, _ = api.valid_oids(args)
     for cid in cids:
-        c_results = {}
-        use_tags = opts.get("use_tags", True)
 
         oids = api.expand_oids(cid)
         exes = filter_executables(oids)
-
-        total_data_cpu_hours = 0.0
-        total_data_gpu_hours = 0.0
 
         # Build a list of (exe, num_functions)
         exe_counts = []
@@ -638,27 +640,14 @@ def process_collection(args, opts):
         # Sort by num_functions (ascending)
         exe_counts.sort(key=lambda pair: pair[1])
 
-        total_data_cpu_hours = 0.0
-        total_data_gpu_hours = 0.0
-
         count = 1
 
         # Tag in order from fewest to most functions
         for exe, func_count in exe_counts:
             print(f"{count} of {len(exe_counts)}")
             # --- CPU + GPU: Data extraction (strings + tagging) ---
-            t0 = time.time()
             gpu_time_sec = api.get_field("tag_all_functions", exe, "total_gpu_time_sec")
-            t1 = time.time()
-
-            wall_time_sec = t1 - t0
-            data_gpu = gpu_time_sec / 3600.0
-            cpu_time_sec = max(0.0, wall_time_sec - gpu_time_sec)
-            data_cpu = cpu_time_sec / 3600.0
-
-            total_data_cpu_hours += data_cpu
-            total_data_gpu_hours += data_gpu
-            count += 1
+            count +=1 
 
 def experiment_semantic_variants(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
