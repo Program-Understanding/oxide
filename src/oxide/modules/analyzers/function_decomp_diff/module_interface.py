@@ -80,7 +80,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     # ORIGINAL decompiler lines (no trailing newlines)
     tgt_orig  = retrieve_function_decomp_lines(target_oid,   target_addr)
     base_orig = retrieve_function_decomp_lines(baseline_oid, baseline_addr)
-    if not (tgt_orig and base_orig):
+    if not tgt_orig or not base_orig:
         return {"error": "Could not retrieve function decomp lines for one or both sides."}
 
     # Build projection + normalization maps from call diff
@@ -599,9 +599,4 @@ def retrieve_function_decomp_lines(oid: str, func_addr: Any) -> Optional[List[st
 
 def _get_function_name(oid: str, offset: Any) -> Optional[str]:
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
-    meta = funcs.get(str(offset)) or funcs.get(offset)
-    if isinstance(meta, dict):
-        return meta.get("name")
-    if isinstance(meta, str):
-        return meta
-    return None
+    return funcs.get(int(offset), {}).get("name")
