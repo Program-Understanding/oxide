@@ -12,7 +12,7 @@ import os
 import tempfile
 
 # Module metadata
-DESC = "Analyzer module to compute BinDiff between two firmware binaries."
+DESC = "Analyzer module to compute BinDiff between two binaries."
 NAME = "bindiff"
 
 logger = logging.getLogger(NAME)
