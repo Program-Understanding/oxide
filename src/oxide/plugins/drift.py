@@ -26,7 +26,15 @@ rules = {
         ["bb_nodes", "bb_edges"],  # This will be handled as OR in a nested check
         ["fc_add_existing", "fc_add_new", "fc_removed_existing", "fc_removed_deleted"]
     ]
-}
+},
+    "Call_Modified": {
+        "or": [
+            "fc_add_existing",
+            "fc_add_new",
+            "fc_removed_existing",
+            "fc_removed_deleted"
+        ]
+    },
 
 }
 

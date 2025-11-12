@@ -8,7 +8,6 @@ import torch
 from fastapi import FastAPI
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-import sys
 
 # —— USER CONFIG ——
 MODEL_PATH = getattr(oxide.api, "local_llm_path")
