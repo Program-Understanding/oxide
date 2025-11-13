@@ -28,7 +28,6 @@ from transformers import AutoTokenizer
 
 from oxide.core import api
 
-AUTHOR="Nathan"
 NAME="cluster_functions"
 
 # -------------------------------------------------------------
