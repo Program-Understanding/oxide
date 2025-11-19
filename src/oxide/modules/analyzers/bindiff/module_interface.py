@@ -62,9 +62,9 @@ def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     if api.exists(NAME, target_oid):
         data = api.retrieve(NAME, target_oid)
         data[baseline_oid] = results
-        api.store(NAME, target_export, data)
+        api.store(NAME, target_oid, data)
     else:
-        api.store(NAME, target_oid, {target_oid: results})
+        api.store(NAME, target_oid, {baseline_oid: results})
     return results
 
 def get_or_create_binexport(oid: str) -> str:

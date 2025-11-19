@@ -28,38 +28,62 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from oxide.core import api
 
+
 logger = logging.getLogger(NAME)
 logger.debug("init")
+
+# ---------------------------
+# LLM context sizing (approx)
+# ---------------------------
+
+_LLM_NUM_CTX_TOKENS = 8192
+_LLM_RESERVED_TOKENS = 1024  # system prompt, JSON wrapper, metadata, response, etc.
+_APPROX_CHARS_PER_TOKEN = 4  # rough heuristic: 1 token ≈ 4 chars
+
+_MAX_UNIFIED_CHARS = (
+    _LLM_NUM_CTX_TOKENS - _LLM_RESERVED_TOKENS
+) * _APPROX_CHARS_PER_TOKEN
+
+_LLM_DIFF_CHAR_BUDGET = 7500
 
 # ---------------------------
 # Options
 # ---------------------------
 
 opts_doc = {
-    "target":   {"type": str, "mangle": True, "default": "None"},
+    "target": {"type": str, "mangle": True, "default": "None"},
     "baseline": {"type": str, "mangle": True, "default": "None"},
     "annotate": {"type": bool, "mangle": True, "default": True},
-    "normalize": {"type": bool, "mangle": True, "default": True}
+    "normalize": {"type": bool, "mangle": True, "default": True},
 }
 
+
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False, "atomic": True}
+    return {
+        "description": DESC,
+        "opts_doc": opts_doc,
+        "private": False,
+        "set": False,
+        "atomic": True,
+    }
 
 
 # ---------------------------
 # Regexes
 # ---------------------------
 
-_RE_FUN   = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
-_RE_LAB   = re.compile(r"\bLAB_[0-9a-fA-F]+\b")
-_RE_DAT   = re.compile(r"\bDAT_[0-9a-fA-F]+\b")
-_RE_PTR   = re.compile(r"\bPTR_[0-9a-fA-F]+\b")
-_RE_OFF   = re.compile(r"\boff_[0-9a-fA-F]+\b")
-_RE_HEX   = re.compile(r"\b0x[0-9a-fA-F]+\b")
-_RE_NUM   = re.compile(r"\b\d+\b")
-_RE_TMP   = re.compile(r"\b(?:[iu]Var\d+|bVar\d+|pcVar\d+|pvVar\d+|sVar\d+|lVar\d+|uVar\d+|plVar\d+)\b")
+_RE_FUN = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
+_RE_LAB = re.compile(r"\bLAB_[0-9a-fA-F]+\b")
+_RE_DAT = re.compile(r"\bDAT_[0-9a-fA-F]+\b")
+_RE_PTR = re.compile(r"\bPTR_[0-9a-fA-F]+\b")
+_RE_OFF = re.compile(r"\boff_[0-9a-fA-F]+\b")
+_RE_HEX = re.compile(r"\b0x[0-9a-fA-F]+\b")
+_RE_NUM = re.compile(r"\b\d+\b")
+_RE_TMP = re.compile(
+    r"\b(?:[iu]Var\d+|bVar\d+|pcVar\d+|pvVar\d+|sVar\d+|lVar\d+|uVar\d+|plVar\d+)\b"
+)
 _RE_LOCAL = re.compile(r"\blocal_[A-Za-z0-9_]+\b")
-_RE_WS    = re.compile(r"\s+")
+_RE_WS = re.compile(r"\s+")
 
 _FUN_TOKEN_RE = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
 
@@ -68,20 +92,25 @@ _FUN_TOKEN_RE = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
 # Public entry
 # ---------------------------
 
+
 def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     oid_list = api.expand_oids(oid_list)
     if not oid_list or len(oid_list) < 2:
-        raise ValueError("function_semantic_diff requires two OIDs: [target_oid, baseline_oid]")
+        raise ValueError(
+            "function_decomp_diff requires two OIDs: [target_oid, baseline_oid]"
+        )
 
     target_oid, baseline_oid = oid_list[0], oid_list[1]
-    target_addr   = opts["target"]
+    target_addr = opts["target"]
     baseline_addr = opts["baseline"]
 
     # ORIGINAL decompiler lines (no trailing newlines)
-    tgt_orig  = retrieve_function_decomp_lines(target_oid,   target_addr)
+    tgt_orig = retrieve_function_decomp_lines(target_oid, target_addr)
     base_orig = retrieve_function_decomp_lines(baseline_oid, baseline_addr)
     if not tgt_orig or not base_orig:
-        return {"error": "Could not retrieve function decomp lines for one or both sides."}
+        return {
+            "error": "Could not retrieve function decomp lines for one or both sides."
+        }
 
     # Build projection + normalization maps from call diff
     projmap_base = _build_maps(baseline_oid, target_oid, baseline_addr, target_addr)
@@ -92,13 +121,18 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     # Normalize (for alignment) using stable labels shared by both sides
     if opts["normalize"]:
         base_norm = _normalize_lines(base_orig)
-        tgt_norm  = _normalize_lines(tgt_orig)
+        tgt_norm = _normalize_lines(tgt_orig)
     else:
         base_norm = base_orig
         tgt_norm = tgt_orig
 
     # Alignment over normalized text
-    sm = SequenceMatcher(None, [l + "\n" for l in base_norm], [l + "\n" for l in tgt_norm], autojunk=False)
+    sm = SequenceMatcher(
+        None,
+        [l + "\n" for l in base_norm],
+        [l + "\n" for l in tgt_norm],
+        autojunk=False,
+    )
     opcodes = sm.get_opcodes()
 
     # Headers
@@ -108,9 +142,9 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     b_start_disp = 1 if b_len else 0
 
     fn_b = _get_function_name(baseline_oid, baseline_addr) or f"{baseline_addr}"
-    fn_t = _get_function_name(target_oid,   target_addr)   or f"{target_addr}"
+    fn_t = _get_function_name(target_oid, target_addr) or f"{target_addr}"
     fromfile = f"{fn_b} (baseline {baseline_oid})"
-    tofile   = f"{fn_t} (target   {target_oid})"
+    tofile = f"{fn_t} (target   {target_oid})"
 
     # Emit ORIGINAL with replace-refinement
     out: List[str] = [
@@ -128,26 +162,49 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     unified = "\n".join(out) + ("\n" if out else "")
 
     # ---------------------------
-    # Post-diff annotation on '+' lines ONLY (target calls)
+    # Post-diff annotation (context/addition/deletion lines)
     # ---------------------------
-    if opts["annotate"]:
-        name_to_addr = _get_function_calls(target_oid, baseline_oid, target_addr, baseline_addr)
+    if opts.get("annotate", True):
+        name_to_addr = _get_function_calls(
+            target_oid, baseline_oid, target_addr, baseline_addr
+        )
         if name_to_addr:
-            unified = _annotate_unified_with_tags(unified, name_to_addr, target_oid, annotate_kinds=(" ", "+", "-" ))
+            unified = _annotate_unified_with_tags(
+                unified,
+                name_to_addr,
+                target_oid,
+                annotate_kinds=(" ", "+", "-"),
+            )
 
-    return {
-        "unified": unified,
+    # ---------------------------
+    # LLM-oriented compaction to stay within context window
+    # ---------------------------
+    unified_full = unified
+    unified_compact = _maybe_compact_unified(
+        unified_full, max_chars=_LLM_DIFF_CHAR_BUDGET
+    )
+
+    result = {
+        "unified": unified_compact,
         "meta": {
-            "baseline_func": fn_b, "baseline_oid": baseline_oid,
-            "target_func": fn_t,   "target_oid": target_oid,
+            "baseline_func": fn_b,
+            "baseline_oid": baseline_oid,
+            "target_func": fn_t,
+            "target_oid": target_oid,
             "normalized_alignment": True,
+            "unified_full_len": len(unified_full),
+            "unified_compact_len": len(unified_compact),
+            "unified_truncated": len(unified_compact) < len(unified_full),
         },
     }
+
+    return result
 
 
 # ---------------------------
 # Maps via function_call_diff (target-centric)
 # ---------------------------
+
 
 def _parse_addr_any(v: Any) -> Optional[int]:
     try:
@@ -177,9 +234,11 @@ def _parse_addr_any(v: Any) -> Optional[int]:
     except Exception:
         return None
 
+
 def _tok_from_any(v: Any) -> Optional[str]:
     a = _parse_addr_any(v)
     return f"FUN_{a:08x}" if a is not None else None
+
 
 def _sanitize_name(name: str) -> str:
     name = name.strip()
@@ -187,24 +246,30 @@ def _sanitize_name(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9_.$@+-]", "", name)
     return name or "unknown"
 
-def _target_pref_label(b_name: Optional[str], t_name: Optional[str], t_tok: Optional[str]) -> str:
+
+def _target_pref_label(
+    b_name: Optional[str], t_name: Optional[str], t_tok: Optional[str]
+) -> str:
     nm = (t_name or b_name or "").strip()
     if nm:
         return _sanitize_name(nm)
-    return (t_tok or "FUN_<UNKNOWN>")
+    return t_tok or "FUN_<UNKNOWN>"
 
-def _build_maps(baseline_oid: str, target_oid: str, baseline_func_addr: Any, target_func_addr: Any) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+
+def _build_maps(
+    baseline_oid: str, target_oid: str, baseline_func_addr: Any, target_func_addr: Any
+) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
     """
     Returns:
         projmap_base: baseline FUN_token -> target FUN_token (projection for ORIGINAL)
     """
     projmap_base: Dict[str, str] = {}
     normmap_base: Dict[str, str] = {}
-    normmap_tgt:  Dict[str, str] = {}
+    normmap_tgt: Dict[str, str] = {}
 
     # Seed with the function itself so the def-line syncs.
     base_tok = _tok_from_any(baseline_func_addr)
-    tgt_tok  = _tok_from_any(target_func_addr)
+    tgt_tok = _tok_from_any(target_func_addr)
     tgt_name = _get_function_name(target_oid, target_func_addr)
     label_fn = _target_pref_label(None, tgt_name, tgt_tok)
     if base_tok and tgt_tok:
@@ -212,14 +277,17 @@ def _build_maps(baseline_oid: str, target_oid: str, baseline_func_addr: Any, tar
     if base_tok:
         normmap_base.setdefault(base_tok, label_fn)
     if tgt_tok:
-        normmap_tgt.setdefault(tgt_tok,  label_fn)
+        normmap_tgt.setdefault(tgt_tok, label_fn)
 
     try:
-        diff = api.retrieve(
-            "function_call_diff",
-            [target_oid, baseline_oid],
-            {"target": str(target_func_addr), "baseline": str(baseline_func_addr)},
-        ) or {}
+        diff = (
+            api.retrieve(
+                "function_call_diff",
+                [target_oid, baseline_oid],
+                {"target": str(target_func_addr), "baseline": str(baseline_func_addr)},
+            )
+            or {}
+        )
     except Exception as e:
         logger.warning(f"[{NAME}] function_call_diff retrieval failed: {e}")
         diff = {}
@@ -227,7 +295,7 @@ def _build_maps(baseline_oid: str, target_oid: str, baseline_func_addr: Any, tar
     paired = diff.get("fc_paired") or diff.get("paired") or []
     for item in paired:
         b_side = item.get("baseline", {})
-        t_side = item.get("target",   {})
+        t_side = item.get("target", {})
 
         b_tok = _tok_from_any(b_side.get("addr"))
         t_tok = _tok_from_any(t_side.get("addr"))
@@ -244,6 +312,7 @@ def _build_maps(baseline_oid: str, target_oid: str, baseline_func_addr: Any, tar
 # ---------------------------
 # Projection / Normalization
 # ---------------------------
+
 
 def _project_fun_tokens(lines: List[str], projmap: Dict[str, str]) -> List[str]:
     """
@@ -311,6 +380,7 @@ def _normalize_lines(lines: List[str]) -> List[str]:
 # Replace refinement (collapse identical pairs inside replace blocks)
 # ---------------------------
 
+
 def _emit_refined(out: List[str], base_slice: List[str], tgt_slice: List[str]) -> None:
     """
     Refine a replace hunk: if lines are equal (or equal ignoring whitespace), emit as context.
@@ -320,8 +390,10 @@ def _emit_refined(out: List[str], base_slice: List[str], tgt_slice: List[str]) -
         return
 
     if len(base_slice) == len(tgt_slice) and len(base_slice) > 0:
+
         def squash_ws(s: str) -> str:
             return _RE_WS.sub(" ", s).strip()
+
         all_equal = True
         for b, t in zip(base_slice, tgt_slice):
             if b == t or squash_ws(b) == squash_ws(t):
@@ -333,7 +405,12 @@ def _emit_refined(out: List[str], base_slice: List[str], tgt_slice: List[str]) -
                 out.append(" " + t)
             return
 
-    sm = SequenceMatcher(None, [s + "\n" for s in base_slice], [s + "\n" for s in tgt_slice], autojunk=False)
+    sm = SequenceMatcher(
+        None,
+        [s + "\n" for s in base_slice],
+        [s + "\n" for s in tgt_slice],
+        autojunk=False,
+    )
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
             for s in base_slice[i1:i2]:
@@ -364,6 +441,7 @@ def _emit_refined(out: List[str], base_slice: List[str], tgt_slice: List[str]) -
 # Known calls loader (TARGET side) + post-diff annotation
 # ---------------------------
 
+
 def _normalize_known_calls_shape(obj: Any) -> Optional[Dict[str, int]]:
     """
     Normalize to: { name: addr_int }
@@ -383,7 +461,9 @@ def _normalize_known_calls_shape(obj: Any) -> Optional[Dict[str, int]]:
         # Heuristics: if keys look numeric/hex -> treat as addr->name and invert
         numeric_like_keys = True
         for k in obj.keys():
-            if not isinstance(k, (int,)) and not (isinstance(k, str) and (k.isdigit() or k.lower().startswith("0x"))):
+            if not isinstance(k, (int,)) and not (
+                isinstance(k, str) and (k.isdigit() or k.lower().startswith("0x"))
+            ):
                 numeric_like_keys = False
                 break
         if numeric_like_keys:
@@ -425,21 +505,26 @@ def _normalize_known_calls_shape(obj: Any) -> Optional[Dict[str, int]]:
     return None
 
 
-def _get_function_calls(target_oid, baseline_oid, target_func, baseline_func) -> Optional[Dict[str, int]]:
+def _get_function_calls(
+    target_oid, baseline_oid, target_func, baseline_func
+) -> Optional[Dict[str, int]]:
     """
     Fetch the precomputed list of *target* callees from function_call_diff,
     then normalize to { name: addr }.
     """
-    diff = api.retrieve(
-        "function_call_diff",
-        [target_oid, baseline_oid],
-        {"target": str(target_func), "baseline": str(baseline_func)},
-    ) or {}
+    diff = (
+        api.retrieve(
+            "function_call_diff",
+            [target_oid, baseline_oid],
+            {"target": str(target_func), "baseline": str(baseline_func)},
+        )
+        or {}
+    )
 
     # Expected keys in your environment
-    paired   = diff.get("fc_paired") or []
+    paired = diff.get("fc_paired") or []
     existing = diff.get("fc_add_existing") or []
-    new      = diff.get("fc_add_new") or []
+    new = diff.get("fc_add_new") or []
 
     # Build addr->name first (as you outlined), then normalize to name->addr
     target_func_calls = {}
@@ -461,6 +546,7 @@ def _get_function_calls(target_oid, baseline_oid, target_func, baseline_func) ->
 
 _tag_cache: Dict[Tuple[str, int], Optional[str]] = {}
 
+
 def _get_tag_for_addr(oid: str, addr: int) -> str | None:
     try:
         return api.get_field("llm_function_analysis", oid, "tag", {"func_offset": addr})
@@ -472,7 +558,11 @@ def _annotate_unified_with_tags(
     unified: str,
     name_to_addr: dict[str, int],
     target_oid: str,
-    annotate_kinds: tuple[str, ...] = (" ", "+", "-"),  # annotate context and additions; skip deletions
+    annotate_kinds: tuple[str, ...] = (
+        " ",
+        "+",
+        "-",
+    ),  # annotate context and additions; skip deletions
 ) -> str:
     """
     Append short tags to lines that start with ' ' or '+' and that contain calls
@@ -486,15 +576,16 @@ def _annotate_unified_with_tags(
 
     # Pre-fetch tags once
     name_to_tag: dict[str, str | None] = {
-        name: _get_tag_for_addr(target_oid, addr)
-        for name, addr in name_to_addr.items()
+        name: _get_tag_for_addr(target_oid, addr) for name, addr in name_to_addr.items()
     }
 
     # Regex that matches any known function name followed by '('
     names_sorted = sorted(name_to_addr.keys(), key=len, reverse=True)
     if not names_sorted:
         return unified
-    call_pat = re.compile(r"\b(" + "|".join(re.escape(n) for n in names_sorted) + r")\b\s*\(")
+    call_pat = re.compile(
+        r"\b(" + "|".join(re.escape(n) for n in names_sorted) + r")\b\s*\("
+    )
 
     out_lines: list[str] = []
     for line in unified.splitlines():
@@ -546,10 +637,100 @@ def _annotate_unified_with_tags(
     return "\n".join(out_lines) + ("\n" if out_lines else "")
 
 
+def _extract_changed_regions(unified: str, context_lines: int = 3) -> str:
+    """
+    Keep only +/- lines (changes) plus a small number of surrounding context lines
+    and all hunk/file headers. Insert "..." between disjoint kept regions.
+    Intended for LLM consumption only (not for patch application).
+    """
+    lines = unified.splitlines()
+    n = len(lines)
+    if n == 0:
+        return unified
+
+    keep: set[int] = set()
+
+    # Always keep initial headers if present
+    for i, line in enumerate(lines[:5]):
+        if line.startswith(("---", "+++", "@@")):
+            keep.add(i)
+
+    # Always keep all hunk headers
+    for i, line in enumerate(lines):
+        if line.startswith("@@"):
+            keep.add(i)
+
+    # Mark regions around changed lines
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+
+        # Skip file/hunk headers (already handled)
+        if line.startswith(("---", "+++", "@@")):
+            continue
+
+        # Changed lines: leading '+' or '-' (but not '+++' / '---' headers)
+        prefix = line[0]
+        if prefix in ("+", "-"):
+            start = max(0, i - context_lines)
+            end = min(n, i + context_lines + 1)
+            for j in range(start, end):
+                keep.add(j)
+
+    if not keep:
+        # No obvious changes detected; return original
+        return unified
+
+    new_lines: list[str] = []
+    last_idx = -1
+    for idx in sorted(keep):
+        if last_idx != -1 and idx > last_idx + 1:
+            # Indicate omitted block
+            new_lines.append("...")
+        new_lines.append(lines[idx])
+        last_idx = idx
+
+    return "\n".join(new_lines) + ("\n" if new_lines else "")
+
+
+def _maybe_compact_unified(unified: str, max_chars: int = _MAX_UNIFIED_CHARS) -> str:
+    """
+    If `unified` is too large for the LLM context budget, shrink it to focus on
+    changed lines plus limited context. Final fallback: hard truncate at a line
+    boundary and add a note.
+    """
+    if not unified or len(unified) <= max_chars:
+        return unified
+
+    # First pass: changed lines + a few context lines
+    compact = _extract_changed_regions(unified, context_lines=3)
+    if len(compact) <= max_chars:
+        return compact
+
+    # Second pass: changed lines only (no extra context)
+    compact = _extract_changed_regions(unified, context_lines=0)
+    if len(compact) <= max_chars:
+        return compact
+
+    # Final fallback: hard truncate at line boundary
+    lines = compact.splitlines()
+    out_lines: list[str] = []
+    total = 0
+    for line in lines:
+        line_len = len(line) + 1  # + '\n'
+        if total + line_len > max_chars:
+            break
+        out_lines.append(line)
+        total += line_len
+
+    out_lines.append("... [diff truncated to fit LLM context]")
+    return "\n".join(out_lines) + ("\n" if out_lines else "")
+
 
 # ---------------------------
 # Ghidra helpers
 # ---------------------------
+
 
 def retrieve_function_decomp_lines(oid: str, func_addr: Any) -> Optional[List[str]]:
     func_name = _get_function_name(oid, func_addr)

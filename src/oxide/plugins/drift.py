@@ -11,7 +11,7 @@ NAME = "DRIFT"
 # Feature Filter Rules
 # ----------------------------------------
 rules = {
-    "Structurally_Modified": {
+    "Call_OR_Control_Modified": {
         "or": [
             "bb_nodes",
             "bb_edges",
@@ -33,6 +33,12 @@ rules = {
             "fc_add_new",
             "fc_removed_existing",
             "fc_removed_deleted"
+        ]
+    },
+    "Control_Modified": {
+        "or": [
+            "bb_nodes",
+            "bb_edges",
         ]
     },
 
