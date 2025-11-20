@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import os
@@ -13,6 +11,7 @@ from langgraph.graph import StateGraph, START, END
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
+from IPython.display import Image, display
 
 from oxide.plugins.drift import compare_collections
 from oxide.core import oxide as oxide
@@ -39,10 +38,21 @@ LLM = ChatOllama(
     temperature=0.0,
     num_ctx=8192,
     keep_alive="10m",
-    model_kwargs={"num_predict": 256},
+    request_timeout=60.0,
+    model_kwargs={"num_predict": 128},
 )
 FORMAT_LLM = ChatOllama(model="llama3.1:8b-instruct-q4_K_M", temperature=0.5)
 NORMALIZE_LLM = ChatOllama(model="llama3.1:8b-instruct-q4_K_M", temperature=0.0)
+# Second-stage skeptic / reviewer model
+SKEPTIC_LLM = ChatOllama(
+    model="gpt-oss:20b",
+    temperature=0.0,
+    num_ctx=8192,
+    keep_alive="10m",
+    request_timeout=60.0,
+    model_kwargs={"num_predict": 128},
+)
+
 
 logger.info("LLM ready: gpt-oss:20b (ctx=8192)")
 
@@ -52,38 +62,6 @@ try:
     logger.info("LLM warm-up complete.")
 except Exception as e:
     logger.warning(f"Warm-up failed: {e}")
-
-# ANALYST_SYS = (
-#     "You are an expert reverse engineer.\n"
-#     "Input is a unified diff of the decompiled C for ONE function (baseline vs target).\n\n"
-#     "TASK:\n"
-#     "Identify whether the modification adds a malicious backdoor or logic bomb.\n"
-#     "If it does, identify the specific condition in which the backdoor or logic bomb triggers.\n"
-#     "Output EXACT JSON ONLY:\n"
-#     "{\n"
-#     '  "label": "not_safe" | "safe",\n'
-#     '  "trigger": ""\n'
-#     '  "why": "1-3 sentences citing the specific + line(s) and the control/data-flow change"\n'
-#     "}\n"
-# )
-
-# ANALYST_SYS = (
-#     "You are an expert reverse engineer analyzing code that is expected to be safe.\n"
-#     "Input is a unified diff of the decompiled C for ONE function (baseline vs target).\n\n"
-#     "TASK:\n"
-#     "Decide if the change introduces a malicious backdoor or logic bomb in THIS function.\n"
-#     'Only label it "not_safe" if you can state a concrete value that triggers newly introduced alternate functionality based solely on\n'
-#     "conditions visible in the diff.\n"
-#     "You must not rely purely on unknown helper behavior.\n"
-#     ' If you cannot identify such a trigger, label it "safe".\n\n'
-#     "Output EXACT JSON ONLY:\n"
-#     "{\n"
-#     '  "label": "not_safe" | "safe",\n'
-#     '  "trigger": "short description of the trigger condition, or empty string if none",\n'
-#     '  "why": "1-3 sentences citing the specific changed lines and the behavior difference"\n'
-#     "}\n"
-# )
-
 
 ANALYST_SYS = (
     "You are an expert reverse engineer analyzing code that is expected to be safe.\n"
@@ -106,6 +84,33 @@ ANALYST_SYS = (
     "}\n"
 )
 
+SKEPTIC_SYS = (
+    "You are a skeptical security reviewer.\n"
+    "You are given:\n"
+    "- A unified diff of one function (baseline vs target).\n"
+    "- An earlier JSON assessment that claims the change may add a malicious backdoor or logic bomb.\n\n"
+    "ASSUMPTION:\n"
+    "The overall codebase is expected to be safe. Your job is to REFUTE false accusations whenever possible.\n\n"
+    "TASK:\n"
+    "1. Read the diff and earlier assessment.\n"
+    "2. Decide whether the earlier 'not_safe' label is clearly justified based ONLY on the diff.\n"
+    "3. Specifically, check whether:\n"
+    "   - There is clearly new behavior vs the baseline, AND\n"
+    "   - There is a CONCRETE trigger condition (a specific value, flag, or input combination) visible in the diff\n"
+    "     that activates the new behavior, AND\n"
+    "   - The new behavior is more permissive, covert, or dangerous.\n\n"
+    "OUTPUT:\n"
+    "Return EXACT JSON ONLY:\n"
+    "{\n"
+    '  "verdict": "confirm_not_safe" | "refute",\n'
+    '  "reason": "1-3 sentences explaining why you confirm or refute",\n'
+    '  "trigger_ok": true | false,\n'
+    '  "concrete_trigger": "your own short description of the trigger condition, or empty string if you cannot state one"\n'
+    "}\n\n"
+    "Guidelines:\n"
+    "- Use 'confirm_not_safe' ONLY if you can independently state a concrete trigger and see dangerous new behavior.\n"
+    "- Use 'refute' if the change appears to be benign (error handling, logging, validation, etc.), or if you are unsure.\n"
+)
 
 # --------------------------------------------------------------------------------------
 # Top-level entrypoints / exports
@@ -113,97 +118,33 @@ ANALYST_SYS = (
 
 
 def run_all(args, opts):
-    """
-    Run llm_filter over a matrix of (annotate, filter) configurations.
-
-    filters = ["Control_Call_Modified", "Call_Modified",
-               "Control_Modified", "Call_OR_Control_Modified"]
-
-    For each filter and annotate in {False, True}, we:
-        - set opts["annotate"]
-        - set opts["filter"]
-        - set opts["outdir"] to a unique subdirectory
-
-    Returns a dict of the form:
-
-      {
-        "<filter_name>": {
-          "plain":      <series_summary from llm_filter>,
-          "annotated":  <series_summary from llm_filter>,
-        },
-        "_summary_by_filter": {
-          "<filter_name>": {
-            "plain": {
-              "total_modified_functions_filtered": ...,
-              "flagged_filtered": ...,
-              "safe_filtered": ...,
-              "total_modified_functions_all": ...,
-              "safe_overall": ...,
-            },
-            "annotated": { ... same keys ... }
-          },
-          ...
-        }
-      }
-    """
     results: Dict[str, Any] = {}
 
     base_outdir = opts.get("outdir", "outputs")
     filters = [
         # None,
-        "Control_Call_Modified",
+        # "Control_Call_Modified",
         "Call_OR_Control_Modified",
     ]
 
-    # Run the matrix: (filter, annotate)
     for flt in filters:
         filter_name = flt if flt is not None else "None"
         results[filter_name] = {}
 
-        for annotate in (False, True):
-            rep_name = "plain" if not annotate else "annotated"
+        # fresh opts per run so we don't leak state
+        cfg = dict(opts)
 
-            # fresh opts per run so we don't leak state
-            cfg = dict(opts)
-            cfg["annotate"] = annotate
+        if flt is None:
+            cfg.pop("filter", None)
+        else:
+            cfg["filter"] = flt
 
-            if flt is None:
-                cfg.pop("filter", None)
-            else:
-                cfg["filter"] = flt
+        # give each config its own output directory
+        cfg["outdir"] = os.path.join(base_outdir, f"{filter_name}")
 
-            # give each config its own output directory
-            cfg["outdir"] = os.path.join(base_outdir, f"{rep_name}_{filter_name}")
+        logger.info(f"run_all: filter={filter_name}" f"→ outdir={cfg['outdir']}")
 
-            logger.info(
-                f"run_all: filter={filter_name}, annotate={annotate} "
-                f"→ outdir={cfg['outdir']}"
-            )
-
-            results[filter_name][rep_name] = llm_filter(args, cfg)
-
-    # Build a compact summary for quick Excel / plotting use
-    summary_by_filter: Dict[str, Dict[str, Any]] = {}
-
-    for filter_name, cfg_results in results.items():
-        summary_entry: Dict[str, Any] = {}
-        for rep_name, series_summary in cfg_results.items():
-            agg = (series_summary or {}).get("aggregate", {}) or {}
-            summary_entry[rep_name] = {
-                "total_modified_functions_filtered": agg.get(
-                    "total_modified_functions_filtered", 0
-                ),
-                "flagged_filtered": agg.get("flagged_filtered", 0),
-                "safe_filtered": agg.get("safe_filtered", 0),
-                "total_modified_functions_all": agg.get(
-                    "total_modified_functions_all", 0
-                ),
-                "safe_overall": agg.get("safe_overall", 0),
-            }
-
-        summary_by_filter[filter_name] = summary_entry
-
-    results["_summary_by_filter"] = summary_by_filter
+        results[filter_name] = llm_filter(args, cfg)
 
     # Optional but handy: write to one JSON blob for post-processing
     aggregated_path = os.path.join(base_outdir, "run_all_results.json")
@@ -238,8 +179,6 @@ def llm_filter(args: List[str], opts: Dict[str, Any]) -> None:
             "Pass either [target, baseline] or --entries with at least two lines."
         )
 
-    annotate: bool = bool(opts.get("annotate", True))
-    filter_val = opts.get("filter", None)
     outdir: str = opts.get("outdir", "out_firmware_simple")
 
     os.makedirs(outdir, exist_ok=True)
@@ -314,35 +253,7 @@ def llm_filter(args: List[str], opts: Dict[str, Any]) -> None:
     # ---- Write cross-comparison summaries ----
     logger.info("Writing cross-comparison summaries…")
 
-    # filtered-level sums
-    agg_filtered_total = sum(
-        r.get("total_modified_functions_filtered", 0) for r in comparison_rows
-    )
-    agg_filtered_flagged = sum(
-        r.get("flagged_not_safe_filtered", 0) for r in comparison_rows
-    )
-    agg_filtered_safe = sum(r.get("safe_filtered", 0) for r in comparison_rows)
-
-    # all-level sums
-    agg_all_total = sum(
-        r.get("total_modified_functions_all", 0) for r in comparison_rows
-    )
-    agg_all_safe = sum(r.get("safe_overall", 0) for r in comparison_rows)
-
-    aggregate = {
-        "comparisons": len(comparison_rows),
-        "annotate": annotate,
-        "filter": filter_val,
-        # filtered-only metrics
-        "total_modified_functions_filtered": agg_filtered_total,
-        "flagged_filtered": agg_filtered_flagged,
-        "safe_filtered": agg_filtered_safe,
-        # overall metrics (all drift-modified)
-        "total_modified_functions_all": agg_all_total,
-        "safe_overall": agg_all_safe,
-    }
-
-    series_summary = {"comparisons": comparison_rows, "aggregate": aggregate}
+    series_summary = {"comparisons": comparison_rows}
 
     write_json(os.path.join(outdir, "comparisons_summary.json"), series_summary)
     write_json(
@@ -434,7 +345,6 @@ def import_rosarum_samples(args: List[str], opts: Dict[str, Any]) -> None:
 # keep plugin export shape
 exports = [llm_filter, import_rosarum_samples, run_all]
 
-
 # --------------------------------------------------------------------------------------
 # Core pipeline
 # --------------------------------------------------------------------------------------
@@ -478,6 +388,11 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     n_flagged_filtered = 0
     n_safe_filtered = 0
 
+    # Skeptic-related metrics (filtered functions only)
+    n_stage1_not_safe_filtered = 0
+    n_skeptic_confirmed = 0
+    n_skeptic_refuted = 0
+
     if not file_pairs:
         report_lines.append("No file pairs or modifications were reported by drift.")
         logger.info("• No file pairs / modifications.")
@@ -517,6 +432,14 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
             res = analyze_function_pair(
                 baseline_oid, target_oid, baddr, taddr, fp_idx, func_idx, outdir, opts
             )
+
+            # --- Skeptic metrics ---
+            if res.get("stage1_label") == "not_safe":
+                n_stage1_not_safe_filtered += 1
+                if res.get("refuted_by_skeptic"):
+                    n_skeptic_refuted += 1
+                if res.get("confirmed_by_skeptic"):
+                    n_skeptic_confirmed += 1
 
             if res["flagged"]:
                 n_flagged_filtered += 1
@@ -560,8 +483,13 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     report_lines.append(
         f"- Total modified functions (FILTERED): {total_modified_filtered}"
     )
-    report_lines.append(f"- Flagged (filtered): {n_flagged_filtered}")
-    report_lines.append(f"- Safe (filtered): {n_safe_filtered} ")
+    report_lines.append(f"- Flagged (filtered, final): {n_flagged_filtered}")
+    report_lines.append(f"- Safe (filtered, final): {n_safe_filtered} ")
+    report_lines.append(
+        f"- Stage1 not_safe (before skeptic, filtered): {n_stage1_not_safe_filtered}"
+    )
+    report_lines.append(f"- Skeptic confirmed not_safe: {n_skeptic_confirmed}")
+    report_lines.append(f"- Skeptic refuted (downgraded to safe): {n_skeptic_refuted}")
     if total_modified_all != total_modified_filtered:
         report_lines.append(
             f"- Overall safe rate (assuming excluded functions are safe): {overall_safe_rate:.2%}"
@@ -577,6 +505,10 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
         "total_modified_functions_filtered": total_modified_filtered,
         "flagged_not_safe_filtered": n_flagged_filtered,
         "safe_filtered": n_safe_filtered,
+        # skeptic metrics
+        "stage1_not_safe_filtered": n_stage1_not_safe_filtered,
+        "skeptic_confirmed_filtered": n_skeptic_confirmed,
+        "skeptic_refuted_filtered": n_skeptic_refuted,
     }
 
     write_text(os.path.join(outdir, "final_report.txt"), "\n".join(report_lines))
@@ -607,7 +539,6 @@ def analyze_function_pair(
     outdir,
     opts,
 ) -> Dict[str, Any]:
-    annotate = opts.get("annotate", True)
     func_dir = os.path.join(
         outdir,
         f"filepair_{fp_idx:02d}",
@@ -621,10 +552,9 @@ def analyze_function_pair(
     diff_raw = oxide.retrieve(
         "function_decomp_diff",
         [target_oid, baseline_oid],
-        {"target": taddr, "baseline": baddr, "annotate": annotate},
+        {"target": taddr, "baseline": baddr},
     )
 
-    # NOTE: This fails because there is a mismatch in funcs provided by ghidra_disasm and bindiff.
     if isinstance(diff_raw, dict) and "error" in diff_raw:
         notes["observations"].append("diff tool failed")
         # Save and return safe verdict if we can't diff
@@ -638,6 +568,8 @@ def analyze_function_pair(
                 "why": "no diff available",
                 "flagged": False,
                 "verdict": verdict,
+                "stage1": None,
+                "skeptic": None,
             },
         )
         write_text(os.path.join(func_dir, "verdict.txt"), verdict)
@@ -647,6 +579,7 @@ def analyze_function_pair(
             "flagged": False,
             "verdict": verdict,
             "func_dir": func_dir,
+            "skeptic": None,
         }
 
     diff_text = extract_content(diff_raw) or ""
@@ -664,8 +597,13 @@ def analyze_function_pair(
     flagged = False
     verdict = "Label: safe — model provided no reason"
 
+    label_stage1 = "safe"
+    trigger_stage1 = ""
+    why_stage1 = ""
+    skeptic_result: Optional[Dict[str, Any]] = None
+
     # ------------------------
-    # 2) LLM triage via LangGraph
+    # 2) LLM triage via LangGraph (+ skeptic)
     # ------------------------
     if unified.strip():
         triage = run_triage_langgraph(
@@ -674,11 +612,21 @@ def analyze_function_pair(
             func_idx=func_idx,
             notes=notes,
         )
+
+        triage_trace = triage.get("trace") or []
+
+        # Final decision from graph (after skeptic)
         label = triage.get("label", "safe")
         why = (triage.get("why") or "").strip()
 
-        # NEW: persist LangGraph trace for this function
-        triage_trace = triage.get("trace") or []
+        # Stage1 result (before skeptic) for metrics
+        label_stage1 = triage.get("stage1_label", label)
+        trigger_stage1 = (triage.get("stage1_trigger") or "").strip()
+        why_stage1 = (triage.get("stage1_why") or "").strip()
+
+        skeptic_result = triage.get("skeptic")
+
+        # Persist LangGraph + skeptic trace
         trace_payload = {
             "fp_index": fp_idx,
             "func_index": func_idx,
@@ -688,14 +636,22 @@ def analyze_function_pair(
             "trace": triage_trace,
         }
         write_json(os.path.join(func_dir, "triage_trace.json"), trace_payload)
-
-        # Optional: register in notes artifacts for quick discovery
         notes["artifacts"].append(
             {
                 "kind": "triage_trace",
                 "path": "triage_trace.json",
             }
         )
+
+    # Did the skeptic overturn or confirm a stage1 "not_safe"?
+    refuted_by_skeptic = bool(label_stage1 == "not_safe" and label == "safe")
+    confirmed_by_skeptic = bool(
+        label_stage1 == "not_safe"
+        and label == "not_safe"
+        and skeptic_result
+        and skeptic_result.get("verdict") == "confirm_not_safe"
+        and skeptic_result.get("trigger_ok")
+    )
 
     flagged = label == "not_safe"
     verdict = (
@@ -707,7 +663,20 @@ def analyze_function_pair(
     write_json(notes_path, notes)
     write_json(
         os.path.join(func_dir, "analysis.json"),
-        {"label": label, "why": why, "flagged": flagged, "verdict": verdict},
+        {
+            "label": label,
+            "why": why,
+            "flagged": flagged,
+            "verdict": verdict,
+            "stage1": {
+                "label": label_stage1,
+                "trigger": trigger_stage1,
+                "why": why_stage1,
+            },
+            "skeptic": skeptic_result,
+            "refuted_by_skeptic": refuted_by_skeptic,
+            "confirmed_by_skeptic": confirmed_by_skeptic,
+        },
     )
     write_text(os.path.join(func_dir, "verdict.txt"), verdict)
 
@@ -717,6 +686,10 @@ def analyze_function_pair(
         "flagged": flagged,
         "verdict": verdict,
         "func_dir": func_dir,
+        "skeptic": skeptic_result,
+        "stage1_label": label_stage1,
+        "refuted_by_skeptic": refuted_by_skeptic,
+        "confirmed_by_skeptic": confirmed_by_skeptic,
     }
 
 
@@ -812,13 +785,17 @@ def call_analyst_llm(
         text_local = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
         dt_llm = time.perf_counter() - t_llm
 
+        if not text_local:
+            logger.error(
+                f"LLM ANALYST EMPTY fp={fp_idx} func={func_idx} "
+                f"after {dt_llm:.2f}s (diff_chars={len(user_content)})"
+            )
+            raise ValueError("LLM (analyst) returned empty content")
+
         logger.info(
             f"LLM ANALYST OK fp={fp_idx} func={func_idx} "
             f"took {dt_llm:.2f}s (diff_chars={len(user_content)})"
         )
-
-        if not text_local:
-            raise ValueError("LLM (analyst) returned empty content")
 
         return text_local
 
@@ -837,6 +814,7 @@ def call_analyst_llm(
         fallback_json = json.dumps(
             {
                 "label": "not_safe",
+                "trigger": "",
                 "why": f"LLM analyst failed: {str(e)}",
             }
         )
@@ -860,6 +838,7 @@ def call_format_llm(
         "Your ONLY job is to output VALID JSON matching this schema:\n"
         "{\n"
         '  "label": "not_safe" | "safe",\n'
+        '  "trigger": "short description of the trigger condition, or empty string if none",\n'
         '  "why": "1-3 sentences citing the specific + line(s) and the control/data-flow change"\n'
         "}\n"
         "Do not change the meaning, only fix the formatting.\n"
@@ -904,6 +883,7 @@ def call_format_llm(
         fallback_json = json.dumps(
             {
                 "label": "not_safe",
+                "trigger": "",
                 "why": f"LLM format failed: {str(e)}",
             }
         )
@@ -928,6 +908,7 @@ def call_normalize_llm(
         "Your ONLY job is to output VALID JSON matching this schema:\n"
         "{\n"
         '  "label": "not_safe" | "safe",\n'
+        '  "trigger": "short description of the trigger condition, or empty string if none",\n'
         '  "why": "1-3 sentences citing the specific + line(s) and the control/data-flow change"\n'
         "}\n\n"
         "If the input uses synonyms (e.g., 'malicious', 'benign', 'unsafe', "
@@ -977,10 +958,133 @@ def call_normalize_llm(
         fallback_json = json.dumps(
             {
                 "label": "not_safe",
+                "trigger": "",
                 "why": f"LLM normalize failed: {str(e)}",
             }
         )
         return fallback_json
+
+
+def call_skeptic_llm(
+    diff_text: str,
+    stage1_result: Dict[str, Any],
+    fp_idx: int,
+    func_idx: int,
+    notes: Dict[str, Any],
+) -> str:
+    """
+    Second-stage skeptic: tries to refute 'not_safe' labels.
+    Returns JSON text (verdict/refute) or a fallback JSON on failure.
+    """
+    t_llm = time.perf_counter()
+
+    skeptic_prompt = (
+        "You will review an earlier backdoor assessment.\n\n"
+        "=== FUNCTION UNIFIED DIFF ===\n"
+        f"{diff_text}\n\n"
+        "=== EARLIER ASSESSMENT JSON ===\n"
+        f"{json.dumps(stage1_result, indent=2)}\n"
+    )
+
+    try:
+        resp = SKEPTIC_LLM.invoke(
+            [
+                SystemMessage(content=SKEPTIC_SYS),
+                HumanMessage(content=ascii_sanitize(skeptic_prompt)),
+            ]
+        )
+        text_local = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
+        dt_llm = time.perf_counter() - t_llm
+
+        logger.info(
+            f"LLM SKEPTIC OK fp={fp_idx} func={func_idx} "
+            f"took {dt_llm:.2f}s (diff_chars={len(diff_text)})"
+        )
+
+        if not text_local:
+            raise ValueError("LLM (skeptic) returned empty content")
+
+        return text_local
+
+    except Exception as e:
+        dt_llm = time.perf_counter() - t_llm
+        err_msg = f"LLM skeptic failed fp={fp_idx} func={func_idx}: {e}"
+        logger.error(
+            f"LLM SKEPTIC ERROR fp={fp_idx} func={func_idx} "
+            f"after {dt_llm:.2f}s: {e}"
+        )
+        notes["observations"].append(err_msg)
+
+        # Fallback: fail-closed and keep the alert.
+        fallback_json = json.dumps(
+            {
+                "verdict": "confirm_not_safe",
+                "reason": f"Skeptic LLM failed: {str(e)}",
+                "trigger_ok": True,
+                "concrete_trigger": "",
+            }
+        )
+        return fallback_json
+
+
+def run_skeptic_review(
+    unified_diff: str,
+    stage1_result: Dict[str, Any],
+    fp_idx: int,
+    func_idx: int,
+    notes: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Run the skeptic LLM and normalize its output into:
+      {verdict, reason, trigger_ok, concrete_trigger}
+    """
+    text = call_skeptic_llm(
+        diff_text=unified_diff,
+        stage1_result=stage1_result,
+        fp_idx=fp_idx,
+        func_idx=func_idx,
+        notes=notes,
+    )
+
+    data = parse_llm_json(text)
+    if not isinstance(data, dict):
+        msg = "Skeptic LLM output was not valid JSON; keeping stage1 not_safe label."
+        notes["observations"].append(msg)
+        return {
+            "verdict": "confirm_not_safe",
+            "reason": msg,
+            "trigger_ok": True,
+            "concrete_trigger": "",
+        }
+
+    verdict_raw = str(data.get("verdict", "refute")).strip().lower()
+
+    if verdict_raw in {"confirm_not_safe", "confirm", "not_safe", "unsafe"}:
+        verdict = "confirm_not_safe"
+    else:
+        # Anything else (including garbage) => refute
+        verdict = "refute"
+
+    trigger_ok = bool(data.get("trigger_ok", False))
+
+    concrete_trigger_raw = data.get("concrete_trigger", "")
+    try:
+        concrete_trigger = str(concrete_trigger_raw).strip()
+    except Exception:
+        concrete_trigger = ""
+
+    reason_raw = data.get("reason", "")
+    try:
+        reason = str(reason_raw).strip()
+    except Exception:
+        reason = ""
+
+    return {
+        "verdict": verdict,
+        "reason": reason,
+        "trigger_ok": trigger_ok,
+        "concrete_trigger": concrete_trigger,
+    }
 
 
 # --------------------------------------------------------------------------------------
@@ -1002,6 +1106,10 @@ class TriageState(TypedDict, total=False):
 
     # Final parsed JSON
     final_json: Optional[Dict[str, Any]]
+
+    # NEW: keep stage1 (pre-skeptic) + skeptic result
+    stage1_json: Optional[Dict[str, Any]]
+    skeptic_json: Optional[Dict[str, Any]]
 
     # Trace of each node's activity
     trace: List[Dict[str, Any]]
@@ -1136,6 +1244,7 @@ def _build_triage_graph():
             notes["observations"].append(msg)
             final = {
                 "label": "not_safe",
+                "trigger": "",
                 "why": msg,
             }
         else:
@@ -1171,12 +1280,21 @@ def _build_triage_graph():
             elif isinstance(data.get("label"), bool):
                 label = "not_safe" if data["label"] else "safe"
             else:
-                # Default to safe *only* if we got valid JSON and the normalizer
-                # didn't mark it as not_safe.
-                label = "safe"
+                # Fail-closed: unrecognized label -> not_safe.
+                label = "not_safe"
 
             why = (data.get("why") or "").strip() or "model provided no reason"
-            final = {"label": label, "why": why}
+
+            raw_trigger = data.get("trigger", "")
+            if raw_trigger is None:
+                trigger = ""
+            else:
+                try:
+                    trigger = str(raw_trigger).strip()
+                except Exception:
+                    trigger = ""
+
+            final = {"label": label, "trigger": trigger, "why": why}
 
         trace = list(state.get("trace", []))
         trace.append(
@@ -1184,11 +1302,90 @@ def _build_triage_graph():
                 "node": "finalize",
                 "from_valid_json": from_json,
                 "final_label": final["label"],
+                "final_trigger_preview": (final.get("trigger") or "")[:200],
                 "final_why_preview": final["why"][:400],
             }
         )
 
-        return {"final_json": final, "trace": trace}
+        return {"final_json": final, "stage1_json": final, "trace": trace}
+
+    def skeptic_node(state: TriageState) -> TriageState:
+        diff = state["diff"]
+        fp_idx = state["fp_idx"]
+        func_idx = state["func_idx"]
+        notes = state["notes"]
+
+        stage1 = state.get("stage1_json") or state.get("final_json") or {}
+
+        t0 = time.perf_counter()
+        skeptic = run_skeptic_review(
+            unified_diff=diff,
+            stage1_result={
+                "label": stage1.get("label", ""),
+                "trigger": stage1.get("trigger", ""),
+                "why": stage1.get("why", ""),
+            },
+            fp_idx=fp_idx,
+            func_idx=func_idx,
+            notes=notes,
+        )
+        dt = time.perf_counter() - t0
+
+        verdict_s = skeptic.get("verdict", "refute")
+        trigger_ok = bool(skeptic.get("trigger_ok", False))
+
+        # Normalize stage1 label
+        stage1_label_raw = (
+            str(stage1.get("label", "safe")).strip().lower().replace("-", "_")
+        )
+        stage1_label = "not_safe" if stage1_label_raw == "not_safe" else "safe"
+
+        final_label = stage1_label
+        final_why = (stage1.get("why") or "").strip()
+        trigger = (stage1.get("trigger") or "").strip()
+
+        if stage1_label == "not_safe":
+            if verdict_s == "confirm_not_safe" and trigger_ok:
+                reason_extra = (skeptic.get("reason") or "").strip()
+                if reason_extra:
+                    final_why = (
+                        f"{final_why} | Skeptic: {reason_extra}"
+                        if final_why
+                        else f"Skeptic: {reason_extra}"
+                    )
+            else:
+                final_label = "safe"
+                final_why = (
+                    skeptic.get("reason")
+                    or "Second-stage skeptic did not confirm the backdoor; treating as safe."
+                )
+
+        final = {
+            "label": final_label,
+            "trigger": trigger,
+            "why": final_why,
+        }
+
+        trace = list(state.get("trace", []))
+        trace.append(
+            {
+                "node": "skeptic",
+                "duration_s": dt,
+                "verdict": verdict_s,
+                "trigger_ok": trigger_ok,
+                "reason_preview": (skeptic.get("reason") or "")[:400],
+                "concrete_trigger_preview": (skeptic.get("concrete_trigger") or "")[
+                    :200
+                ],
+            }
+        )
+
+        return {
+            "final_json": final,
+            "stage1_json": stage1,
+            "skeptic_json": skeptic,
+            "trace": trace,
+        }
 
     # --- Routing / condition logic -----------------------------------------
 
@@ -1213,12 +1410,22 @@ def _build_triage_graph():
         # JSON but label is wrong / synonym -> use normalizer
         return "normalize"
 
+    def route_after_finalize(state: TriageState) -> str:
+        final = state.get("final_json") or {}
+        label_raw = (
+            str(final.get("label", "not_safe")).strip().lower().replace("-", "_")
+        )
+        if label_raw == "not_safe":
+            return "needs_skeptic"
+        return "end"
+
     # --- Wire up the graph -------------------------------------------------
 
     graph.add_node("analyst", analyst_node)
     graph.add_node("format", format_node)
     graph.add_node("normalize", normalize_node)
     graph.add_node("finalize", finalize_node)
+    graph.add_node("skeptic", skeptic_node)
 
     graph.add_edge(START, "analyst")
     graph.add_conditional_edges(
@@ -1230,18 +1437,50 @@ def _build_triage_graph():
             "finalize": "finalize",
         },
     )
-    # If we hit the formatter, always go through normalization next
     graph.add_edge("format", "normalize")
-    # Normalizer always goes to finalize
     graph.add_edge("normalize", "finalize")
-    # Finalize ends the graph
-    graph.add_edge("finalize", END)
+
+    # NEW: finalize -> (skeptic | END)
+    graph.add_conditional_edges(
+        "finalize",
+        route_after_finalize,
+        {
+            "needs_skeptic": "skeptic",
+            "end": END,
+        },
+    )
+
+    # Skeptic always ends
+    graph.add_edge("skeptic", END)
 
     return graph.compile()
 
 
+def show_and_save_triage_graph_png(path: str = "triage_graph.png") -> None:
+    # TRIAGE_GRAPH is the compiled app from _build_triage_graph()
+    g = TRIAGE_GRAPH.get_graph()
+
+    try:
+        png_bytes = g.draw_mermaid_png()
+    except Exception as e:
+        print(f"Failed to render mermaid PNG: {e}")
+        return
+
+    # 1) Display in a notebook (if you're in IPython/Jupyter)
+    try:
+        display(Image(png_bytes))
+    except Exception as e:
+        print(f"Display failed (not in a notebook?): {e}")
+
+    # 2) Save to a PNG file in the current directory
+    with open(path, "wb") as f:
+        f.write(png_bytes)
+    print(f"Saved triage graph PNG to {path}")
+
+
 # Single compiled instance, like the LLM objects above
 TRIAGE_GRAPH = _build_triage_graph()
+show_and_save_triage_graph_png()
 
 
 def run_triage_langgraph(
@@ -1249,36 +1488,85 @@ def run_triage_langgraph(
 ) -> Dict[str, Any]:
     """
     Entry point for the LangGraph-backed triage pipeline.
-    Returns a dict with at least {"label", "why", "trace"}.
+    Returns a dict with at least
+      {"label", "trigger", "why", "trace", "stage1_label", "stage1_trigger",
+       "stage1_why", "skeptic"}.
     """
     initial_state: TriageState = {
         "diff": ascii_sanitize(unified_diff),
         "fp_idx": fp_idx,
         "func_idx": func_idx,
         "notes": notes,
-        "trace": [],  # NEW: start an empty trace
+        "trace": [],
     }
 
-    result_state = TRIAGE_GRAPH.invoke(initial_state)
+    # Fail-closed if the graph itself blows up
+    try:
+        result_state = TRIAGE_GRAPH.invoke(initial_state)
+    except Exception as e:
+        msg = f"LangGraph invoke failed: {e}; marking function as not_safe."
+        notes["observations"].append(msg)
+        return {
+            "label": "not_safe",
+            "trigger": "",
+            "why": "LangGraph triage pipeline failed; treating change as not_safe.",
+            "trace": [
+                {
+                    "node": "graph_invoke",
+                    "error": str(e),
+                }
+            ],
+            "stage1_label": "not_safe",
+            "stage1_trigger": "",
+            "stage1_why": "LangGraph triage pipeline failed.",
+            "skeptic": None,
+        }
+
     final = result_state.get("final_json") or {}
+    stage1 = result_state.get("stage1_json") or final
+    skeptic = result_state.get("skeptic_json")
     trace = result_state.get("trace") or []
 
     if not isinstance(final, dict):
         final = {
             "label": "not_safe",
+            "trigger": "",
             "why": f"internal error: unexpected graph output {final!r}",
         }
 
-    # Extra safety normalization at the very end
-    label_raw = str(final.get("label", "safe")).strip().lower().replace("-", "_")
+    # Final label (after skeptic), fail-closed
+    label_raw = str(final.get("label", "not_safe")).strip().lower().replace("-", "_")
     if label_raw not in ("safe", "not_safe"):
-        label = "safe"
+        label = "not_safe"
     else:
         label = label_raw
 
     why = (final.get("why") or "").strip()
+    trigger = (final.get("trigger") or "").strip()
 
-    return {"label": label, "why": why, "trace": trace}
+    # Stage1 (pre-skeptic) normalization, also fail-closed
+    if not isinstance(stage1, dict):
+        stage1 = {"label": "not_safe", "trigger": "", "why": "missing stage1_json"}
+
+    s_label_raw = str(stage1.get("label", "not_safe")).strip().lower().replace("-", "_")
+    if s_label_raw not in ("safe", "not_safe"):
+        stage1_label = "not_safe"
+    else:
+        stage1_label = s_label_raw
+
+    stage1_trigger = (stage1.get("trigger") or "").strip()
+    stage1_why = (stage1.get("why") or "").strip()
+
+    return {
+        "label": label,
+        "trigger": trigger,
+        "why": why,
+        "trace": trace,
+        "stage1_label": stage1_label,
+        "stage1_trigger": stage1_trigger,
+        "stage1_why": stage1_why,
+        "skeptic": skeptic,
+    }
 
 
 # --------------------------------------------------------------------------------------

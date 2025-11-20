@@ -244,8 +244,6 @@ def llm_filter(args: List[str], opts: Dict[str, Any]) -> None:
             "Pass either [target, baseline] or --entries with at least two lines."
         )
 
-    annotate: bool = bool(opts.get("annotate", True))
-    filter_val = opts.get("filter", None)
     outdir: str = opts.get("outdir", "out_firmware_simple")
 
     os.makedirs(outdir, exist_ok=True)
@@ -606,7 +604,7 @@ def analyze_function_pair(
     outdir,
     opts,
 ) -> Dict[str, Any]:
-    annotate = opts.get("annotate", True)
+    annotate = opts.get("annotate", False)
     func_dir = os.path.join(
         outdir,
         f"filepair_{fp_idx:02d}",
@@ -623,7 +621,6 @@ def analyze_function_pair(
         {"target": taddr, "baseline": baddr, "annotate": annotate},
     )
 
-    # NOTE: This fails because there is a mismatch in funcs provided by ghidra_disasm and bindiff.
     if isinstance(diff_raw, dict) and "error" in diff_raw:
         notes["observations"].append("diff tool failed")
         # Save and return safe verdict if we can't diff

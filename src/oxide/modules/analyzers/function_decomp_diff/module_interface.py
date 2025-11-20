@@ -53,7 +53,7 @@ _LLM_DIFF_CHAR_BUDGET = 7500
 opts_doc = {
     "target": {"type": str, "mangle": True, "default": "None"},
     "baseline": {"type": str, "mangle": True, "default": "None"},
-    "annotate": {"type": bool, "mangle": True, "default": True},
+    "annotate": {"type": bool, "mangle": True, "default": False},
     "normalize": {"type": bool, "mangle": True, "default": True},
 }
 
@@ -76,9 +76,6 @@ _RE_FUN = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
 _RE_LAB = re.compile(r"\bLAB_[0-9a-fA-F]+\b")
 _RE_DAT = re.compile(r"\bDAT_[0-9a-fA-F]+\b")
 _RE_PTR = re.compile(r"\bPTR_[0-9a-fA-F]+\b")
-_RE_OFF = re.compile(r"\boff_[0-9a-fA-F]+\b")
-_RE_HEX = re.compile(r"\b0x[0-9a-fA-F]+\b")
-_RE_NUM = re.compile(r"\b\d+\b")
 _RE_TMP = re.compile(
     r"\b(?:[iu]Var\d+|bVar\d+|pcVar\d+|pvVar\d+|sVar\d+|lVar\d+|uVar\d+|plVar\d+)\b"
 )
