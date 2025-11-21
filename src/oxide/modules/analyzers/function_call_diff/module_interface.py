@@ -4,7 +4,6 @@ NAME = "function_call_diff"
 # imports
 import logging
 from typing import Dict, Any, List, Set, Tuple, Optional
-from functools import lru_cache
 
 from oxide.core import api
 
@@ -12,15 +11,16 @@ logger = logging.getLogger(NAME)
 logger.debug("init")
 
 opts_doc = {
-    "target":   {"type": str, "mangle": True, "default": "None"},
+    "target": {"type": str, "mangle": True, "default": "None"},
     "baseline": {"type": str, "mangle": True, "default": "None"},
 }
 
+
 def documentation() -> Dict[str, Any]:
-    """ Documentation for this module
-        private - Whether module shows up in help
-        set     - Whether this module accepts collections
-        atomic  - Analyzers are atomic and do not persist results
+    """Documentation for this module
+    private - Whether module shows up in help
+    set     - Whether this module accepts collections
+    atomic  - Analyzers are atomic and do not persist results
     """
     return {
         "description": DESC,
@@ -29,6 +29,7 @@ def documentation() -> Dict[str, Any]:
         "set": False,
         "atomic": True,
     }
+
 
 def results(oid_list: List[str], opts: dict) -> Optional[Dict[str, Any]]:
     """Entry point for analyzers (non-persistent)."""
@@ -47,7 +48,9 @@ def results(oid_list: List[str], opts: dict) -> Optional[Dict[str, Any]]:
     out = diff_func_calls(diff, target_file, target_func, baseline_file, baseline_func)
     return out
 
+
 # ---------------- Core ----------------
+
 
 def diff_func_calls(
     diff: Dict[str, Any],
@@ -86,7 +89,11 @@ def diff_func_calls(
       }
     """
     add_existing, add_new, paired = _get_fc_new(
-        diff, target_file=target_file, target_func=target_function, baseline_file=baseline_file, baseline_func=baseline_func
+        diff,
+        target_file=target_file,
+        target_func=target_function,
+        baseline_file=baseline_file,
+        baseline_func=baseline_func,
     )
     removed_existing, removed_deleted = _get_fc_removed(
         diff, target_file, target_function, baseline_file, baseline_func
@@ -109,7 +116,9 @@ def diff_func_calls(
         "fc_removed_deleted": removed_deleted,
     }
 
+
 # --------------- Internals ---------------
+
 
 def _iter_match_pairs(diff: Dict[str, Any]) -> List[Tuple[Any, Any]]:
     """
@@ -124,33 +133,23 @@ def _iter_match_pairs(diff: Dict[str, Any]) -> List[Tuple[Any, Any]]:
         return list(fm)
     return []
 
-def _get_tag(oid: str, addr: Any) -> Optional[str]:
-    """
-    Cached wrapper for LLM tag retrieval to avoid repeated round-trips.
-    """
-    try:
-        tag = api.get_field("llm_function_analysis", oid, "tag", {"func_offset": addr})
-        why = api.get_field("llm_function_analysis", oid, "why", {"func_offset": addr})
-    except Exception as e:
-        logger.debug(f"tag lookup failed for {oid}@{addr}: {e}")
-    return tag, why
 
 def _mk_side(oid: str, addr: Any) -> Dict[str, Any]:
     """
     Uniform per-side payload.
     """
-    tag, why = _get_tag(oid, addr)
     return {
         "addr": addr,
         "name": _get_function_name(oid, addr),
-        "tag": tag,
-        "why": why
     }
+
 
 def _get_fc_new(
     diff: Dict[str, Any],
-    target_file: str, target_func: str,
-    baseline_file: str, baseline_func: str,
+    target_file: str,
+    target_func: str,
+    baseline_file: str,
+    baseline_func: str,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Return lists of new call-edges in target:
@@ -159,8 +158,12 @@ def _get_fc_new(
       • paired:       calls that were already present in both
     (All entries are explicit dicts labeling target/baseline sides.)
     """
-    target_calls: Set[Any] = set(api.get_field("function_call_targets", target_file,  int(target_func)) or [])
-    baseline_calls: Set[Any] = set(api.get_field("function_call_targets", baseline_file, int(baseline_func)) or [])
+    target_calls: Set[Any] = set(
+        api.get_field("function_call_targets", target_file, int(target_func)) or []
+    )
+    baseline_calls: Set[Any] = set(
+        api.get_field("function_call_targets", baseline_file, int(baseline_func)) or []
+    )
 
     match_pairs = _iter_match_pairs(diff)
     t2b = {t: b for (t, b) in match_pairs}
@@ -173,26 +176,35 @@ def _get_fc_new(
         b_callee = t2b.get(t_callee)
         if b_callee is not None:
             if b_callee in baseline_calls:
-                paired.append({
-                    "target": _mk_side(target_file, t_callee),
-                    "baseline": _mk_side(baseline_file, b_callee),
-                })
+                paired.append(
+                    {
+                        "target": _mk_side(target_file, t_callee),
+                        "baseline": _mk_side(baseline_file, b_callee),
+                    }
+                )
             else:
-                add_existing.append({
-                    "target": _mk_side(target_file, t_callee),
-                    "baseline": _mk_side(baseline_file, b_callee),
-                })
+                add_existing.append(
+                    {
+                        "target": _mk_side(target_file, t_callee),
+                        "baseline": _mk_side(baseline_file, b_callee),
+                    }
+                )
         else:
-            add_new.append({
-                "target": _mk_side(target_file, t_callee),
-            })
+            add_new.append(
+                {
+                    "target": _mk_side(target_file, t_callee),
+                }
+            )
 
     return add_existing, add_new, paired
 
+
 def _get_fc_removed(
     diff: Dict[str, Any],
-    target_file: str, target_func: str,
-    baseline_file: str, baseline_func: str,
+    target_file: str,
+    target_func: str,
+    baseline_file: str,
+    baseline_func: str,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Return lists of removed call-edges from baseline:
@@ -200,29 +212,38 @@ def _get_fc_removed(
       • removed_deleted:  callee function no longer exists (no match in target)
     (All entries are explicit dicts labeling target/baseline sides.)
     """
-    baseline_calls: Set[Any] = set(api.get_field("function_call_targets", baseline_file, int(baseline_func)) or [])
-    target_calls:   Set[Any] = set(api.get_field("function_call_targets", target_file,   int(target_func))   or [])
+    baseline_calls: Set[Any] = set(
+        api.get_field("function_call_targets", baseline_file, int(baseline_func)) or []
+    )
+    target_calls: Set[Any] = set(
+        api.get_field("function_call_targets", target_file, int(target_func)) or []
+    )
 
     match_pairs = _iter_match_pairs(diff)
     b2t = {b: t for (t, b) in match_pairs}
 
     removed_existing: List[Dict[str, Any]] = []
-    removed_deleted:  List[Dict[str, Any]] = []
+    removed_deleted: List[Dict[str, Any]] = []
 
     for b_callee in sorted(baseline_calls):
         t_callee = b2t.get(b_callee)
         if t_callee is not None:
             if t_callee not in target_calls:
-                removed_existing.append({
-                    "target": _mk_side(target_file, t_callee),
-                    "baseline": _mk_side(baseline_file, b_callee),
-                })
+                removed_existing.append(
+                    {
+                        "target": _mk_side(target_file, t_callee),
+                        "baseline": _mk_side(baseline_file, b_callee),
+                    }
+                )
         else:
-            removed_deleted.append({
-                "baseline": _mk_side(baseline_file, b_callee),
-            })
+            removed_deleted.append(
+                {
+                    "baseline": _mk_side(baseline_file, b_callee),
+                }
+            )
 
     return removed_existing, removed_deleted
+
 
 def _get_function_name(oid: str, offset: Any) -> Optional[str]:
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}

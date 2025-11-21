@@ -161,7 +161,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     # ---------------------------
     # Post-diff annotation (context/addition/deletion lines)
     # ---------------------------
-    if opts.get("annotate", True):
+    if opts.get("annotate", False):
         name_to_addr = _get_function_calls(
             target_oid, baseline_oid, target_addr, baseline_addr
         )

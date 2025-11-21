@@ -30,24 +30,37 @@ logger.debug("init")
 # ---------------------------
 
 opts_doc = {
-    "func":     {"type": str,  "mangle": True,  "default": "None"},  # address token, hex, int, or name
-    "annotate": {"type": bool, "mangle": True,  "default": True},
+    "func": {
+        "type": str,
+        "mangle": True,
+        "default": "None",
+    },  # address token, hex, int, or name
+    "annotate": {"type": bool, "mangle": True, "default": True},
 }
 
+
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "private": False, "set": False, "atomic": True}
+    return {
+        "description": DESC,
+        "opts_doc": opts_doc,
+        "private": False,
+        "set": False,
+        "atomic": True,
+    }
+
 
 # ---------------------------
 # Regexes
 # ---------------------------
 
-_RE_WS    = re.compile(r"\s+")
-_RE_FUN   = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
+_RE_WS = re.compile(r"\s+")
+_RE_FUN = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
 _FUN_TOKEN_RE = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
 
 # ---------------------------
 # Public entry
 # ---------------------------
+
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     oid_list = api.expand_oids(oid_list)
@@ -87,9 +100,11 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
         },
     }
 
+
 # ---------------------------
 # Annotation helpers
 # ---------------------------
+
 
 def _annotate_lines_with_tags(
     lines: List[str],
@@ -106,13 +121,16 @@ def _annotate_lines_with_tags(
 
     # Pre-fetch tags
     name_to_tag: Dict[str, Optional[str]] = {
-        name: _get_tag_for_addr(oid, addr)
-        for name, addr in name_to_addr.items()
+        name: _get_tag_for_addr(oid, addr) for name, addr in name_to_addr.items()
     }
 
     # Build a regex that matches only names we know about
     names_sorted = sorted(name_to_addr.keys(), key=len, reverse=True)
-    call_pat = re.compile(r"\b(" + "|".join(re.escape(n) for n in names_sorted) + r")\b\s*\(") if names_sorted else None
+    call_pat = (
+        re.compile(r"\b(" + "|".join(re.escape(n) for n in names_sorted) + r")\b\s*\(")
+        if names_sorted
+        else None
+    )
 
     out_lines: List[str] = []
     for line in lines:
@@ -153,14 +171,20 @@ def _annotate_lines_with_tags(
         annotated = prefix_ws + code_part
         if sep:  # keep original trailing comment
             annotated += sep + trailing
-        annotated += (" " if annotated and not annotated.endswith(" ") else "") + "// " + "; ".join(fragments)
+        annotated += (
+            (" " if annotated and not annotated.endswith(" ") else "")
+            + "// "
+            + "; ".join(fragments)
+        )
         out_lines.append(annotated)
 
     return "\n".join(out_lines) + ("\n" if out_lines else "")
 
+
 # ---------------------------
 # Name/address discovery
 # ---------------------------
+
 
 def _all_function_names_to_addrs(oid: str) -> Dict[str, int]:
     """
@@ -169,7 +193,7 @@ def _all_function_names_to_addrs(oid: str) -> Dict[str, int]:
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
     out: Dict[str, int] = {}
     # funcs is usually { offset_str/int : { name: ... } } or { offset : name }
-    for k, v in (funcs.items() if isinstance(funcs, dict) else []):
+    for k, v in funcs.items() if isinstance(funcs, dict) else []:
         addr = _parse_addr_any(k)
         name = None
         if isinstance(v, dict):
@@ -180,7 +204,10 @@ def _all_function_names_to_addrs(oid: str) -> Dict[str, int]:
             out[name] = addr
     return out
 
-def _extract_called_names(lines: List[str], name_to_addr_all: Dict[str, int]) -> Dict[str, int]:
+
+def _extract_called_names(
+    lines: List[str], name_to_addr_all: Dict[str, int]
+) -> Dict[str, int]:
     """
     Find identifiers followed by '(' in code and keep those that are known function names.
     """
@@ -196,6 +223,7 @@ def _extract_called_names(lines: List[str], name_to_addr_all: Dict[str, int]) ->
                 present[name] = name_to_addr_all[name]
     return present
 
+
 def _fun_tokens_in_lines(lines: List[str]) -> Dict[str, int]:
     """
     Collect any FUN_XXXXXXXX tokens from the text and map name->addr.
@@ -210,9 +238,11 @@ def _fun_tokens_in_lines(lines: List[str]) -> Dict[str, int]:
                 pass
     return out
 
+
 # ---------------------------
 # Tag lookup
 # ---------------------------
+
 
 def _get_tag_for_addr(oid: str, addr: int) -> Optional[str]:
     try:
@@ -220,9 +250,11 @@ def _get_tag_for_addr(oid: str, addr: int) -> Optional[str]:
     except Exception:
         return None
 
+
 # ---------------------------
 # Ghidra helpers
 # ---------------------------
+
 
 def retrieve_function_decomp_lines(oid: str, func_spec: Any) -> Optional[List[str]]:
     """
@@ -278,15 +310,21 @@ def retrieve_function_decomp_lines(oid: str, func_spec: Any) -> Optional[List[st
             indent += 1
     return out
 
+
 def _get_function_name(oid: str, spec: Any) -> Optional[str]:
     """
     Resolve a function *name* from a variety of specs (addr int/hex/FUN_token or name).
     """
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
     # If spec is already a name and exists, return it
-    if isinstance(spec, str) and not _FUN_TOKEN_RE.fullmatch(spec) and not spec.lower().startswith("0x") and not spec.isdigit():
+    if (
+        isinstance(spec, str)
+        and not _FUN_TOKEN_RE.fullmatch(spec)
+        and not spec.lower().startswith("0x")
+        and not spec.isdigit()
+    ):
         # Make sure the name exists in disasm table; otherwise fall through
-        for k, v in (funcs.items() if isinstance(funcs, dict) else []):
+        for k, v in funcs.items() if isinstance(funcs, dict) else []:
             if isinstance(v, dict) and v.get("name") == spec:
                 return spec
             if isinstance(v, str) and v == spec:
@@ -311,9 +349,11 @@ def _get_function_name(oid: str, spec: Any) -> Optional[str]:
 
     return None
 
+
 # ---------------------------
 # Generic address parsing
 # ---------------------------
+
 
 def _parse_addr_any(v: Any) -> Optional[int]:
     try:

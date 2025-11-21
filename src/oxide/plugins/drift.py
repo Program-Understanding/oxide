@@ -1,5 +1,5 @@
 from oxide.core.oxide import api, progress
-from typing import Dict, Any, Tuple, Callable
+from typing import Dict, Any, Tuple, Callable, Optional, List
 import csv
 from typing import Any, Dict
 import pandas as pd
@@ -18,21 +18,26 @@ rules = {
             "fc_add_existing",
             "fc_add_new",
             "fc_removed_existing",
-            "fc_removed_deleted"
+            "fc_removed_deleted",
         ]
     },
     "Control_Call_Modified": {
-    "and": [
-        ["bb_nodes", "bb_edges"],  # This will be handled as OR in a nested check
-        ["fc_add_existing", "fc_add_new", "fc_removed_existing", "fc_removed_deleted"]
-    ]
-},
+        "and": [
+            ["bb_nodes", "bb_edges"],  # This will be handled as OR in a nested check
+            [
+                "fc_add_existing",
+                "fc_add_new",
+                "fc_removed_existing",
+                "fc_removed_deleted",
+            ],
+        ]
+    },
     "Call_Modified": {
         "or": [
             "fc_add_existing",
             "fc_add_new",
             "fc_removed_existing",
-            "fc_removed_deleted"
+            "fc_removed_deleted",
         ]
     },
     "Control_Modified": {
@@ -41,12 +46,12 @@ rules = {
             "bb_edges",
         ]
     },
-
 }
 
 # ----------------------------------------
 # Entry‐Point Functions
 # ----------------------------------------
+
 
 def compare_collections(args: Any, opts: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -74,15 +79,14 @@ def compare_collections(args: Any, opts: Dict[str, Any]) -> Dict[str, Any]:
     file_classification = classify_file_counts(pair_files_results)
 
     # 4) summarize functions (applies filter and returns per-file and total)
-    per_file_fc, total_fc = summarize_function_classifications(raw_function_diffs, filter_rules, filter_name)
+    per_file_fc, total_fc = summarize_function_classifications(
+        raw_function_diffs, filter_rules, filter_name
+    )
 
     # 5) assemble output
     output = {
         "FILE_CLASSIFICATIONS": file_classification,
-        "FUNCTION_CLASSIFICATION": {
-            "PER_FILE": per_file_fc, 
-            "TOTAL": total_fc
-        }
+        "FUNCTION_CLASSIFICATION": {"PER_FILE": per_file_fc, "TOTAL": total_fc},
     }
     return output.get(view, output)
 
@@ -111,31 +115,32 @@ def full_comparison(args: Any, opts: Dict[str, Any]) -> Dict[str, Any]:
     function_diffs = analyze_function_diffs(pair_files_results)
 
     results = {
-        "PAIR_FILES_RESULTS": pair_files_results, 
-        "FUNCTION_DIFFS": function_diffs
+        "PAIR_FILES_RESULTS": pair_files_results,
+        "FUNCTION_DIFFS": function_diffs,
     }
     api.local_store(NAME, cache_key, results)
     return results
 
 
 def compare_all_collections(args: Any, opts: Dict[str, Any]) -> Any:
-    entries_file = opts["entries"] # Path to text file with sequence of comparisons.
-
-    # Read each line, strip whitespace, and ignore empty lines
-    with open(entries_file, "r") as f:
-        entries = [line.strip() for line in f if line.strip()]
+    entries_file = opts["entries"]  # Path to text file with sequence of comparisons.
+    series_file: Optional[str] = opts.get("entries")
+    pairs = read_series_file(series_file)
+    if len(pairs) < 2:
+        raise ValueError("entries file must list at least two versions (one per line)")
 
     # Optional: print or log to verify
-    print(f"Loaded {len(entries)} entries from {entries_file}")
+    print(f"Loaded {len(pairs)} entries from {entries_file}")
 
-    colname_to_cid = {api.get_colname_from_oid(cid): cid for cid in api.collection_cids()}
+    colname_to_cid = {
+        api.get_colname_from_oid(cid): cid for cid in api.collection_cids()
+    }
     rows = []
 
-    for i in range(1, len(entries)):
-        tn, bn = entries[i], entries[i-1]
-        if tn in colname_to_cid and bn in colname_to_cid:
-            tgt_cid, bln_cid = colname_to_cid[tn], colname_to_cid[bn]
-            print(f"Comparing {tn} → {bn}")
+    for idx, (target, baseline) in enumerate(pairs, 1):
+        if target in colname_to_cid and baseline in colname_to_cid:
+            tgt_cid, bln_cid = colname_to_cid[target], colname_to_cid[baseline]
+            print(f"Comparing {target} → {baseline}")
             res = compare_collections([tgt_cid, bln_cid], opts)
 
             # extract totals
@@ -144,10 +149,10 @@ def compare_all_collections(args: Any, opts: Dict[str, Any]) -> Any:
 
             # merge into single flat dict
             row = {
-                "target": tn,
-                "baseline": bn,
-                **func_totals,       # e.g. {'Matched': 92, 'Modified': 70, ...}
-                **file_totals        # e.g. {'Matched': 5, 'Added': 3, ...}
+                "target": target,
+                "baseline": baseline,
+                **func_totals,  # e.g. {'Matched': 92, 'Modified': 70, ...}
+                **file_totals,  # e.g. {'Matched': 5, 'Added': 3, ...}
             }
             rows.append(row)
 
@@ -170,9 +175,7 @@ def compare_all_collections(args: Any, opts: Dict[str, Any]) -> Any:
         file_categories = list(res["FILE_CLASSIFICATIONS"].keys())
 
         # --- Plot 1: Function classifications ---
-        ax1 = df[func_categories].plot(
-            kind="bar", stacked=True, figsize=(10, 6)
-        )
+        ax1 = df[func_categories].plot(kind="bar", stacked=True, figsize=(10, 6))
         ax1.set_title("Function Classification per Version")
         ax1.set_xlabel("Target Version")
         ax1.set_ylabel("Number of Functions")
@@ -181,9 +184,7 @@ def compare_all_collections(args: Any, opts: Dict[str, Any]) -> Any:
         plt.close(ax1.figure)
 
         # --- Plot 2: File classifications ---
-        ax2 = df[file_categories].plot(
-            kind="bar", stacked=True, figsize=(10, 6)
-        )
+        ax2 = df[file_categories].plot(kind="bar", stacked=True, figsize=(10, 6))
         ax2.set_title("File Classification per Version")
         ax2.set_xlabel("Target Version")
         ax2.set_ylabel("Number of Files")
@@ -200,10 +201,11 @@ exports = [full_comparison, compare_collections, compare_all_collections]
 # Helper Functions (Not Entry Points)
 # ----------------------------------------
 
+
 def filter_modified_by_threshold(function_diffs, filter_rules, filter_name):
     if isinstance(filter_rules, dict):
-        and_keys = filter_rules.get('and', []) or []
-        or_keys  = filter_rules.get('or', []) or []
+        and_keys = filter_rules.get("and", []) or []
+        or_keys = filter_rules.get("or", []) or []
     elif isinstance(filter_rules, (list, tuple, set)):
         and_keys, or_keys = [], list(filter_rules)
     else:
@@ -216,13 +218,16 @@ def filter_modified_by_threshold(function_diffs, filter_rules, filter_name):
         return feats.get(keys, 0) != 0
 
     def entry_pass(entry):
-        feats = entry.get('features', {})
+        feats = entry.get("features", {})
 
         # AND: each item can be a str OR a list-of-str meaning OR-group
         if and_keys:
             ok_and = all(
-                (_any_nonzero(k, feats) if isinstance(k, (list, tuple, set))
-                 else feats.get(k, 0) != 0)
+                (
+                    _any_nonzero(k, feats)
+                    if isinstance(k, (list, tuple, set))
+                    else feats.get(k, 0) != 0
+                )
                 for k in and_keys
             )
             if not ok_and:
@@ -236,25 +241,27 @@ def filter_modified_by_threshold(function_diffs, filter_rules, filter_name):
 
     filtered = {}
     for key, diff in function_diffs.items():
-        fc = diff['function_classification'].copy()
-        original = fc.get('modified', [])
+        fc = diff["function_classification"].copy()
+        original = fc.get("modified", [])
         passed = [m for m in original if entry_pass(m)]
-        fc['modified'] = [m for m in original if not entry_pass(m)]
+        fc["modified"] = [m for m in original if not entry_pass(m)]
         fc[filter_name] = passed
 
         nd = diff.copy()
-        nd['function_classification'] = fc
+        nd["function_classification"] = fc
         filtered[key] = nd
     return filtered
 
 
-def analyze_function_diffs(pair_files_results: Dict[str, Any]) -> Dict[Tuple[str, str], Any]:
+def analyze_function_diffs(
+    pair_files_results: Dict[str, Any],
+) -> Dict[Tuple[str, str], Any]:
     """
     For every modified pair, classify functions and package per-pair results.
     """
     modified = pair_files_results.get("MODIFIED_EXECUTABLES", {})
     diffs: Dict[Tuple[str, str], Any] = {}
-    
+
     print("DIFF FUNCTIONS")
     count = 1
     for (t_oid, b_oid), info in modified.items():
@@ -266,16 +273,18 @@ def analyze_function_diffs(pair_files_results: Dict[str, Any]) -> Dict[Tuple[str
             api.local_store(NAME, f"file_diff_{t_oid}_{b_oid}", fc)
         diffs[(t_oid, b_oid)] = {
             "filenames": {
-                "target": api.get_names_from_oid(t_oid), 
-                "baseline": api.get_names_from_oid(b_oid)
-                }, 
-            "function_classification": fc
-            }
+                "target": api.get_names_from_oid(t_oid),
+                "baseline": api.get_names_from_oid(b_oid),
+            },
+            "function_classification": fc,
+        }
         count += 1
     return diffs
 
 
-def classify_function_diffs(t_oid: str, b_oid: str, bindiff_full: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def classify_function_diffs(
+    t_oid: str, b_oid: str, bindiff_full: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     For a single file-pair, returns:
       - function_classification: dict with lists of
@@ -285,9 +294,9 @@ def classify_function_diffs(t_oid: str, b_oid: str, bindiff_full: Dict[str, Any]
     ranked_pairs = sorted(func_matches.items(), key=lambda kv: kv[1]["similarity"])
     rank_map = {key: idx + 1 for idx, (key, _) in enumerate(ranked_pairs)}
 
-    unmatched_target   = list(bindiff_full.get("unmatched_primary", []))
+    unmatched_target = list(bindiff_full.get("unmatched_primary", []))
     unmatched_baseline = list(bindiff_full.get("unmatched_secondary", []))
-    matched  = []
+    matched = []
     modified = []
 
     p = progress.Progress(len(func_matches.items()))
@@ -295,27 +304,30 @@ def classify_function_diffs(t_oid: str, b_oid: str, bindiff_full: Dict[str, Any]
 
         sim = info["similarity"]
         meta = {
-            "name_target_func":   get_func_name(t_oid, addr_t),
+            "name_target_func": get_func_name(t_oid, addr_t),
             "name_baseline_func": get_func_name(b_oid, addr_b),
             "bindiff_similarity": sim,
-            "bindiff_ranking":    rank_map[(addr_t, addr_b)],
+            "bindiff_ranking": rank_map[(addr_t, addr_b)],
         }
         if sim >= 1.0:
             matched.append((addr_t, addr_b))
         else:
-            feat = api.retrieve("function_diff_features", [t_oid, b_oid], {"target": addr_t, "baseline": addr_b}) or {}
-            modified.append({
-                "pair":     (addr_t, addr_b),
-                "features": feat,
-                "info":     meta
-            })
+            feat = (
+                api.retrieve(
+                    "function_diff_features",
+                    [t_oid, b_oid],
+                    {"target": addr_t, "baseline": addr_b},
+                )
+                or {}
+            )
+            modified.append({"pair": (addr_t, addr_b), "features": feat, "info": meta})
         p.tick()
 
     function_classification = {
-        "unmatched_target":   unmatched_target,
+        "unmatched_target": unmatched_target,
         "unmatched_baseline": unmatched_baseline,
-        "matched":            matched,
-        "modified":           modified
+        "matched": matched,
+        "modified": modified,
     }
     return function_classification
 
@@ -327,7 +339,11 @@ def classify_file_counts(pair_files_results: Dict[str, Any]) -> Dict[str, int]:
     return {cat: len(oids) for cat, oids in pair_files_results.items()}
 
 
-def summarize_function_classifications(function_diffs: Dict[Tuple[str, str], Any], filter_rules: Any = None, filter_name: Any = None) -> Tuple[Dict[Tuple[str, str], Any], Dict[str, int]]:
+def summarize_function_classifications(
+    function_diffs: Dict[Tuple[str, str], Any],
+    filter_rules: Any = None,
+    filter_name: Any = None,
+) -> Tuple[Dict[Tuple[str, str], Any], Dict[str, int]]:
     """
     Per-pair summary counts for:
       - unmatched_target
@@ -352,10 +368,10 @@ def summarize_function_classifications(function_diffs: Dict[Tuple[str, str], Any
             fc = fd[key]["function_classification"]
 
         # count each category
-        ut   = len(fc.get("unmatched_target", []))
-        ub   = len(fc.get("unmatched_baseline", []))
-        mat  = len(fc.get("matched", []))
-        mod  = len(fc.get("modified", []))
+        ut = len(fc.get("unmatched_target", []))
+        ub = len(fc.get("unmatched_baseline", []))
+        mat = len(fc.get("matched", []))
+        mod = len(fc.get("modified", []))
         filt = len(fc.get(filter_name, [])) if filter_name else 0
 
         # record per-file
@@ -363,17 +379,17 @@ def summarize_function_classifications(function_diffs: Dict[Tuple[str, str], Any
             "unmatched_target": ut,
             "unmatched_baseline": ub,
             "matched": mat,
-            "modified": fc.get("modified", [])
+            "modified": fc.get("modified", []),
         }
         if filter_name:
             entry[filter_name] = fc.get(filter_name, [])
         per_file[key] = entry
 
         # accumulate totals
-        total_ut   += ut
-        total_ub   += ub
-        total_mat  += mat
-        total_mod  += mod
+        total_ut += ut
+        total_ub += ub
+        total_mat += mat
+        total_mod += mod
         total_filt += filt
 
     # build total summary
@@ -381,7 +397,7 @@ def summarize_function_classifications(function_diffs: Dict[Tuple[str, str], Any
         "unmatched_target": total_ut,
         "unmatched_baseline": total_ub,
         "matched": total_mat,
-        "modified": total_mod
+        "modified": total_mod,
     }
     if filter_name:
         total[filter_name] = total_filt
@@ -389,20 +405,63 @@ def summarize_function_classifications(function_diffs: Dict[Tuple[str, str], Any
     return per_file, total
 
 
-def aggregate_function_stats(function_diffs: Dict[Tuple[str, str], Any]) -> Dict[str, float]:
+def aggregate_function_stats(
+    function_diffs: Dict[Tuple[str, str], Any],
+) -> Dict[str, float]:
     """
     Roll up metrics into global aggregates.
     """
     total_pairs = sum(d["results"]["total_pairs"] for d in function_diffs.values())
-    total_candidates = sum(d["results"]["bindiff_candidates"] for d in function_diffs.values())
+    total_candidates = sum(
+        d["results"]["bindiff_candidates"] for d in function_diffs.values()
+    )
     total_added = sum(d["results"]["added"] for d in function_diffs.values())
     total_removed = sum(d["results"]["removed"] for d in function_diffs.values())
-    return {"total_pairs_all": total_pairs, "total_bindiff_candidates": total_candidates, "total_added": total_added, "total_removed": total_removed}
+    return {
+        "total_pairs_all": total_pairs,
+        "total_bindiff_candidates": total_candidates,
+        "total_added": total_added,
+        "total_removed": total_removed,
+    }
+
 
 def get_func_name(oid, offset):
     functions = api.get_field("ghidra_disasm", oid, "functions")
     if functions:
         for func in functions:
             if func == offset:
-                return functions[func]['name']
+                return functions[func]["name"]
     return None
+
+
+def read_series_file(path: str, sep: str = ",") -> List[Tuple[str, str]]:
+    """
+    Read a series file where each non-comment line defines a pair of collections.
+
+    Example line format (default sep=","):
+        coll_old, coll_new
+
+    Returns:
+        List of (cid_left, cid_right) tuples.
+    """
+    pairs: List[Tuple[str, str]] = []
+
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_ln in f:
+            ln = raw_ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+
+            parts = [p.strip() for p in ln.split(sep)]
+            if len(parts) != 2:
+                raise ValueError(
+                    f"Line {raw_ln!r} does not contain exactly two collections "
+                    f"separated by {sep!r}"
+                )
+
+            left_name, right_name = parts
+            cid_left = oxide.api.get_cid_from_name(left_name)
+            cid_right = oxide.api.get_cid_from_name(right_name)
+            pairs.append((cid_left, cid_right))
+
+    return pairs
