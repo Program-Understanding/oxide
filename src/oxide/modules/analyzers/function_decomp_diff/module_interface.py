@@ -55,6 +55,7 @@ opts_doc = {
     "baseline": {"type": str, "mangle": True, "default": "None"},
     "annotate": {"type": bool, "mangle": True, "default": False},
     "normalize": {"type": bool, "mangle": True, "default": True},
+    "compact": {"type": bool, "mangle": True, "default": True},
 }
 
 
@@ -76,9 +77,7 @@ _RE_FUN = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
 _RE_LAB = re.compile(r"\bLAB_[0-9a-fA-F]+\b")
 _RE_DAT = re.compile(r"\bDAT_[0-9a-fA-F]+\b")
 _RE_PTR = re.compile(r"\bPTR_[0-9a-fA-F]+\b")
-_RE_TMP = re.compile(
-    r"\b(?:[iu]Var\d+|bVar\d+|pcVar\d+|pvVar\d+|sVar\d+|lVar\d+|uVar\d+|plVar\d+)\b"
-)
+_RE_TMP = re.compile(r"\b(?:p{0,3}[a-z]{1,3}Var\d+)\b")
 _RE_LOCAL = re.compile(r"\blocal_[A-Za-z0-9_]+\b")
 _RE_WS = re.compile(r"\s+")
 
@@ -181,8 +180,13 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
         unified_full, max_chars=_LLM_DIFF_CHAR_BUDGET
     )
 
+    if opts.get("compact", True):
+        unified = unified_compact
+    else:
+        unified = unified_full
+
     result = {
-        "unified": unified_compact,
+        "unified": unified,
         "meta": {
             "baseline_func": fn_b,
             "baseline_oid": baseline_oid,
@@ -634,7 +638,7 @@ def _annotate_unified_with_tags(
     return "\n".join(out_lines) + ("\n" if out_lines else "")
 
 
-def _extract_changed_regions(unified: str, context_lines: int = 3) -> str:
+def _extract_changed_regions(unified: str, context_lines: int = 10) -> str:
     """
     Keep only +/- lines (changes) plus a small number of surrounding context lines
     and all hunk/file headers. Insert "..." between disjoint kept regions.
@@ -692,36 +696,52 @@ def _extract_changed_regions(unified: str, context_lines: int = 3) -> str:
 
 def _maybe_compact_unified(unified: str, max_chars: int = _MAX_UNIFIED_CHARS) -> str:
     """
-    If `unified` is too large for the LLM context budget, shrink it to focus on
-    changed lines plus limited context. Final fallback: hard truncate at a line
-    boundary and add a note.
+    Shrink `unified` to fit within `max_chars` by keeping changed lines plus
+    as much surrounding context as possible. We start with a large context
+    window and decrease it until we fit. Final fallback: hard truncate.
     """
-    if not unified or len(unified) <= max_chars:
+    if not unified:
         return unified
 
-    # First pass: changed lines + a few context lines
-    compact = _extract_changed_regions(unified, context_lines=3)
-    if len(compact) <= max_chars:
-        return compact
+    # Use the stricter of our global max and the explicit budget for this call
+    budget = min(max_chars, _LLM_DIFF_CHAR_BUDGET)
 
-    # Second pass: changed lines only (no extra context)
-    compact = _extract_changed_regions(unified, context_lines=0)
-    if len(compact) <= max_chars:
-        return compact
+    # If the whole thing fits, don't touch it
+    if len(unified) <= budget:
+        return unified
 
-    # Final fallback: hard truncate at line boundary
+    # Try progressively smaller context windows until we fit
+    # (tune this list as needed)
+    for ctx in (100, 50, 25, 10, 7, 5, 3, 1, 0):
+        compact = _extract_changed_regions(unified, context_lines=ctx)
+        if len(compact) <= budget:
+            return compact
+
+    # If even ctx=0 is too big, hard truncate at a line boundary.
+    # Explicitly mark truncation at both the beginning and end.
     lines = compact.splitlines()
+    note = "... [diff truncated to fit LLM context]"
+    note_len = len(note) + 1  # account for '\n'
+
+    # If the budget is tiny, just return the note once
+    if budget <= 2 * note_len:
+        return note + "\n"
+
+    # Reserve space for the note at top and bottom
+    remaining_budget = budget - 2 * note_len
+
     out_lines: list[str] = []
     total = 0
     for line in lines:
         line_len = len(line) + 1  # + '\n'
-        if total + line_len > max_chars:
+        if total + line_len > remaining_budget:
             break
         out_lines.append(line)
         total += line_len
 
-    out_lines.append("... [diff truncated to fit LLM context]")
-    return "\n".join(out_lines) + ("\n" if out_lines else "")
+    # Assemble: note at top, truncated content, note at bottom
+    result_lines = [note] + out_lines + [note]
+    return "\n".join(result_lines) + "\n"
 
 
 # ---------------------------
