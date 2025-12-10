@@ -5,6 +5,9 @@ from typing import Any, Dict
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from oxide.core import oxide as oxide
+
+
 NAME = "DRIFT"
 
 # ----------------------------------------
@@ -138,23 +141,20 @@ def compare_all_collections(args: Any, opts: Dict[str, Any]) -> Any:
     rows = []
 
     for idx, (target, baseline) in enumerate(pairs, 1):
-        if target in colname_to_cid and baseline in colname_to_cid:
-            tgt_cid, bln_cid = colname_to_cid[target], colname_to_cid[baseline]
-            print(f"Comparing {target} → {baseline}")
-            res = compare_collections([tgt_cid, bln_cid], opts)
+        res = compare_collections([target, baseline], opts)
 
-            # extract totals
-            func_totals = res["FUNCTION_CLASSIFICATION"]["TOTAL"]
-            file_totals = res["FILE_CLASSIFICATIONS"]
+        # extract totals
+        func_totals = res["FUNCTION_CLASSIFICATION"]["TOTAL"]
+        file_totals = res["FILE_CLASSIFICATIONS"]
 
-            # merge into single flat dict
-            row = {
-                "target": target,
-                "baseline": baseline,
-                **func_totals,  # e.g. {'Matched': 92, 'Modified': 70, ...}
-                **file_totals,  # e.g. {'Matched': 5, 'Added': 3, ...}
-            }
-            rows.append(row)
+        # merge into single flat dict
+        row = {
+            "target": target,
+            "baseline": baseline,
+            **func_totals,  # e.g. {'Matched': 92, 'Modified': 70, ...}
+            **file_totals,  # e.g. {'Matched': 5, 'Added': 3, ...}
+        }
+        rows.append(row)
 
     # dump CSV
     path = opts.get("csv_path", "compare_all_collections.csv")

@@ -15,6 +15,9 @@ from IPython.display import Image, display
 
 from oxide.plugins.drift import compare_collections
 from oxide.core import oxide as oxide
+from oxide.core.oxide import api, progress
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # --------------------------------------------------------------------------------------
 # Logging
@@ -41,10 +44,10 @@ LLM = ChatOllama(
     request_timeout=60.0,
     model_kwargs={"num_predict": 128},
 )
-FORMAT_LLM = ChatOllama(model="llama3.1:8b-instruct-q4_K_M", temperature=0.5)
+FORMAT_LLM = ChatOllama(model="llama3.1:8b-instruct-q4_K_M", temperature=0.0)
 NORMALIZE_LLM = ChatOllama(model="llama3.1:8b-instruct-q4_K_M", temperature=0.0)
-# Second-stage skeptic / reviewer model
-SKEPTIC_LLM = ChatOllama(
+# Second-stage reviewer / reviewer model
+REVIEWER_LLM = ChatOllama(
     model="gpt-oss:20b",
     temperature=0.0,
     num_ctx=8192,
@@ -52,16 +55,6 @@ SKEPTIC_LLM = ChatOllama(
     request_timeout=60.0,
     model_kwargs={"num_predict": 128},
 )
-
-
-logger.info("LLM ready: gpt-oss:20b (ctx=8192)")
-
-# Warm-up the main model so first call isn't slow
-try:
-    resp = LLM.invoke("Warm up.")
-    logger.info("LLM warm-up complete.")
-except Exception as e:
-    logger.warning(f"Warm-up failed: {e}")
 
 ANALYST_SYS = (
     "You are an expert reverse engineer analyzing code that is expected to be safe.\n"
@@ -84,32 +77,30 @@ ANALYST_SYS = (
     "}\n"
 )
 
-SKEPTIC_SYS = (
-    "You are a skeptical security reviewer.\n"
+REVIEWER_SYS = (
+    "You are a security reviewer.\n"
     "You are given:\n"
-    "- A unified diff of one function (baseline vs target).\n"
+    "- A unified diff of one function (baseline vs target) that may be trimmed for size.\n"
     "- An earlier JSON assessment that claims the change may add a malicious backdoor or logic bomb.\n\n"
-    "ASSUMPTION:\n"
-    "The overall codebase is expected to be safe. Your job is to REFUTE false accusations whenever possible.\n\n"
+    "Your job is to refute clearly false accusations.\n\n"
     "TASK:\n"
-    "1. Read the diff and earlier assessment.\n"
-    "2. Decide whether the earlier 'not_safe' label is clearly justified based ONLY on the diff.\n"
+    "1. Read the diff and previous assessment.\n"
+    "2. Decide whether the previous 'not_safe' label is justified.\n"
     "3. Specifically, check whether:\n"
-    "   - There is clearly new behavior vs the baseline, AND\n"
-    "   - There is a CONCRETE trigger condition (a specific value, flag, or input combination) visible in the diff\n"
-    "     that activates the new behavior, AND\n"
-    "   - The new behavior is more permissive, covert, or dangerous.\n\n"
+    # "   - There is clearly new behavior vs the baseline, AND\n"
+    "   - There is a trigger condition visible in the diff that activates newly added behavior, AND\n"
+    "   - The new behavior is suspicious and potentially more permissive, covert, or dangerous.\n\n"
+    "- Do NOT refute only because a variable appears to be uninitialized or its origin is unclear, or because you do not\n"
+    "  see the full control flow; the unified diff may omit parts of the function.\n\n"
     "OUTPUT:\n"
     "Return EXACT JSON ONLY:\n"
     "{\n"
     '  "verdict": "confirm_not_safe" | "refute",\n'
     '  "reason": "1-3 sentences explaining why you confirm or refute",\n'
-    '  "trigger_ok": true | false,\n'
-    '  "concrete_trigger": "your own short description of the trigger condition, or empty string if you cannot state one"\n'
     "}\n\n"
     "Guidelines:\n"
-    "- Use 'confirm_not_safe' ONLY if you can independently state a concrete trigger and see dangerous new behavior.\n"
-    "- Use 'refute' if the change appears to be benign (error handling, logging, validation, etc.), or if you are unsure.\n"
+    "- Use 'confirm_not_safe' if you can verify a trigger leading to potentially dangerous new behavior.\n"
+    "- Use 'refute' if the change appears to be standard benign updates (error handling, logging, validation, etc.).\n"
 )
 
 # --------------------------------------------------------------------------------------
@@ -121,30 +112,20 @@ def run_all(args, opts):
     results: Dict[str, Any] = {}
 
     base_outdir = opts.get("outdir", "outputs")
-    filters = [
-        # None,
-        # "Control_Call_Modified",
-        "Call_OR_Control_Modified",
-    ]
+    annotate = [True, False]
 
-    for flt in filters:
-        filter_name = flt if flt is not None else "None"
-        results[filter_name] = {}
+    for a in annotate:
+        run_name = f"annotate-{a}"
 
         # fresh opts per run so we don't leak state
         cfg = dict(opts)
 
-        if flt is None:
-            cfg.pop("filter", None)
-        else:
-            cfg["filter"] = flt
+        cfg["annotate"] = a
 
         # give each config its own output directory
-        cfg["outdir"] = os.path.join(base_outdir, f"{filter_name}")
+        cfg["outdir"] = os.path.join(base_outdir, f"{run_name}")
 
-        logger.info(f"run_all: filter={filter_name}" f"→ outdir={cfg['outdir']}")
-
-        results[filter_name] = llm_filter(args, cfg)
+        results[run_name] = llm_filter(args, cfg)
 
     # Optional but handy: write to one JSON blob for post-processing
     aggregated_path = os.path.join(base_outdir, "run_all_results.json")
@@ -182,7 +163,6 @@ def llm_filter(args: List[str], opts: Dict[str, Any]) -> None:
     outdir: str = opts.get("outdir", "out_firmware_simple")
 
     os.makedirs(outdir, exist_ok=True)
-    logger.info(f"Output directory: {outdir}")
 
     # ---- Cross-comparison aggregation ----
     comparison_rows: List[Dict[str, Any]] = []
@@ -259,9 +239,6 @@ def llm_filter(args: List[str], opts: Dict[str, Any]) -> None:
     write_json(
         os.path.join(outdir, "per_function_summary.json"),
         {"functions": per_function_rows},
-    )
-    logger.info(
-        "✓ Summaries written (comparisons_summary.json, per_function_summary.json). "
     )
     return series_summary
 
@@ -388,10 +365,10 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     n_flagged_filtered = 0
     n_safe_filtered = 0
 
-    # Skeptic-related metrics (filtered functions only)
-    n_stage1_not_safe_filtered = 0
-    n_skeptic_confirmed = 0
-    n_skeptic_refuted = 0
+    # reviewer-related metrics (filtered functions only)
+    analyst_identified = 0
+    n_reviewer_confirmed = 0
+    n_reviewer_refuted = 0
 
     if not file_pairs:
         report_lines.append("No file pairs or modifications were reported by drift.")
@@ -424,6 +401,7 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
             f"excluded={len(excluded_mods)}"
         )
 
+        p = progress.Progress(len(filtered_mods))
         # only filtered_mods go to the LLM
         for func_idx, m in enumerate(filtered_mods, 1):
             baddr = ensure_decimal_str(m.get("baseline_func_addr"))
@@ -433,13 +411,13 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
                 baseline_oid, target_oid, baddr, taddr, fp_idx, func_idx, outdir, opts
             )
 
-            # --- Skeptic metrics ---
+            # --- Reviewer metrics ---
             if res.get("stage1_label") == "not_safe":
-                n_stage1_not_safe_filtered += 1
-                if res.get("refuted_by_skeptic"):
-                    n_skeptic_refuted += 1
-                if res.get("confirmed_by_skeptic"):
-                    n_skeptic_confirmed += 1
+                analyst_identified += 1
+                if res.get("refuted_by_reviewer"):
+                    n_reviewer_refuted += 1
+                if res.get("confirmed_by_reviewer"):
+                    n_reviewer_confirmed += 1
 
             if res["flagged"]:
                 n_flagged_filtered += 1
@@ -460,9 +438,7 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
                 )
             else:
                 n_safe_filtered += 1
-
-            logger.info(f"      functions processed: {func_idx}/{len(filtered_mods)}")
-
+            p.tick()
         logger.info(f"   [fp {fp_idx}] done")
 
     # overall: everything drift said was modified
@@ -471,7 +447,7 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     overall_safe_rate = overall_safe / total_modified_all if total_modified_all else 0.0
 
     dt = time.perf_counter() - t0
-    logger.info(
+    logger.debug(
         f"Drift + triage finished in {dt:.1f}s: "
         f"all_modified={total_modified_all}, filtered={total_modified_filtered}, "
         f"flagged_filtered={n_flagged_filtered}, safe_filtered={n_safe_filtered}"
@@ -486,10 +462,12 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     report_lines.append(f"- Flagged (filtered, final): {n_flagged_filtered}")
     report_lines.append(f"- Safe (filtered, final): {n_safe_filtered} ")
     report_lines.append(
-        f"- Stage1 not_safe (before skeptic, filtered): {n_stage1_not_safe_filtered}"
+        f"- Stage1 not_safe (before reviewer, filtered): {analyst_identified}"
     )
-    report_lines.append(f"- Skeptic confirmed not_safe: {n_skeptic_confirmed}")
-    report_lines.append(f"- Skeptic refuted (downgraded to safe): {n_skeptic_refuted}")
+    report_lines.append(f"- Reviewer confirmed not_safe: {n_reviewer_confirmed}")
+    report_lines.append(
+        f"- Reviewer refuted (downgraded to safe): {n_reviewer_refuted}"
+    )
     if total_modified_all != total_modified_filtered:
         report_lines.append(
             f"- Overall safe rate (assuming excluded functions are safe): {overall_safe_rate:.2%}"
@@ -499,26 +477,18 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
         "target": target,
         "baseline": baseline,
         # all drift mods
-        "total_modified_functions_all": total_modified_all,
+        "total_modified_functions": total_modified_all,
         "safe_overall": overall_safe,
         # filtered-only (the LLM work)
-        "total_modified_functions_filtered": total_modified_filtered,
-        "flagged_not_safe_filtered": n_flagged_filtered,
-        "safe_filtered": n_safe_filtered,
-        # skeptic metrics
-        "stage1_not_safe_filtered": n_stage1_not_safe_filtered,
-        "skeptic_confirmed_filtered": n_skeptic_confirmed,
-        "skeptic_refuted_filtered": n_skeptic_refuted,
+        "filtered_functions": total_modified_filtered,
+        "reviewer_confirmed": n_flagged_filtered,
+        # reviewer metrics
+        "analyst_identified": analyst_identified,
     }
 
     write_text(os.path.join(outdir, "final_report.txt"), "\n".join(report_lines))
     write_json(os.path.join(outdir, "triage_index.json"), triage_index)
     write_json(os.path.join(outdir, "stats.json"), stats)
-    logger.info(
-        f"✓ Wrote reports to {outdir} "
-        f"(all={total_modified_all}, filtered={total_modified_filtered}, "
-        f"flagged={n_flagged_filtered}, safe={n_safe_filtered})"
-    )
 
     return {
         "target": target,
@@ -552,7 +522,7 @@ def analyze_function_pair(
     diff_raw = oxide.retrieve(
         "function_decomp_diff",
         [target_oid, baseline_oid],
-        {"target": taddr, "baseline": baddr},
+        {"target": taddr, "baseline": baddr, "annotate": opts.get("annotate", False)},
     )
 
     if isinstance(diff_raw, dict) and "error" in diff_raw:
@@ -569,7 +539,7 @@ def analyze_function_pair(
                 "flagged": False,
                 "verdict": verdict,
                 "stage1": None,
-                "skeptic": None,
+                "reviewer": None,
             },
         )
         write_text(os.path.join(func_dir, "verdict.txt"), verdict)
@@ -579,7 +549,7 @@ def analyze_function_pair(
             "flagged": False,
             "verdict": verdict,
             "func_dir": func_dir,
-            "skeptic": None,
+            "reviewer": None,
         }
 
     diff_text = extract_content(diff_raw) or ""
@@ -600,10 +570,10 @@ def analyze_function_pair(
     label_stage1 = "safe"
     trigger_stage1 = ""
     why_stage1 = ""
-    skeptic_result: Optional[Dict[str, Any]] = None
+    reviewer_result: Optional[Dict[str, Any]] = None
 
     # ------------------------
-    # 2) LLM triage via LangGraph (+ skeptic)
+    # 2) LLM triage via LangGraph (+ reviewer)
     # ------------------------
     if unified.strip():
         triage = run_triage_langgraph(
@@ -615,18 +585,18 @@ def analyze_function_pair(
 
         triage_trace = triage.get("trace") or []
 
-        # Final decision from graph (after skeptic)
+        # Final decision from graph (after reviewer)
         label = triage.get("label", "safe")
         why = (triage.get("why") or "").strip()
 
-        # Stage1 result (before skeptic) for metrics
+        # Stage1 result (before reviewer) for metrics
         label_stage1 = triage.get("stage1_label", label)
         trigger_stage1 = (triage.get("stage1_trigger") or "").strip()
         why_stage1 = (triage.get("stage1_why") or "").strip()
 
-        skeptic_result = triage.get("skeptic")
+        reviewer_result = triage.get("reviewer")
 
-        # Persist LangGraph + skeptic trace
+        # Persist LangGraph + reviewer trace
         trace_payload = {
             "fp_index": fp_idx,
             "func_index": func_idx,
@@ -643,14 +613,13 @@ def analyze_function_pair(
             }
         )
 
-    # Did the skeptic overturn or confirm a stage1 "not_safe"?
-    refuted_by_skeptic = bool(label_stage1 == "not_safe" and label == "safe")
-    confirmed_by_skeptic = bool(
+    # Did the reviewer overturn or confirm a stage1 "not_safe"?
+    refuted_by_reviewer = bool(label_stage1 == "not_safe" and label == "safe")
+    confirmed_by_reviewer = bool(
         label_stage1 == "not_safe"
         and label == "not_safe"
-        and skeptic_result
-        and skeptic_result.get("verdict") == "confirm_not_safe"
-        and skeptic_result.get("trigger_ok")
+        and reviewer_result
+        and reviewer_result.get("verdict") == "confirm_not_safe"
     )
 
     flagged = label == "not_safe"
@@ -673,9 +642,9 @@ def analyze_function_pair(
                 "trigger": trigger_stage1,
                 "why": why_stage1,
             },
-            "skeptic": skeptic_result,
-            "refuted_by_skeptic": refuted_by_skeptic,
-            "confirmed_by_skeptic": confirmed_by_skeptic,
+            "reviewer": reviewer_result,
+            "refuted_by_reviewer": refuted_by_reviewer,
+            "confirmed_by_reviewer": confirmed_by_reviewer,
         },
     )
     write_text(os.path.join(func_dir, "verdict.txt"), verdict)
@@ -686,10 +655,10 @@ def analyze_function_pair(
         "flagged": flagged,
         "verdict": verdict,
         "func_dir": func_dir,
-        "skeptic": skeptic_result,
+        "reviewer": reviewer_result,
         "stage1_label": label_stage1,
-        "refuted_by_skeptic": refuted_by_skeptic,
-        "confirmed_by_skeptic": confirmed_by_skeptic,
+        "refuted_by_reviewer": refuted_by_reviewer,
+        "confirmed_by_reviewer": confirmed_by_reviewer,
     }
 
 
@@ -792,7 +761,7 @@ def call_analyst_llm(
             )
             raise ValueError("LLM (analyst) returned empty content")
 
-        logger.info(
+        logger.debug(
             f"LLM ANALYST OK fp={fp_idx} func={func_idx} "
             f"took {dt_llm:.2f}s (diff_chars={len(user_content)})"
         )
@@ -862,7 +831,7 @@ def call_format_llm(
         fixed = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
         dt_llm = time.perf_counter() - t_llm
 
-        logger.info(
+        logger.debug(
             f"LLM FORMAT OK fp={fp_idx} func={func_idx} "
             f"took {dt_llm:.2f}s (len(raw_output)={len(raw_output)})"
         )
@@ -936,7 +905,7 @@ def call_normalize_llm(
         fixed = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
         dt_llm = time.perf_counter() - t_llm
 
-        logger.info(
+        logger.debug(
             f"LLM NORMALIZE OK fp={fp_idx} func={func_idx} "
             f"took {dt_llm:.2f}s (len(raw_json_like)={len(raw_json_like)})"
         )
@@ -965,7 +934,7 @@ def call_normalize_llm(
         return fallback_json
 
 
-def call_skeptic_llm(
+def call_reviewer_llm(
     diff_text: str,
     stage1_result: Dict[str, Any],
     fp_idx: int,
@@ -973,12 +942,12 @@ def call_skeptic_llm(
     notes: Dict[str, Any],
 ) -> str:
     """
-    Second-stage skeptic: tries to refute 'not_safe' labels.
+    Second-stage reviewer: tries to refute 'not_safe' labels.
     Returns JSON text (verdict/refute) or a fallback JSON on failure.
     """
     t_llm = time.perf_counter()
 
-    skeptic_prompt = (
+    reviewer_prompt = (
         "You will review an earlier backdoor assessment.\n\n"
         "=== FUNCTION UNIFIED DIFF ===\n"
         f"{diff_text}\n\n"
@@ -987,30 +956,30 @@ def call_skeptic_llm(
     )
 
     try:
-        resp = SKEPTIC_LLM.invoke(
+        resp = REVIEWER_LLM.invoke(
             [
-                SystemMessage(content=SKEPTIC_SYS),
-                HumanMessage(content=ascii_sanitize(skeptic_prompt)),
+                SystemMessage(content=REVIEWER_SYS),
+                HumanMessage(content=ascii_sanitize(reviewer_prompt)),
             ]
         )
         text_local = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
         dt_llm = time.perf_counter() - t_llm
 
-        logger.info(
-            f"LLM SKEPTIC OK fp={fp_idx} func={func_idx} "
+        logger.debug(
+            f"LLM REVIEWER OK fp={fp_idx} func={func_idx} "
             f"took {dt_llm:.2f}s (diff_chars={len(diff_text)})"
         )
 
         if not text_local:
-            raise ValueError("LLM (skeptic) returned empty content")
+            raise ValueError("LLM (reviewer) returned empty content")
 
         return text_local
 
     except Exception as e:
         dt_llm = time.perf_counter() - t_llm
-        err_msg = f"LLM skeptic failed fp={fp_idx} func={func_idx}: {e}"
+        err_msg = f"LLM REVIEWER failed fp={fp_idx} func={func_idx}: {e}"
         logger.error(
-            f"LLM SKEPTIC ERROR fp={fp_idx} func={func_idx} "
+            f"LLM REVIEWER ERROR fp={fp_idx} func={func_idx} "
             f"after {dt_llm:.2f}s: {e}"
         )
         notes["observations"].append(err_msg)
@@ -1019,15 +988,13 @@ def call_skeptic_llm(
         fallback_json = json.dumps(
             {
                 "verdict": "confirm_not_safe",
-                "reason": f"Skeptic LLM failed: {str(e)}",
-                "trigger_ok": True,
-                "concrete_trigger": "",
+                "reason": f"Reviewer LLM failed: {str(e)}",
             }
         )
         return fallback_json
 
 
-def run_skeptic_review(
+def run_reviewer_review(
     unified_diff: str,
     stage1_result: Dict[str, Any],
     fp_idx: int,
@@ -1035,10 +1002,10 @@ def run_skeptic_review(
     notes: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Run the skeptic LLM and normalize its output into:
-      {verdict, reason, trigger_ok, concrete_trigger}
+    Run the reviewer LLM and normalize its output into:
+      {verdict, reason}
     """
-    text = call_skeptic_llm(
+    text = call_reviewer_llm(
         diff_text=unified_diff,
         stage1_result=stage1_result,
         fp_idx=fp_idx,
@@ -1048,13 +1015,11 @@ def run_skeptic_review(
 
     data = parse_llm_json(text)
     if not isinstance(data, dict):
-        msg = "Skeptic LLM output was not valid JSON; keeping stage1 not_safe label."
+        msg = "Reviewer LLM output was not valid JSON; keeping stage1 not_safe label."
         notes["observations"].append(msg)
         return {
             "verdict": "confirm_not_safe",
             "reason": msg,
-            "trigger_ok": True,
-            "concrete_trigger": "",
         }
 
     verdict_raw = str(data.get("verdict", "refute")).strip().lower()
@@ -1065,14 +1030,6 @@ def run_skeptic_review(
         # Anything else (including garbage) => refute
         verdict = "refute"
 
-    trigger_ok = bool(data.get("trigger_ok", False))
-
-    concrete_trigger_raw = data.get("concrete_trigger", "")
-    try:
-        concrete_trigger = str(concrete_trigger_raw).strip()
-    except Exception:
-        concrete_trigger = ""
-
     reason_raw = data.get("reason", "")
     try:
         reason = str(reason_raw).strip()
@@ -1082,8 +1039,6 @@ def run_skeptic_review(
     return {
         "verdict": verdict,
         "reason": reason,
-        "trigger_ok": trigger_ok,
-        "concrete_trigger": concrete_trigger,
     }
 
 
@@ -1107,9 +1062,9 @@ class TriageState(TypedDict, total=False):
     # Final parsed JSON
     final_json: Optional[Dict[str, Any]]
 
-    # NEW: keep stage1 (pre-skeptic) + skeptic result
+    # NEW: keep stage1 (pre-reviewer) + reviewer result
     stage1_json: Optional[Dict[str, Any]]
-    skeptic_json: Optional[Dict[str, Any]]
+    reviewer_json: Optional[Dict[str, Any]]
 
     # Trace of each node's activity
     trace: List[Dict[str, Any]]
@@ -1309,7 +1264,7 @@ def _build_triage_graph():
 
         return {"final_json": final, "stage1_json": final, "trace": trace}
 
-    def skeptic_node(state: TriageState) -> TriageState:
+    def reviewer_node(state: TriageState) -> TriageState:
         diff = state["diff"]
         fp_idx = state["fp_idx"]
         func_idx = state["func_idx"]
@@ -1318,7 +1273,7 @@ def _build_triage_graph():
         stage1 = state.get("stage1_json") or state.get("final_json") or {}
 
         t0 = time.perf_counter()
-        skeptic = run_skeptic_review(
+        reviewer = run_reviewer_review(
             unified_diff=diff,
             stage1_result={
                 "label": stage1.get("label", ""),
@@ -1331,8 +1286,7 @@ def _build_triage_graph():
         )
         dt = time.perf_counter() - t0
 
-        verdict_s = skeptic.get("verdict", "refute")
-        trigger_ok = bool(skeptic.get("trigger_ok", False))
+        verdict_s = reviewer.get("verdict", "refute")
 
         # Normalize stage1 label
         stage1_label_raw = (
@@ -1345,19 +1299,19 @@ def _build_triage_graph():
         trigger = (stage1.get("trigger") or "").strip()
 
         if stage1_label == "not_safe":
-            if verdict_s == "confirm_not_safe" and trigger_ok:
-                reason_extra = (skeptic.get("reason") or "").strip()
+            if verdict_s == "confirm_not_safe":
+                reason_extra = (reviewer.get("reason") or "").strip()
                 if reason_extra:
                     final_why = (
-                        f"{final_why} | Skeptic: {reason_extra}"
+                        f"{final_why} | Reviewer: {reason_extra}"
                         if final_why
-                        else f"Skeptic: {reason_extra}"
+                        else f"Reviewer: {reason_extra}"
                     )
             else:
                 final_label = "safe"
                 final_why = (
-                    skeptic.get("reason")
-                    or "Second-stage skeptic did not confirm the backdoor; treating as safe."
+                    reviewer.get("reason")
+                    or "Second-stage reviewer did not confirm the backdoor; treating as safe."
                 )
 
         final = {
@@ -1369,21 +1323,17 @@ def _build_triage_graph():
         trace = list(state.get("trace", []))
         trace.append(
             {
-                "node": "skeptic",
+                "node": "reviewer",
                 "duration_s": dt,
                 "verdict": verdict_s,
-                "trigger_ok": trigger_ok,
-                "reason_preview": (skeptic.get("reason") or "")[:400],
-                "concrete_trigger_preview": (skeptic.get("concrete_trigger") or "")[
-                    :200
-                ],
+                "reason_preview": (reviewer.get("reason") or "")[:400],
             }
         )
 
         return {
             "final_json": final,
             "stage1_json": stage1,
-            "skeptic_json": skeptic,
+            "reviewer_json": reviewer,
             "trace": trace,
         }
 
@@ -1416,7 +1366,7 @@ def _build_triage_graph():
             str(final.get("label", "not_safe")).strip().lower().replace("-", "_")
         )
         if label_raw == "not_safe":
-            return "needs_skeptic"
+            return "needs_reviewer"
         return "end"
 
     # --- Wire up the graph -------------------------------------------------
@@ -1425,7 +1375,7 @@ def _build_triage_graph():
     graph.add_node("format", format_node)
     graph.add_node("normalize", normalize_node)
     graph.add_node("finalize", finalize_node)
-    graph.add_node("skeptic", skeptic_node)
+    graph.add_node("reviewer", reviewer_node)
 
     graph.add_edge(START, "analyst")
     graph.add_conditional_edges(
@@ -1440,18 +1390,18 @@ def _build_triage_graph():
     graph.add_edge("format", "normalize")
     graph.add_edge("normalize", "finalize")
 
-    # NEW: finalize -> (skeptic | END)
+    # NEW: finalize -> (reviewer | END)
     graph.add_conditional_edges(
         "finalize",
         route_after_finalize,
         {
-            "needs_skeptic": "skeptic",
+            "needs_reviewer": "reviewer",
             "end": END,
         },
     )
 
-    # Skeptic always ends
-    graph.add_edge("skeptic", END)
+    # Reviewer always ends
+    graph.add_edge("reviewer", END)
 
     return graph.compile()
 
@@ -1490,7 +1440,7 @@ def run_triage_langgraph(
     Entry point for the LangGraph-backed triage pipeline.
     Returns a dict with at least
       {"label", "trigger", "why", "trace", "stage1_label", "stage1_trigger",
-       "stage1_why", "skeptic"}.
+       "stage1_why", "reviewer"}.
     """
     initial_state: TriageState = {
         "diff": ascii_sanitize(unified_diff),
@@ -1519,12 +1469,12 @@ def run_triage_langgraph(
             "stage1_label": "not_safe",
             "stage1_trigger": "",
             "stage1_why": "LangGraph triage pipeline failed.",
-            "skeptic": None,
+            "reviewer": None,
         }
 
     final = result_state.get("final_json") or {}
     stage1 = result_state.get("stage1_json") or final
-    skeptic = result_state.get("skeptic_json")
+    reviewer = result_state.get("reviewer_json")
     trace = result_state.get("trace") or []
 
     if not isinstance(final, dict):
@@ -1534,7 +1484,7 @@ def run_triage_langgraph(
             "why": f"internal error: unexpected graph output {final!r}",
         }
 
-    # Final label (after skeptic), fail-closed
+    # Final label (after reviewer), fail-closed
     label_raw = str(final.get("label", "not_safe")).strip().lower().replace("-", "_")
     if label_raw not in ("safe", "not_safe"):
         label = "not_safe"
@@ -1544,7 +1494,7 @@ def run_triage_langgraph(
     why = (final.get("why") or "").strip()
     trigger = (final.get("trigger") or "").strip()
 
-    # Stage1 (pre-skeptic) normalization, also fail-closed
+    # Stage1 (pre-reviewer) normalization, also fail-closed
     if not isinstance(stage1, dict):
         stage1 = {"label": "not_safe", "trigger": "", "why": "missing stage1_json"}
 
@@ -1565,7 +1515,7 @@ def run_triage_langgraph(
         "stage1_label": stage1_label,
         "stage1_trigger": stage1_trigger,
         "stage1_why": stage1_why,
-        "skeptic": skeptic,
+        "reviewer": reviewer,
     }
 
 
