@@ -11,7 +11,6 @@ from langgraph.graph import StateGraph, START, END
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
-from IPython.display import Image, display
 
 from oxide.plugins.drift import compare_collections
 from oxide.core import oxide as oxide
@@ -60,7 +59,7 @@ ANALYST_SYS = (
     "You are an expert reverse engineer analyzing code that is expected to be safe.\n"
     "Input is a unified diff of the decompiled C for ONE function (baseline vs target).\n\n"
     "TASK:\n"
-    "Decide if the change introduces a malicious backdoor or logic bomb in THIS function.\n"
+    "Decide if the change introduces a malicious backdoor in THIS function.\n"
     'Only label it "not_safe" if you can state a concrete condition over inputs or state\n'
     "that triggers newly introduced alternate functionality, based solely on conditions\n"
     "visible in the diff.\n"
@@ -81,15 +80,16 @@ REVIEWER_SYS = (
     "You are a security reviewer.\n"
     "You are given:\n"
     "- A unified diff of one function (baseline vs target) that may be trimmed for size.\n"
-    "- An earlier JSON assessment that claims the change may add a malicious backdoor or logic bomb.\n\n"
+    "- An earlier assessment that claims the change may add a potentially malicious backdoor as well as the potential trigger.\n\n"
     "Your job is to refute clearly false accusations.\n\n"
     "TASK:\n"
     "1. Read the diff and previous assessment.\n"
     "2. Decide whether the previous 'not_safe' label is justified.\n"
     "3. Specifically, check whether:\n"
     # "   - There is clearly new behavior vs the baseline, AND\n"
-    "   - There is a trigger condition visible in the diff that activates newly added behavior, AND\n"
-    "   - The new behavior is suspicious and potentially more permissive, covert, or dangerous.\n\n"
+    "   - There is a trigger condition visible in the diff that activates newly added behavior\n"
+    # "   - There is a trigger condition visible in the diff that activates newly added behavior, AND\n"
+    # "   - The new behavior is suspicious and potentially more permissive, covert, or dangerous.\n\n"
     "- Do NOT refute only because a variable appears to be uninitialized or its origin is unclear, or because you do not\n"
     "  see the full control flow; the unified diff may omit parts of the function.\n\n"
     "OUTPUT:\n"
@@ -243,6 +243,309 @@ def llm_filter(args: List[str], opts: Dict[str, Any]) -> None:
     return series_summary
 
 
+def test_diff(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Evaluate the function_decomp_diff module with normalize set to True/False.
+
+    For each modified function reported by DRIFT, we:
+      - request a unified diff without normalization
+      - request a unified diff with normalization
+      - measure the size (chars/lines) of each
+      - record per-function and aggregate reduction statistics
+
+    Expected calling patterns:
+      • test_diff([target, baseline], opts)
+      • test_diff([], {"entries": path, ...}) with a plaintext file of CIDs/names
+    """
+    # --- determine pairs (target→baseline) ---
+    pairs: List[Tuple[str, str]]
+    series_file: Optional[str] = opts.get("entries")
+
+    if series_file:
+        pairs = read_series_file(series_file)
+        if len(pairs) < 2:
+            raise ValueError(
+                "entries file must list at least two versions (one per line)"
+            )
+    elif len(args) == 2:
+        pairs = [(args[0], args[1])]
+        logger.info(f"[test_diff] Single comparison: {args[0]} → {args[1]}")
+    else:
+        raise ValueError(
+            "test_diff: pass either [target, baseline] or --entries with at least two lines."
+        )
+
+    outdir: str = opts.get("outdir", "out_test_diff")
+    os.makedirs(outdir, exist_ok=True)
+
+    filter_val = opts.get("filter", None)
+    annotate = bool(opts.get("annotate", False))
+
+    per_function_rows: List[Dict[str, Any]] = []
+    comparison_rows: List[Dict[str, Any]] = []
+
+    total_pairs = len(pairs)
+    logger.info(f"[test_diff] Starting {total_pairs} comparison(s)…")
+
+    for idx, (target, baseline) in enumerate(pairs, 1):
+        try:
+            t_name = oxide.api.get_colname_from_oid(target)
+        except Exception:
+            t_name = str(target)
+        try:
+            b_name = oxide.api.get_colname_from_oid(baseline)
+        except Exception:
+            b_name = str(baseline)
+
+        logger.info(f"[test_diff] [{idx}/{total_pairs}] {t_name} → {b_name}")
+
+        pair_dir_name = f"testdiff_{idx:03d}__{t_name}_to_{b_name}"
+        pair_dir = os.path.join(outdir, pair_dir_name)
+        os.makedirs(pair_dir, exist_ok=True)
+
+        t0 = time.perf_counter()
+        drift_json = run_drift(target, baseline, filter_val) or {}
+        file_pairs: List[Dict[str, Any]] = drift_json.get("file_pairs", []) or []
+
+        if not file_pairs:
+            logger.info(
+                f"[test_diff] [{idx}] No file pairs / modifications reported by drift."
+            )
+
+        pair_total_plain_chars = 0
+        pair_total_norm_chars = 0
+        pair_total_plain_lines = 0
+        pair_total_norm_lines = 0
+        pair_func_count = 0
+
+        for fp_idx, fp in enumerate(file_pairs, 1):
+            baseline_oid = fp.get("baseline_oid")
+            target_oid = fp.get("target_oid")
+            modified = fp.get("modified_functions", []) or []
+
+            logger.info(
+                f"[test_diff]   [fp {fp_idx}/{len(file_pairs)}] "
+                f"modified={len(modified)}"
+            )
+
+            for func_idx, m in enumerate(modified, 1):
+                baddr = ensure_decimal_str(m.get("baseline_func_addr"))
+                taddr = ensure_decimal_str(m.get("target_func_addr"))
+
+                error_msgs: List[str] = []
+
+                # --- plain (unnormalized) diff ---
+                plain_unified = ""
+                try:
+                    raw_plain = oxide.retrieve(
+                        "function_decomp_diff",
+                        [target_oid, baseline_oid],
+                        {
+                            "target": taddr,
+                            "baseline": baddr,
+                            "annotate": annotate,
+                            "normalize": False,
+                        },
+                    )
+                    plain_text = extract_content(raw_plain) or ""
+                    parsed_plain = coerce_json_like(plain_text)
+                    if isinstance(parsed_plain, dict) and "unified" in parsed_plain:
+                        plain_unified = parsed_plain.get("unified") or ""
+                    else:
+                        plain_unified = plain_text
+                except Exception as e:
+                    msg = f"plain diff error: {e}"
+                    logger.error(
+                        f"[test_diff] plain diff failed "
+                        f"(pair={idx}, fp={fp_idx}, func={func_idx}): {e}"
+                    )
+                    error_msgs.append(msg)
+
+                # --- normalized diff ---
+                norm_unified = ""
+                try:
+                    raw_norm = oxide.retrieve(
+                        "function_decomp_diff",
+                        [target_oid, baseline_oid],
+                        {
+                            "target": taddr,
+                            "baseline": baddr,
+                            "annotate": annotate,
+                            "normalize": True,
+                        },
+                    )
+                    norm_text = extract_content(raw_norm) or ""
+                    parsed_norm = coerce_json_like(norm_text)
+                    if isinstance(parsed_norm, dict) and "unified" in parsed_norm:
+                        norm_unified = parsed_norm.get("unified") or ""
+                    else:
+                        norm_unified = norm_text
+                except Exception as e:
+                    msg = f"normalized diff error: {e}"
+                    logger.error(
+                        f"[test_diff] normalized diff failed "
+                        f"(pair={idx}, fp={fp_idx}, func={func_idx}): {e}"
+                    )
+                    error_msgs.append(msg)
+
+                # If both failed, skip this function.
+                if not plain_unified and not norm_unified:
+                    per_function_rows.append(
+                        {
+                            "comparison_index": idx,
+                            "filepair_index": fp_idx,
+                            "function_index": func_idx,
+                            "target": target,
+                            "baseline": baseline,
+                            "target_oid": target_oid,
+                            "baseline_oid": baseline_oid,
+                            "target_addr": taddr,
+                            "baseline_addr": baddr,
+                            "error": "; ".join(error_msgs) if error_msgs else None,
+                        }
+                    )
+                    continue
+
+                plain_chars = len(plain_unified)
+                norm_chars = len(norm_unified)
+
+                plain_lines = plain_unified.count("\n") + (1 if plain_unified else 0)
+                norm_lines = norm_unified.count("\n") + (1 if norm_unified else 0)
+
+                pair_total_plain_chars += plain_chars
+                pair_total_norm_chars += norm_chars
+                pair_total_plain_lines += plain_lines
+                pair_total_norm_lines += norm_lines
+                pair_func_count += 1
+
+                char_delta = plain_chars - norm_chars
+                char_fraction = (norm_chars / plain_chars) if plain_chars else None
+
+                line_delta = plain_lines - norm_lines
+                line_fraction = (norm_lines / plain_lines) if plain_lines else None
+
+                per_function_rows.append(
+                    {
+                        "comparison_index": idx,
+                        "filepair_index": fp_idx,
+                        "function_index": func_idx,
+                        "target": target,
+                        "baseline": baseline,
+                        "target_oid": target_oid,
+                        "baseline_oid": baseline_oid,
+                        "target_addr": taddr,
+                        "baseline_addr": baddr,
+                        "plain_chars": plain_chars,
+                        "normalized_chars": norm_chars,
+                        "char_delta": char_delta,
+                        "char_fraction": char_fraction,
+                        "plain_lines": plain_lines,
+                        "normalized_lines": norm_lines,
+                        "line_delta": line_delta,
+                        "line_fraction": line_fraction,
+                        "error": "; ".join(error_msgs) if error_msgs else None,
+                    }
+                )
+
+        dt = time.perf_counter() - t0
+
+        comp_summary = {
+            "index": idx,
+            "target": target,
+            "baseline": baseline,
+            "target_name": t_name,
+            "baseline_name": b_name,
+            "n_file_pairs": len(file_pairs),
+            "n_modified_functions": pair_func_count,
+            "total_plain_chars": pair_total_plain_chars,
+            "total_normalized_chars": pair_total_norm_chars,
+            "total_plain_lines": pair_total_plain_lines,
+            "total_normalized_lines": pair_total_norm_lines,
+            "avg_plain_chars": (
+                pair_total_plain_chars / pair_func_count if pair_func_count else 0.0
+            ),
+            "avg_normalized_chars": (
+                pair_total_norm_chars / pair_func_count if pair_func_count else 0.0
+            ),
+            "avg_plain_lines": (
+                pair_total_plain_lines / pair_func_count if pair_func_count else 0.0
+            ),
+            "avg_normalized_lines": (
+                pair_total_norm_lines / pair_func_count if pair_func_count else 0.0
+            ),
+            "overall_char_fraction": (
+                (pair_total_norm_chars / pair_total_plain_chars)
+                if pair_total_plain_chars
+                else None
+            ),
+            "overall_line_fraction": (
+                (pair_total_norm_lines / pair_total_plain_lines)
+                if pair_total_plain_lines
+                else None
+            ),
+            "elapsed_s": dt,
+        }
+
+        comparison_rows.append(comp_summary)
+        write_json(os.path.join(pair_dir, "test_diff_pair_summary.json"), comp_summary)
+
+        logger.info(
+            f"[test_diff] [{idx}] functions={pair_func_count}, "
+            f"chars: {pair_total_plain_chars}→{pair_total_norm_chars}, "
+            f"lines: {pair_total_plain_lines}→{pair_total_norm_lines}, "
+            f"time={dt:.2f}s"
+        )
+
+    # ---- global summary ----
+    total_plain_chars = sum(c["total_plain_chars"] for c in comparison_rows)
+    total_norm_chars = sum(c["total_normalized_chars"] for c in comparison_rows)
+    total_plain_lines = sum(c["total_plain_lines"] for c in comparison_rows)
+    total_norm_lines = sum(c["total_normalized_lines"] for c in comparison_rows)
+    total_funcs = sum(c["n_modified_functions"] for c in comparison_rows)
+
+    global_summary: Dict[str, Any] = {
+        "total_pairs": len(comparison_rows),
+        "total_functions": total_funcs,
+        "total_plain_chars": total_plain_chars,
+        "total_normalized_chars": total_norm_chars,
+        "total_plain_lines": total_plain_lines,
+        "total_normalized_lines": total_norm_lines,
+        "overall_char_fraction": (
+            (total_norm_chars / total_plain_chars) if total_plain_chars else None
+        ),
+        "overall_line_fraction": (
+            (total_norm_lines / total_plain_lines) if total_plain_lines else None
+        ),
+        "comparisons": comparison_rows,
+    }
+
+    write_json(os.path.join(outdir, "test_diff_summary.json"), global_summary)
+    write_json(
+        os.path.join(outdir, "test_diff_per_function.json"),
+        {"functions": per_function_rows},
+    )
+
+    if total_plain_chars:
+        logger.info(
+            "[test_diff] DONE: %d functions, chars %d→%d (%.2f%%), lines %d→%d (%.2f%%)",
+            total_funcs,
+            total_plain_chars,
+            total_norm_chars,
+            100.0 * (total_norm_chars / total_plain_chars),
+            total_plain_lines,
+            total_norm_lines,
+            (
+                100.0 * (total_norm_lines / total_plain_lines)
+                if total_plain_lines
+                else 0.0
+            ),
+        )
+    else:
+        logger.info("[test_diff] DONE: no modified functions found.")
+
+    return global_summary
+
+
 def import_rosarum_samples(args: List[str], opts: Dict[str, Any]) -> None:
     """
     Import all ROSARUM samples from the outputs directory into Oxide and
@@ -320,7 +623,7 @@ def import_rosarum_samples(args: List[str], opts: Dict[str, Any]) -> None:
 
 
 # keep plugin export shape
-exports = [llm_filter, import_rosarum_samples, run_all]
+exports = [llm_filter, import_rosarum_samples, run_all, test_diff]
 
 # --------------------------------------------------------------------------------------
 # Core pipeline
@@ -522,7 +825,7 @@ def analyze_function_pair(
     diff_raw = oxide.retrieve(
         "function_decomp_diff",
         [target_oid, baseline_oid],
-        {"target": taddr, "baseline": baddr, "annotate": opts.get("annotate", False)},
+        {"target": taddr, "baseline": baddr, "annotate": opts.get("normalize", True)},
     )
 
     if isinstance(diff_raw, dict) and "error" in diff_raw:
@@ -1416,13 +1719,6 @@ def show_and_save_triage_graph_png(path: str = "triage_graph.png") -> None:
         print(f"Failed to render mermaid PNG: {e}")
         return
 
-    # 1) Display in a notebook (if you're in IPython/Jupyter)
-    try:
-        display(Image(png_bytes))
-    except Exception as e:
-        print(f"Display failed (not in a notebook?): {e}")
-
-    # 2) Save to a PNG file in the current directory
     with open(path, "wb") as f:
         f.write(png_bytes)
     print(f"Saved triage graph PNG to {path}")

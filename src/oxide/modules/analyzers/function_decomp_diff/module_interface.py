@@ -5,11 +5,14 @@ function_decomp_diff — unified diff with target-centric call syncing + post-di
 Pipeline:
   1) Get baseline/target decompiler text.
   2) Build call pairing from function_call_diff (target-centric labels).
-  3) Project baseline FUN_<addr> tokens to the target FUN_<addr> tokens (for ORIGINAL emission).
+  3) Normalize both sides to stable labels (for alignment).
+  4) Align with SequenceMatcher to get opcodes.
+  5) Infer baseline→target label and variable/local/DAT/PTR mappings from
+     normalized equal lines, and project baseline names into the target namespace.
+  6) Project baseline FUN_<addr> tokens to the target FUN_<addr> tokens (for ORIGINAL emission).
      - Handles potential image-base bias between "FUN_000xxxxx" vs "FUN_001xxxxx".
-  4) Normalize both sides to stable labels (for alignment).
-  5) Align with SequenceMatcher; refine "replace" hunks to collapse identical lines to context.
-  6) Post-process the unified diff to append inline comments ONLY on '+' lines for any
+  7) Emit unified diff with replace-refinement to collapse identical lines to context.
+  8) Post-process the unified diff to append inline comments ONLY on '+' lines for any
      known *target* function calls found on those lines. Tags are fetched via:
          api.get_field("llm_function_analysis", target_oid, "tag", {"func_offset": addr})
 
@@ -44,7 +47,11 @@ _MAX_UNIFIED_CHARS = (
     _LLM_NUM_CTX_TOKENS - _LLM_RESERVED_TOKENS
 ) * _APPROX_CHARS_PER_TOKEN
 
-_LLM_DIFF_CHAR_BUDGET = 7500
+_LLM_DIFF_CHAR_BUDGET = min(_MAX_UNIFIED_CHARS, 20000)
+
+# Mapping / compaction hyperparameters
+_VAR_MAP_MIN_SUPPORT = 2
+_COMPACTION_CTX_CANDIDATES = (100, 50, 25, 10, 7, 5, 3, 1, 0)
 
 # ---------------------------
 # Options
@@ -79,9 +86,44 @@ _RE_DAT = re.compile(r"\bDAT_[0-9a-fA-F]+\b")
 _RE_PTR = re.compile(r"\bPTR_[0-9a-fA-F]+\b")
 _RE_TMP = re.compile(r"\b(?:p{0,3}[a-z]{1,3}Var\d+)\b")
 _RE_LOCAL = re.compile(r"\blocal_[A-Za-z0-9_]+\b")
+
+# Additional Ghidra-style variable families
+_RE_PARAM = re.compile(r"\bparam_[0-9A-Fa-f]+\b")
+_RE_IN = re.compile(r"\bin_[A-Za-z0-9_]+\b")  # in_FS_OFFSET, in_stack_...
+_RE_EXTRAOUT = re.compile(r"\bextraout_[A-Za-z0-9_]+\b")
+_RE_UNAFF = re.compile(r"\bunaff_[A-Za-z0-9_]+\b")
+
 _RE_WS = re.compile(r"\s+")
 
 _FUN_TOKEN_RE = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
+
+# Variable-like tokens (locals, temps, DAT_*, PTR_*, params, in_*, extraout_*, unaff_*)
+_VAR_TOKEN_RE = re.compile(
+    r"(local_[A-Za-z0-9_]+|"
+    r"(?:p{0,3}[a-z]{1,3}Var\d+)|"
+    r"DAT_[0-9A-Fa-f]+|"
+    r"PTR_[0-9A-Fa-f]+|"
+    r"param_[0-9A-Fa-f]+|"
+    r"in_[A-Za-z0-9_]+|"
+    r"extraout_[A-Za-z0-9_]+|"
+    r"unaff_[A-Za-z0-9_]+)"
+)
+
+
+def _lines_equal_ignoring_ws(a: List[str], b: List[str]) -> bool:
+    """
+    Return True if two lists of lines are identical up to whitespace.
+
+    Used to double-check 'equal' blocks from normalized alignment against the
+    ORIGINAL text (base_proj vs tgt_orig). This prevents canonical alignment
+    from hiding real semantic changes like iVar6 -> iVar7.
+    """
+    if len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        if _RE_WS.sub(" ", x).strip() != _RE_WS.sub(" ", y).strip():
+            return False
+    return True
 
 
 # ---------------------------
@@ -108,14 +150,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
             "error": "Could not retrieve function decomp lines for one or both sides."
         }
 
-    # Build projection + normalization maps from call diff
-    projmap_base = _build_maps(baseline_oid, target_oid, baseline_addr, target_addr)
-
-    # Project baseline ORIGINAL lines so its calls (and header) use target FUN tokens
-    base_proj = _project_fun_tokens(base_orig, projmap_base)
-
     # Normalize (for alignment) using stable labels shared by both sides
-    if opts["normalize"]:
+    if opts.get("normalize", True):
         base_norm = _normalize_lines(base_orig)
         tgt_norm = _normalize_lines(tgt_orig)
     else:
@@ -130,6 +166,18 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
         autojunk=False,
     )
     opcodes = sm.get_opcodes()
+
+    projmap_base = _build_maps(baseline_oid, target_oid, baseline_addr, target_addr)
+    lab_map = _build_lab_map_from_opcodes(base_orig, tgt_orig, opcodes)
+    var_map = _build_var_map(base_orig, tgt_orig, base_norm, tgt_norm, opcodes)
+
+    # Project baseline ORIGINAL lines:
+    #   1) FUN_ tokens -> target-side FUN_ tokens
+    #   2) LAB_ tokens -> target-side LAB_ tokens for unchanged blocks
+    #   3) variable-like tokens -> target-side names
+    base_proj = _project_fun_tokens(base_orig, projmap_base)
+    base_proj = _project_lab_tokens(base_proj, lab_map)
+    base_proj = _project_var_tokens(base_proj, var_map)
 
     # Headers
     a_len = len(base_orig)
@@ -148,17 +196,27 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
         f"+++ {tofile}",
         f"@@ -{a_start_disp},{a_len} +{b_start_disp},{b_len} @@",
     ]
+
     for tag, i1, i2, j1, j2 in opcodes:
+        base_slice = base_proj[i1:i2]
+        tgt_slice = tgt_orig[j1:j2]
+
         if tag == "equal":
-            for s in base_proj[i1:i2]:
-                out.append(" " + s)
+            # Alignment was done on NORMALIZED text (with <TMP> etc.),
+            # so 'equal' may hide real changes like iVar6 -> iVar7.
+            # Only treat as unchanged context if the ORIGINAL slices really match.
+            if _lines_equal_ignoring_ws(base_slice, tgt_slice):
+                for s in base_slice:
+                    out.append(" " + s)
+            else:
+                _emit_refined(out, base_slice, tgt_slice)
         else:
-            _emit_refined(out, base_proj[i1:i2], tgt_orig[j1:j2])
+            _emit_refined(out, base_slice, tgt_slice)
 
     unified = "\n".join(out) + ("\n" if out else "")
 
     # ---------------------------
-    # Post-diff annotation (context/addition/deletion lines)
+    # Post-diff annotation (added lines)
     # ---------------------------
     if opts.get("annotate", False):
         name_to_addr = _get_function_calls(
@@ -169,7 +227,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
                 unified,
                 name_to_addr,
                 target_oid,
-                annotate_kinds=(" ", "+", "-"),
+                annotate_kinds=("+",),  # annotate only additions by default
             )
 
     # ---------------------------
@@ -192,7 +250,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
             "baseline_oid": baseline_oid,
             "target_func": fn_t,
             "target_oid": target_oid,
-            "normalized_alignment": True,
+            "normalized_alignment": bool(opts.get("normalize", True)),
             "unified_full_len": len(unified_full),
             "unified_compact_len": len(unified_compact),
             "unified_truncated": len(unified_compact) < len(unified_full),
@@ -200,6 +258,197 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     }
 
     return result
+
+
+# ---------------------------
+# Label + variable mapping helpers
+# ---------------------------
+
+
+def _build_lab_map_from_opcodes(
+    base_orig: List[str],
+    tgt_orig: List[str],
+    opcodes: List[Tuple[str, int, int, int, int]],
+) -> Dict[str, str]:
+    """
+    Infer a mapping from baseline label tokens to target label tokens:
+        { "LAB_0010e455": "LAB_0010e44e", ... }
+
+    We only learn mappings inside opcodes tagged 'equal' on the *normalized*
+    text. For those regions, we assume the control-flow block is the same and
+    any LAB_ differences are just renumberings.
+    """
+    lab_map: Dict[str, str] = {}
+
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag != "equal":
+            continue
+
+        span = min(i2 - i1, j2 - j1)
+        for off in range(span):
+            b_line = base_orig[i1 + off]
+            t_line = tgt_orig[j1 + off]
+
+            b_labs = _RE_LAB.findall(b_line)
+            t_labs = _RE_LAB.findall(t_line)
+
+            if not b_labs or not t_labs:
+                continue
+            if len(b_labs) != len(t_labs):
+                continue
+
+            for bl, tl in zip(b_labs, t_labs):
+                existing = lab_map.get(bl)
+                if existing is None:
+                    lab_map[bl] = tl
+                elif existing != tl:
+                    # Conflict: safest is to drop this mapping entirely.
+                    lab_map.pop(bl, None)
+
+    return lab_map
+
+
+def _project_lab_tokens(lines: List[str], lab_map: Dict[str, str]) -> List[str]:
+    """
+    Rewrite LAB_<addr> tokens in `lines` according to `lab_map`, e.g.:
+
+        LAB_0010e455  ->  LAB_0010e44e
+
+    This is applied after FUN_ projection so unchanged basic blocks that only
+    differ by label numbers collapse to context in the unified diff.
+    """
+    if not lab_map:
+        return lines
+
+    def _sub(m: re.Match) -> str:
+        lab = m.group(0)  # full token, e.g. "LAB_0010e455"
+        return lab_map.get(lab, lab)
+
+    return [_RE_LAB.sub(_sub, s) for s in lines]
+
+
+def _extract_var_tokens(line: str) -> List[str]:
+    """
+    Extract ordered variable-like tokens from a line:
+    locals, temps, DAT_*, PTR_*, params, in_*, extraout_*, unaff_*.
+    """
+    return [m.group(0) for m in _VAR_TOKEN_RE.finditer(line)]
+
+
+def _same_var_kind(a: str, b: str) -> bool:
+    """
+    Only allow mappings within the same broad kind:
+      - local_*       -> local_*
+      - p*/i*/pc*/... -> same temp family
+      - DAT_*         -> DAT_*
+      - PTR_*         -> PTR_*
+      - param_*       -> param_*
+      - in_*          -> in_*
+      - extraout_*    -> extraout_*
+      - unaff_*       -> unaff_*
+    """
+    if _RE_LOCAL.fullmatch(a):
+        return bool(_RE_LOCAL.fullmatch(b))
+    if _RE_TMP.fullmatch(a):
+        return bool(_RE_TMP.fullmatch(b))
+    if _RE_DAT.fullmatch(a):
+        return bool(_RE_DAT.fullmatch(b))
+    if _RE_PTR.fullmatch(a):
+        return bool(_RE_PTR.fullmatch(b))
+    if _RE_PARAM.fullmatch(a):
+        return bool(_RE_PARAM.fullmatch(b))
+    if _RE_IN.fullmatch(a):
+        return bool(_RE_IN.fullmatch(b))
+    if _RE_EXTRAOUT.fullmatch(a):
+        return bool(_RE_EXTRAOUT.fullmatch(b))
+    if _RE_UNAFF.fullmatch(a):
+        return bool(_RE_UNAFF.fullmatch(b))
+    return False
+
+
+def _build_var_map(
+    base_orig: List[str],
+    tgt_orig: List[str],
+    base_norm: List[str],
+    tgt_norm: List[str],
+    opcodes: List[Tuple[str, int, int, int, int]],
+) -> Dict[str, str]:
+    """
+    Infer a mapping from baseline variable/local/DAT/PTR/etc. names to target names
+    based on lines that match after normalization.
+
+    Returns:
+        var_map: { baseline_name -> target_name }
+    """
+    pair_counts: Dict[Tuple[str, str], int] = {}
+
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag != "equal":
+            continue
+
+        length = i2 - i1
+        for k in range(length):
+            b_idx = i1 + k
+            t_idx = j1 + k
+
+            # Sanity: ensure normalized lines really match
+            if base_norm[b_idx] != tgt_norm[t_idx]:
+                continue
+
+            b_line = base_orig[b_idx]
+            t_line = tgt_orig[t_idx]
+
+            b_vars = _extract_var_tokens(b_line)
+            t_vars = _extract_var_tokens(t_line)
+
+            if not b_vars or not t_vars:
+                continue
+            if len(b_vars) != len(t_vars):
+                continue
+
+            for vb, vt in zip(b_vars, t_vars):
+                if not _same_var_kind(vb, vt):
+                    continue
+                pair_counts[(vb, vt)] = pair_counts.get((vb, vt), 0) + 1
+
+    # Aggregate by baseline name and pick the most frequent target
+    by_baseline: Dict[str, Dict[str, int]] = {}
+    for (vb, vt), cnt in pair_counts.items():
+        by_baseline.setdefault(vb, {})
+        by_baseline[vb][vt] = by_baseline[vb].get(vt, 0) + cnt
+
+    var_map: Dict[str, str] = {}
+
+    for vb, tgt_counts in by_baseline.items():
+        vt_best, c_best = max(tgt_counts.items(), key=lambda kv: kv[1])
+        if c_best < _VAR_MAP_MIN_SUPPORT:
+            continue
+        var_map[vb] = vt_best
+
+    return var_map
+
+
+def _project_var_tokens(lines: List[str], var_map: Dict[str, str]) -> List[str]:
+    """
+    Replace baseline variable/local/DAT/PTR/etc. tokens using `var_map`.
+
+    Assumes mapping is baseline_name -> target_name. Does not change line count.
+    """
+    if not var_map:
+        return lines
+
+    keys = sorted(var_map.keys(), key=len, reverse=True)
+    pattern = r"\b(" + "|".join(re.escape(k) for k in keys) + r")\b"
+    re_keys = re.compile(pattern)
+
+    def _sub(m):
+        vb = m.group(1)
+        return var_map.get(vb, vb)
+
+    out: List[str] = []
+    for s in lines:
+        out.append(re_keys.sub(_sub, s))
+    return out
 
 
 # ---------------------------
@@ -259,26 +508,20 @@ def _target_pref_label(
 
 def _build_maps(
     baseline_oid: str, target_oid: str, baseline_func_addr: Any, target_func_addr: Any
-) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+) -> Dict[str, str]:
     """
     Returns:
         projmap_base: baseline FUN_token -> target FUN_token (projection for ORIGINAL)
     """
     projmap_base: Dict[str, str] = {}
-    normmap_base: Dict[str, str] = {}
-    normmap_tgt: Dict[str, str] = {}
 
     # Seed with the function itself so the def-line syncs.
     base_tok = _tok_from_any(baseline_func_addr)
     tgt_tok = _tok_from_any(target_func_addr)
     tgt_name = _get_function_name(target_oid, target_func_addr)
-    label_fn = _target_pref_label(None, tgt_name, tgt_tok)
+    _ = _target_pref_label(None, tgt_name, tgt_tok)  # label_fn (currently unused)
     if base_tok and tgt_tok:
         projmap_base.setdefault(base_tok, tgt_tok)
-    if base_tok:
-        normmap_base.setdefault(base_tok, label_fn)
-    if tgt_tok:
-        normmap_tgt.setdefault(tgt_tok, label_fn)
 
     try:
         diff = (
@@ -344,7 +587,8 @@ def _project_fun_tokens(lines: List[str], projmap: Dict[str, str]) -> List[str]:
     if seen:
         best_hits = -1
         for b in candidates:
-            hits = sum(1 for a in seen if (a in num_map) or ((a - b) in num_map))
+            # Count how many observed addresses align under this bias
+            hits = sum(1 for a in seen if (a - b) in num_map)
             if hits > best_hits:
                 best_hits = hits
                 bias = b
@@ -367,11 +611,12 @@ def _normalize_lines(lines: List[str]) -> List[str]:
         s = _RE_LAB.sub("LAB_<ADDR>", s)
         s = _RE_DAT.sub("DAT_<ADDR>", s)
         s = _RE_PTR.sub("PTR_<ADDR>", s)
-        # s = _RE_OFF.sub("OFF_<ADDR>", s)
-        # s = _RE_HEX.sub("<NUM>", s)
-        # s = _RE_NUM.sub("<NUM>", s)
         s = _RE_TMP.sub("<TMP>", s)
         s = _RE_LOCAL.sub("<LOCAL>", s)
+        s = _RE_PARAM.sub("<PARAM>", s)
+        s = _RE_IN.sub("<IN>", s)
+        s = _RE_EXTRAOUT.sub("<EXTRAOUT>", s)
+        s = _RE_UNAFF.sub("<UNAFF>", s)
         s = _RE_WS.sub(" ", s).strip()
         out.append(s)
     return out
@@ -527,7 +772,7 @@ def _get_function_calls(
     existing = diff.get("fc_add_existing") or []
     new = diff.get("fc_add_new") or []
 
-    # Build addr->name first (as you outlined), then normalize to name->addr
+    # Build addr->name first, then normalize to name->addr
     target_func_calls = {}
     for item in paired:
         t = item.get("target") or {}
@@ -545,9 +790,6 @@ def _get_function_calls(
     return _normalize_known_calls_shape(target_func_calls)
 
 
-_tag_cache: Dict[Tuple[str, int], Optional[str]] = {}
-
-
 def _get_tag_for_addr(oid: str, addr: int) -> str | None:
     try:
         return api.get_field("llm_function_analysis", oid, "tag", {"func_offset": addr})
@@ -559,15 +801,12 @@ def _annotate_unified_with_tags(
     unified: str,
     name_to_addr: dict[str, int],
     target_oid: str,
-    annotate_kinds: tuple[str, ...] = (
-        " ",
-        "+",
-        "-",
-    ),  # annotate context and additions; skip deletions
+    annotate_kinds: tuple[str, ...] = ("+",),
 ) -> str:
     """
-    Append short tags to lines that start with ' ' or '+' and that contain calls
-    to known *target* functions. '-' lines are left untouched.
+    Append short tags to diff lines whose first character is in `annotate_kinds`
+    (by default, only '+' lines) and that contain calls to known *target* functions.
+    '-' lines are left untouched.
 
     Example result:
       ' + FUN_00106126(x, y); // FUN_00106126: buffer pointer calculation'
@@ -640,9 +879,9 @@ def _annotate_unified_with_tags(
 
 def _extract_changed_regions(unified: str, context_lines: int = 10) -> str:
     """
-    Keep only +/- lines (changes) plus a small number of surrounding context lines
-    and all hunk/file headers. Insert "..." between disjoint kept regions.
-    Intended for LLM consumption only (not for patch application).
+    Keep only +/- lines (changes) plus a small number of surrounding context lines,
+    along with file and hunk headers. Insert '...' markers where unchanged regions
+    are omitted. Used as a building block for LLM-oriented compaction.
     """
     lines = unified.splitlines()
     n = len(lines)
@@ -651,14 +890,9 @@ def _extract_changed_regions(unified: str, context_lines: int = 10) -> str:
 
     keep: set[int] = set()
 
-    # Always keep initial headers if present
-    for i, line in enumerate(lines[:5]):
-        if line.startswith(("---", "+++", "@@")):
-            keep.add(i)
-
     # Always keep all hunk headers
     for i, line in enumerate(lines):
-        if line.startswith("@@"):
+        if line.startswith(("@@",)):
             keep.add(i)
 
     # Mark regions around changed lines
@@ -666,8 +900,9 @@ def _extract_changed_regions(unified: str, context_lines: int = 10) -> str:
         if not line:
             continue
 
-        # Skip file/hunk headers (already handled)
-        if line.startswith(("---", "+++", "@@")):
+        # Skip file headers (already handled)
+        if line.startswith(("---", "+++")):
+            keep.add(i)
             continue
 
         # Changed lines: leading '+' or '-' (but not '+++' / '---' headers)
@@ -698,7 +933,9 @@ def _maybe_compact_unified(unified: str, max_chars: int = _MAX_UNIFIED_CHARS) ->
     """
     Shrink `unified` to fit within `max_chars` by keeping changed lines plus
     as much surrounding context as possible. We start with a large context
-    window and decrease it until we fit. Final fallback: hard truncate.
+    window and decrease it until we fit. Final fallback: keep both the
+    beginning and the end of the compacted diff (headers + epilogue) and
+    drop only the middle.
     """
     if not unified:
         return unified
@@ -711,14 +948,18 @@ def _maybe_compact_unified(unified: str, max_chars: int = _MAX_UNIFIED_CHARS) ->
         return unified
 
     # Try progressively smaller context windows until we fit
-    # (tune this list as needed)
-    for ctx in (100, 50, 25, 10, 7, 5, 3, 1, 0):
-        compact = _extract_changed_regions(unified, context_lines=ctx)
+    compact = unified
+    for ctx in _COMPACTION_CTX_CANDIDATES:
+        compact = _extract_changed_regions(compact, context_lines=ctx)
         if len(compact) <= budget:
             return compact
 
-    # If even ctx=0 is too big, hard truncate at a line boundary.
-    # Explicitly mark truncation at both the beginning and end.
+    # ------------------------------------------------------------------
+    # Fallback: even smallest context is too big.
+    # At this point, `compact` is a version that keeps only changed lines.
+    # We must hard truncate, but we do it by keeping BOTH head and tail
+    # so that function epilogues (e.g., `return` lines) are preserved.
+    # ------------------------------------------------------------------
     lines = compact.splitlines()
     note = "... [diff truncated to fit LLM context]"
     note_len = len(note) + 1  # account for '\n'
@@ -730,17 +971,43 @@ def _maybe_compact_unified(unified: str, max_chars: int = _MAX_UNIFIED_CHARS) ->
     # Reserve space for the note at top and bottom
     remaining_budget = budget - 2 * note_len
 
-    out_lines: list[str] = []
-    total = 0
+    # We will split remaining_budget roughly evenly between prefix and suffix.
+    target_each = remaining_budget // 2
+
+    # Collect prefix lines from the top
+    prefix_lines: list[str] = []
+    prefix_chars = 0
     for line in lines:
         line_len = len(line) + 1  # + '\n'
-        if total + line_len > remaining_budget:
+        if prefix_chars + line_len > target_each:
             break
-        out_lines.append(line)
-        total += line_len
+        prefix_lines.append(line)
+        prefix_chars += line_len
 
-    # Assemble: note at top, truncated content, note at bottom
-    result_lines = [note] + out_lines + [note]
+    # Collect suffix lines from the bottom
+    suffix_lines_rev: list[str] = []
+    suffix_chars = 0
+    for line in reversed(lines):
+        line_len = len(line) + 1
+        if suffix_chars + line_len > target_each:
+            break
+        suffix_lines_rev.append(line)
+        suffix_chars += line_len
+
+    suffix_lines = list(reversed(suffix_lines_rev))
+
+    # If the prefix and suffix overlap heavily (short file), just use compact
+    if len("\n".join(lines)) <= remaining_budget:
+        result_lines = [note] + lines + [note]
+        return "\n".join(result_lines) + "\n"
+
+    # Assemble: note at top, prefix, ellipsis, suffix, note at bottom
+    result_lines: list[str] = [note]
+    result_lines.extend(prefix_lines)
+    result_lines.append("...")  # explicit middle truncation marker
+    result_lines.extend(suffix_lines)
+    result_lines.append(note)
+
     return "\n".join(result_lines) + "\n"
 
 
@@ -792,9 +1059,13 @@ def retrieve_function_decomp_lines(oid: str, func_addr: Any) -> Optional[List[st
         out.append(("    " * max(indent, 0)) + code)
         if "{" in code:
             indent += 1
+
     return out
 
 
 def _get_function_name(oid: str, offset: Any) -> Optional[str]:
+    addr = _parse_addr_any(offset)
+    if addr is None:
+        return None
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
-    return funcs.get(int(offset), {}).get("name")
+    return funcs.get(addr, {}).get("name")
