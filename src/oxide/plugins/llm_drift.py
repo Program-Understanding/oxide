@@ -825,7 +825,7 @@ def analyze_function_pair(
     diff_raw = oxide.retrieve(
         "function_decomp_diff",
         [target_oid, baseline_oid],
-        {"target": taddr, "baseline": baddr, "annotate": opts.get("normalize", True)},
+        {"target": taddr, "baseline": baddr, "normalize": opts.get("normalize", True)},
     )
 
     if isinstance(diff_raw, dict) and "error" in diff_raw:
