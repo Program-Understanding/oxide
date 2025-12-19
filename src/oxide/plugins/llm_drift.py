@@ -36,7 +36,7 @@ logger.setLevel(logging.INFO)
 # LLM config — keep a single instance
 # --------------------------------------------------------------------------------------
 LLM = ChatOllama(
-    model="gpt-oss:20b",
+    model="gpt-oss:120b",
     temperature=0.0,
     num_ctx=8192,
     keep_alive="10m",
@@ -47,7 +47,7 @@ FORMAT_LLM = ChatOllama(model="llama3.1:8b-instruct-q4_K_M", temperature=0.0)
 NORMALIZE_LLM = ChatOllama(model="llama3.1:8b-instruct-q4_K_M", temperature=0.0)
 # Second-stage reviewer / reviewer model
 REVIEWER_LLM = ChatOllama(
-    model="gpt-oss:20b",
+    model="gpt-oss:120b",
     temperature=0.0,
     num_ctx=8192,
     keep_alive="10m",
@@ -86,10 +86,7 @@ REVIEWER_SYS = (
     "1. Read the diff and previous assessment.\n"
     "2. Decide whether the previous 'not_safe' label is justified.\n"
     "3. Specifically, check whether:\n"
-    # "   - There is clearly new behavior vs the baseline, AND\n"
     "   - There is a trigger condition visible in the diff that activates newly added behavior\n"
-    # "   - There is a trigger condition visible in the diff that activates newly added behavior, AND\n"
-    # "   - The new behavior is suspicious and potentially more permissive, covert, or dangerous.\n\n"
     "- Do NOT refute only because a variable appears to be uninitialized or its origin is unclear, or because you do not\n"
     "  see the full control flow; the unified diff may omit parts of the function.\n\n"
     "OUTPUT:\n"
@@ -1251,7 +1248,6 @@ def call_reviewer_llm(
     t_llm = time.perf_counter()
 
     reviewer_prompt = (
-        "You will review an earlier backdoor assessment.\n\n"
         "=== FUNCTION UNIFIED DIFF ===\n"
         f"{diff_text}\n\n"
         "=== EARLIER ASSESSMENT JSON ===\n"
