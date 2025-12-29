@@ -982,7 +982,7 @@ def analyze_function_pair(
     notes: Dict[str, Any] = {"observations": [], "artifacts": []}
 
     diff_raw = oxide.retrieve(
-        "function_decomp_diff_test",
+        "function_decomp_diff",
         [target_oid, baseline_oid],
         {"target": taddr, "baseline": baddr, "raw": True},
     )
