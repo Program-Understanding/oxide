@@ -4,7 +4,7 @@ import os
 import re
 import unicodedata
 import time
-from typing import Any, Dict, Optional, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import time
 
 from typing_extensions import TypedDict
@@ -36,45 +36,24 @@ logger.setLevel(logging.INFO)
 # --------------------------------------------------------------------------------------
 # LLM config — keep a single instance
 # --------------------------------------------------------------------------------------
-ANALYST_SCHEMA = {
-  "type": "object",
-  "properties": {
-    "label":   {"type": "string", "enum": ["safe", "not_safe"]},
-    "trigger": {"type": "string"},
-    "why":     {"type": "string"}
-  },
-  "required": ["label", "trigger", "why"],
-  "additionalProperties": False
-}
-
-REVIEWER_SCHEMA = {
-  "type": "object",
-  "properties": {
-    "verdict": {"type": "string", "enum": ["confirm_not_safe", "refute"]},
-    "reason":  {"type": "string"}
-  },
-  "required": ["verdict", "reason"],
-  "additionalProperties": False
-}
-
 LLM = ChatOllama(
     model="gpt-oss:120b",
     temperature=0.0,
     num_ctx=8192,
     keep_alive="10m",
-    request_timeout=180.0,
-    format=ANALYST_SCHEMA,
-    model_kwargs={"num_predict": 512},
+    request_timeout=60.0,
+    model_kwargs={"num_predict": 128},
 )
-
+FORMAT_LLM = ChatOllama(model="llama3.1:8b-instruct-q4_K_M", temperature=0.0)
+NORMALIZE_LLM = ChatOllama(model="llama3.1:8b-instruct-q4_K_M", temperature=0.0)
+# Second-stage reviewer / reviewer model
 REVIEWER_LLM = ChatOllama(
     model="gpt-oss:120b",
     temperature=0.0,
     num_ctx=8192,
     keep_alive="10m",
-    request_timeout=180.0,
-    format=REVIEWER_SCHEMA,
-    model_kwargs={"num_predict": 256},
+    request_timeout=60.0,
+    model_kwargs={"num_predict": 128},
 )
 
 ANALYST_SYS = (
@@ -822,7 +801,7 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     elapsed_s = time.perf_counter() - t0
 
     # -------------------------------------------------------------------------
-    # 5) Ground truth computation (optional, multi-function)
+    # 5) Ground truth hit computation (optional)
     # -------------------------------------------------------------------------
     gt = opts.get("_ground_truth") or {}
     gt_norm = get_ground_truth_for_target(gt, t_name)
@@ -830,69 +809,37 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     hit_final = None
     hit_stage1 = None
     gt_in_filtered = None
-
-    gt_targets = None
-    gt_compromised_count = None
-
-    # Counts (only defined if gt provided)
-    tp_final = None
-    fp_final = None
-    tp_stage1 = None
-    fp_stage1 = None
+    gt_target_addr = None
+    gt_target_oid = None
 
     if gt_norm:
-        gt_targets = gt_norm.get("targets", [])
-        gt_compromised_count = len(gt_targets)
+        gt_target_addr = gt_norm.get("target_addr_dec")
+        gt_target_oid = gt_norm.get("target_oid")
 
-        # Whether any GT function appears in the filtered set we actually analyzed
         gt_in_filtered = any(
-            gt_row_matches_any(r, gt_norm)
+            gt_row_matches(r, gt_target_addr, gt_target_oid)
             for r in per_function_results
         )
 
-        # Hit: at least one compromised function is identified
         hit_final = any(
-            r.get("flagged_final") and gt_row_matches_any(r, gt_norm)
+            gt_row_matches(r, gt_target_addr, gt_target_oid) and r.get("flagged_final")
             for r in per_function_results
         )
+
         hit_stage1 = any(
-            (r.get("stage1_label") == "not_safe") and gt_row_matches_any(r, gt_norm)
+            gt_row_matches(r, gt_target_addr, gt_target_oid)
+            and (r.get("stage1_label") == "not_safe")
             for r in per_function_results
-        )
-
-        # TP/FP counts under multi-function ground truth:
-        #   TP = flagged ∩ GT
-        #   FP = flagged \ GT
-        tp_final = sum(
-            1 for r in per_function_results
-            if r.get("flagged_final") and gt_row_matches_any(r, gt_norm)
-        )
-        fp_final = sum(
-            1 for r in per_function_results
-            if r.get("flagged_final") and not gt_row_matches_any(r, gt_norm)
-        )
-
-        tp_stage1 = sum(
-            1 for r in per_function_results
-            if (r.get("stage1_label") == "not_safe") and gt_row_matches_any(r, gt_norm)
-        )
-        fp_stage1 = sum(
-            1 for r in per_function_results
-            if (r.get("stage1_label") == "not_safe") and not gt_row_matches_any(r, gt_norm)
         )
 
     # -------------------------------------------------------------------------
-    # 6) Stats (+ optional FP rate using multi-function GT)
+    # 6) Stats (+ optional BF rate)
     # -------------------------------------------------------------------------
     identified = len(triage_index)
-
-    fp_rate_final = None
-    fp_rate_stage1 = None
-
-    if gt_norm and total_modified_all:
-        # multi-function FP rates (denominator matches your paper: all modified functions)
-        fp_rate_final = float(fp_final) / float(total_modified_all) if fp_final is not None else None
-        fp_rate_stage1 = float(fp_stage1) / float(total_modified_all) if fp_stage1 is not None else None
+    bf_rate = None
+    if gt_norm is not None and gt_norm and total_modified_all:
+        hit_int = 1 if hit_final else 0
+        bf_rate = (identified - hit_int) / float(total_modified_all)
 
     stats = {
         "target": target,
@@ -902,7 +849,7 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
         "filtered_functions": total_modified_filtered,
         "safe_overall": overall_safe,
 
-        # Final labels (filtered only)
+        # Counts from final labels (filtered only)
         "identified": identified,
         "final_not_safe_filtered": n_flagged_filtered,
         "final_safe_filtered": n_safe_filtered,
@@ -915,26 +862,14 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
         # Timing
         "elapsed_s": elapsed_s,
 
-        # Ground truth summary (if present)
-        "gt_compromised_count": gt_compromised_count,
-        "gt_targets": gt_targets,              # list of {"target_addr_dec", "target_oid"}
+        # Ground truth fields (if present)
+        "gt_target_addr": gt_target_addr,
+        "gt_target_oid": gt_target_oid,
         "gt_in_filtered": gt_in_filtered,
-
-        # Hit definitions (multi-function)
-        "hit_final": hit_final,                # any(final_flagged ∩ GT)
-        "hit_stage1": hit_stage1,              # any(stage1_not_safe ∩ GT)
-
-        # Counts (what you asked for)
-        "tp_final": tp_final,
-        "fp_final": fp_final,                  # <-- number of FP flagged (final)
-        "tp_stage1": tp_stage1,
-        "fp_stage1": fp_stage1,
-
-        # Rates (optional, but usually useful)
-        "fp_rate_final": fp_rate_final,
-        "fp_rate_stage1": fp_rate_stage1,
+        "hit_final": hit_final,
+        "hit_stage1": hit_stage1,
+        "bf_rate": bf_rate,
     }
-
 
     # -------------------------------------------------------------------------
     # 7) Write outputs
@@ -984,7 +919,7 @@ def analyze_function_pair(
     diff_raw = oxide.retrieve(
         "function_decomp_diff_test",
         [target_oid, baseline_oid],
-        {"target": taddr, "baseline": baddr, "raw": True},
+        {"target": taddr, "baseline": baddr, "raw": False},
     )
 
     if isinstance(diff_raw, dict) and "error" in diff_raw:
@@ -1196,121 +1131,263 @@ def run_drift(
 # LLM helper functions
 # --------------------------------------------------------------------------------------
 
-def _invoke_llm_text(llm: ChatOllama, system_text: str, human_text: str) -> Tuple[str, float]:
-    t0 = time.perf_counter()
-    resp = llm.invoke(
-        [
-            SystemMessage(content=system_text),
-            HumanMessage(content=human_text),
-        ]
-    )
-    dt = time.perf_counter() - t0
-    text = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
-    return text, dt
 
-
-def _coerce_label(x: Any) -> str:
-    return _coerce_str(x).lower().replace("-", "_")
-
-
-def _analyst_output_complete(d: Dict[str, Any]) -> bool:
-    label = _coerce_label(d.get("label"))
-    trigger = _coerce_str(d.get("trigger"))
-    why = _coerce_str(d.get("why"))
-
-    if label not in {"safe", "not_safe"}:
-        return False
-    if not why:
-        return False
-    # If the analyst says not_safe, require a concrete trigger
-    if label == "not_safe" and not trigger:
-        return False
-    return True
-
-
-def call_analyst_llm_json(
-    diff_text: str, fp_idx: int, func_idx: int, notes: Dict[str, Any]
-) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+def call_analyst_llm(
+    user_content: str, fp_idx: int, func_idx: int, notes: Dict[str, Any]
+) -> str:
     """
-    Returns: (raw_text, stage1_dict, meta)
-
-    Fail-closed behavior:
-      - If we cannot obtain valid/complete JSON after one retry, return not_safe.
+    Primary analysis model (deterministic).
+    Returns JSON text on success, or a fallback JSON string marking the
+    function as not_safe with an error explanation on failure.
     """
-    meta: Dict[str, Any] = {"attempts": 0, "parsed_ok": False, "repaired": False}
+    t_llm = time.perf_counter()
+    try:
+        resp = LLM.invoke(
+            [
+                SystemMessage(content=ANALYST_SYS),
+                HumanMessage(content=user_content),
+            ]
+        )
+        text_local = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
+        dt_llm = time.perf_counter() - t_llm
 
-    # Attempt 1
-    meta["attempts"] += 1
-    raw1, dt1 = _invoke_llm_text(
-        LLM,
-        ANALYST_SYS,
-        f"FUNCTION UNIFIED DIFF:\n{diff_text}",
+        if not text_local:
+            logger.error(
+                f"LLM ANALYST EMPTY fp={fp_idx} func={func_idx} "
+                f"after {dt_llm:.2f}s (diff_chars={len(user_content)})"
+            )
+            raise ValueError("LLM (analyst) returned empty content")
+
+        logger.debug(
+            f"LLM ANALYST OK fp={fp_idx} func={func_idx} "
+            f"took {dt_llm:.2f}s (diff_chars={len(user_content)})"
+        )
+
+        return text_local
+
+    except Exception as e:
+        dt_llm = time.perf_counter() - t_llm
+        err_msg = f"LLM analyst failed fp={fp_idx} func={func_idx}: {e}"
+
+        logger.error(
+            f"LLM ANALYST ERROR fp={fp_idx} func={func_idx} "
+            f"after {dt_llm:.2f}s: {e}"
+        )
+
+        notes["observations"].append(err_msg)
+
+        # Return a valid JSON string that marks the function unsafe.
+        fallback_json = json.dumps(
+            {
+                "label": "not_safe",
+                "trigger": "",
+                "why": f"LLM analyst failed: {str(e)}",
+            }
+        )
+        return fallback_json
+
+
+def call_format_llm(
+    raw_output: str, fp_idx: int, func_idx: int, notes: Dict[str, Any]
+) -> str:
+    """
+    Second model: takes arbitrary text from the analyst model and
+    turns it into valid JSON in the required schema.
+    Returns JSON text on success, or a fallback JSON string marking the
+    function as not_safe with an error explanation on failure.
+    """
+    t_llm = time.perf_counter()
+    format_sys = (
+        "You are a strict JSON formatter.\n"
+        "You receive the *intended meaning* of a model's answer but possibly "
+        "with wrong formatting.\n"
+        "Your ONLY job is to output VALID JSON matching this schema:\n"
+        "{\n"
+        '  "label": "not_safe" | "safe",\n'
+        '  "trigger": "short description of the trigger condition, or empty string if none",\n'
+        '  "why": "1-3 sentences citing the specific + line(s) and the control/data-flow change"\n'
+        "}\n"
+        "Do not change the meaning, only fix the formatting.\n"
+        "Do NOT include code fences, explanations, or any text outside of the JSON."
     )
-    if not raw1:
-        notes["observations"].append("LLM analyst returned empty content; retrying once.")
-    d1 = parse_llm_json(raw1)
-    if isinstance(d1, dict) and _analyst_output_complete(d1):
-        meta["parsed_ok"] = True
-        meta["duration_s"] = dt1
-        return raw1, {
-            "label": _coerce_label(d1.get("label")),
-            "trigger": _coerce_str(d1.get("trigger")),
-            "why": _coerce_str(d1.get("why")),
-        }, meta
 
-    # Attempt 2 (repair / retry)
-    meta["attempts"] += 1
-    meta["repaired"] = True
-    notes["observations"].append("Analyst output invalid/incomplete; retrying once (repair).")
-
-    repair_sys = (
-        ANALYST_SYS
-        + "\nConstraints:\n"
-          "- Output must be a single JSON object.\n"
-          "- Field 'why' must be non-empty.\n"
-          "- If label is 'not_safe', field 'trigger' must be a non-empty exact condition copied from the diff.\n"
-          "- If you cannot provide a trigger, label must be 'safe'.\n"
+    repair_prompt = (
+        "Here is the previous model output that may not be valid JSON.\n"
+        "Rewrite it as valid JSON in the required schema.\n\n"
+        "Previous output:\n"
+        f"{raw_output}"
     )
-    repair_human = (
-        "You must produce valid JSON that satisfies the constraints.\n"
-        "Return JSON only.\n\n"
-        "FUNCTION UNIFIED DIFF:\n"
+
+    try:
+        resp = FORMAT_LLM.invoke(
+            [
+                SystemMessage(content=format_sys),
+                HumanMessage(content=repair_prompt),
+            ]
+        )
+        fixed = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
+        dt_llm = time.perf_counter() - t_llm
+
+        logger.debug(
+            f"LLM FORMAT OK fp={fp_idx} func={func_idx} "
+            f"took {dt_llm:.2f}s (len(raw_output)={len(raw_output)})"
+        )
+
+        if not fixed:
+            raise ValueError("LLM (format) returned empty content")
+
+        return fixed
+
+    except Exception as e:
+        dt_llm = time.perf_counter() - t_llm
+        logger.error(
+            f"LLM FORMAT ERROR fp={fp_idx} func={func_idx} " f"after {dt_llm:.2f}s: {e}"
+        )
+        notes["observations"].append(f"LLM format error: {e}")
+
+        # Return a valid JSON string that marks the function unsafe.
+        fallback_json = json.dumps(
+            {
+                "label": "not_safe",
+                "trigger": "",
+                "why": f"LLM format failed: {str(e)}",
+            }
+        )
+        return fallback_json
+
+
+def call_normalize_llm(
+    raw_json_like: str, fp_idx: int, func_idx: int, notes: Dict[str, Any]
+) -> str:
+    """
+    Third model: normalizes any synonyms in the JSON into the strict label
+    vocabulary {\"safe\", \"not_safe\"}.
+
+    Returns JSON text on success or a fallback JSON string marking it not_safe
+    on failure.
+    """
+    t_llm = time.perf_counter()
+    norm_sys = (
+        "You are a strict JSON normalizer.\n"
+        "You receive JSON (or JSON-like text) describing whether a code change\n"
+        "is malicious or benign.\n\n"
+        "Your ONLY job is to output VALID JSON matching this schema:\n"
+        "{\n"
+        '  "label": "not_safe" | "safe",\n'
+        '  "trigger": "short description of the trigger condition, or empty string if none",\n'
+        '  "why": "1-3 sentences citing the specific + line(s) and the control/data-flow change"\n'
+        "}\n\n"
+        "If the input uses synonyms (e.g., 'malicious', 'benign', 'unsafe', "
+        "'harmless', 'backdoor present', booleans, etc.), you MUST map them\n"
+        "onto 'not_safe' or 'safe' for the label.\n"
+        "Do NOT include code fences, explanations, or any text outside of the JSON."
+    )
+
+    norm_prompt = (
+        "Here is a previous model output which may already be JSON but may use\n"
+        "synonyms or an inconsistent schema.\n"
+        "Rewrite it as JSON in the required schema, using ONLY 'safe' or "
+        "'not_safe' for the label.\n\n"
+        "Previous output:\n"
+        f"{raw_json_like}"
+    )
+
+    try:
+        resp = NORMALIZE_LLM.invoke(
+            [
+                SystemMessage(content=norm_sys),
+                HumanMessage(content=norm_prompt),
+            ]
+        )
+        fixed = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
+        dt_llm = time.perf_counter() - t_llm
+
+        logger.debug(
+            f"LLM NORMALIZE OK fp={fp_idx} func={func_idx} "
+            f"took {dt_llm:.2f}s (len(raw_json_like)={len(raw_json_like)})"
+        )
+
+        if not fixed:
+            raise ValueError("LLM (normalize) returned empty content")
+
+        return fixed
+
+    except Exception as e:
+        dt_llm = time.perf_counter() - t_llm
+        logger.error(
+            f"LLM NORMALIZE ERROR fp={fp_idx} func={func_idx} "
+            f"after {dt_llm:.2f}s: {e}"
+        )
+        notes["observations"].append(f"LLM normalize error: {e}")
+
+        # Fail closed: mark as not_safe if the normalizer fails.
+        fallback_json = json.dumps(
+            {
+                "label": "not_safe",
+                "trigger": "",
+                "why": f"LLM normalize failed: {str(e)}",
+            }
+        )
+        return fallback_json
+
+
+def call_reviewer_llm(
+    diff_text: str,
+    stage1_result: Dict[str, Any],
+    fp_idx: int,
+    func_idx: int,
+    notes: Dict[str, Any],
+) -> str:
+    """
+    Second-stage reviewer: tries to refute 'not_safe' labels.
+    Returns JSON text (verdict/refute) or a fallback JSON on failure.
+    """
+    t_llm = time.perf_counter()
+
+    reviewer_prompt = (
+        "=== FUNCTION UNIFIED DIFF ===\n"
         f"{diff_text}\n\n"
-        "PRIOR (possibly invalid) OUTPUT:\n"
-        f"{raw1}\n"
+        "=== EARLIER ASSESSMENT JSON ===\n"
+        f"{json.dumps(stage1_result, indent=2)}\n"
     )
 
-    raw2, dt2 = _invoke_llm_text(LLM, repair_sys, repair_human)
-    d2 = parse_llm_json(raw2)
-    if isinstance(d2, dict) and _analyst_output_complete(d2):
-        meta["parsed_ok"] = True
-        meta["duration_s"] = dt1 + dt2
-        return raw2, {
-            "label": _coerce_label(d2.get("label")),
-            "trigger": _coerce_str(d2.get("trigger")),
-            "why": _coerce_str(d2.get("why")),
-        }, meta
+    try:
+        resp = REVIEWER_LLM.invoke(
+            [
+                SystemMessage(content=REVIEWER_SYS),
+                HumanMessage(content=ascii_sanitize(reviewer_prompt)),
+            ]
+        )
+        text_local = ascii_sanitize((getattr(resp, "content", "") or "")).strip()
+        dt_llm = time.perf_counter() - t_llm
 
-    # Fail closed
-    meta["parsed_ok"] = False
-    meta["duration_s"] = dt1 + dt2
-    notes["observations"].append("Analyst JSON parse/validation failed twice; fail-closed to not_safe.")
-    fallback = {
-        "label": "not_safe",
-        "trigger": "",
-        "why": "Analyst JSON parse/validation failed; fail-closed to not_safe.",
-    }
-    return (raw2 or raw1), fallback, meta
+        logger.debug(
+            f"LLM REVIEWER OK fp={fp_idx} func={func_idx} "
+            f"took {dt_llm:.2f}s (diff_chars={len(diff_text)})"
+        )
 
+        if not text_local:
+            raise ValueError("LLM (reviewer) returned empty content")
 
-def _reviewer_output_complete(d: Dict[str, Any]) -> bool:
-    verdict = _coerce_str(d.get("verdict")).lower()
-    reason = _coerce_str(d.get("reason"))
-    if verdict not in {"confirm_not_safe", "refute"}:
-        return False
-    if not reason:
-        return False
-    return True
+        return text_local
+
+    except Exception as e:
+        dt_llm = time.perf_counter() - t_llm
+        err_msg = f"LLM REVIEWER failed fp={fp_idx} func={func_idx}: {e}"
+        logger.error(
+            f"LLM REVIEWER ERROR fp={fp_idx} func={func_idx} "
+            f"after {dt_llm:.2f}s: {e}"
+        )
+        notes["observations"].append(err_msg)
+
+        # Fallback: fail-closed and keep the alert.
+        fallback_json = json.dumps(
+            {
+                "verdict": "confirm_not_safe",
+                "reason": f"Reviewer LLM failed: {str(e)}",
+            }
+        )
+        return fallback_json
 
 
 def run_reviewer_review(
@@ -1319,65 +1396,45 @@ def run_reviewer_review(
     fp_idx: int,
     func_idx: int,
     notes: Dict[str, Any],
-) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
-    Returns: (raw_text, reviewer_dict, meta)
-
-    Fail-closed behavior:
-      - If reviewer output is invalid after one retry, keep not_safe (confirm_not_safe).
+    Run the reviewer LLM and normalize its output into:
+      {verdict, reason}
     """
-    meta: Dict[str, Any] = {"attempts": 0, "parsed_ok": False, "repaired": False}
-
-    reviewer_prompt = (
-        "=== FUNCTION UNIFIED DIFF ===\n"
-        f"{unified_diff}\n\n"
-        "=== EARLIER ASSESSMENT JSON ===\n"
-        f"{json.dumps(stage1_result, indent=2)}\n"
+    text = call_reviewer_llm(
+        diff_text=unified_diff,
+        stage1_result=stage1_result,
+        fp_idx=fp_idx,
+        func_idx=func_idx,
+        notes=notes,
     )
 
-    # Attempt 1
-    meta["attempts"] += 1
-    raw1, dt1 = _invoke_llm_text(REVIEWER_LLM, REVIEWER_SYS, reviewer_prompt)
-    d1 = parse_llm_json(raw1)
-    if isinstance(d1, dict) and _reviewer_output_complete(d1):
-        meta["parsed_ok"] = True
-        meta["duration_s"] = dt1
-        return raw1, {"verdict": _coerce_str(d1.get("verdict")).lower(), "reason": _coerce_str(d1.get("reason"))}, meta
+    data = parse_llm_json(text)
+    if not isinstance(data, dict):
+        msg = "Reviewer LLM output was not valid JSON; keeping stage1 not_safe label."
+        notes["observations"].append(msg)
+        return {
+            "verdict": "confirm_not_safe",
+            "reason": msg,
+        }
 
-    # Attempt 2 (repair)
-    meta["attempts"] += 1
-    meta["repaired"] = True
-    notes["observations"].append("Reviewer output invalid/incomplete; retrying once (repair).")
+    verdict_raw = str(data.get("verdict", "confirm_not_safe")).strip().lower()
 
-    repair_sys = (
-        REVIEWER_SYS
-        + "\nConstraints:\n"
-          "- Output must be a single JSON object.\n"
-          "- 'reason' must be non-empty.\n"
-    )
-    repair_human = (
-        "Return JSON only.\n\n"
-        + reviewer_prompt
-        + "\nPRIOR (possibly invalid) OUTPUT:\n"
-        + raw1
-        + "\n"
-    )
-    raw2, dt2 = _invoke_llm_text(REVIEWER_LLM, repair_sys, repair_human)
-    d2 = parse_llm_json(raw2)
-    if isinstance(d2, dict) and _reviewer_output_complete(d2):
-        meta["parsed_ok"] = True
-        meta["duration_s"] = dt1 + dt2
-        return raw2, {"verdict": _coerce_str(d2.get("verdict")).lower(), "reason": _coerce_str(d2.get("reason"))}, meta
+    if verdict_raw in {"confirm_not_safe", "confirm", "not_safe", "unsafe"}:
+        verdict = "confirm_not_safe"
+    else:
+        verdict = "confirm_not_safe"
 
-    # Fail closed: keep the alert
-    meta["parsed_ok"] = False
-    meta["duration_s"] = dt1 + dt2
-    notes["observations"].append("Reviewer JSON parse/validation failed twice; keeping not_safe (fail-closed).")
-    fallback = {
-        "verdict": "confirm_not_safe",
-        "reason": "Reviewer JSON parse/validation failed; keeping not_safe (fail-closed).",
+    reason_raw = data.get("reason", "")
+    try:
+        reason = str(reason_raw).strip()
+    except Exception:
+        reason = ""
+
+    return {
+        "verdict": verdict,
+        "reason": reason,
     }
-    return (raw2 or raw1), fallback, meta
 
 
 # --------------------------------------------------------------------------------------
@@ -1392,40 +1449,37 @@ class TriageState(TypedDict, total=False):
     func_idx: int
     notes: Dict[str, Any]
 
-    # Raw model outputs (optional, for debugging)
-    analyst_raw: Optional[str]
-    reviewer_raw: Optional[str]
+    # Intermediate text stages
+    raw_output: Optional[str]
+    formatted_output: Optional[str]
+    normalized_output: Optional[str]
 
-    # Parsed JSON artifacts
-    stage1_json: Optional[Dict[str, Any]]   # analyst result (strict, fail-closed)
-    reviewer_json: Optional[Dict[str, Any]] # reviewer result (strict, fail-open)
-    final_json: Optional[Dict[str, Any]]    # final decision after reviewer gate
+    # Final parsed JSON
+    final_json: Optional[Dict[str, Any]]
 
-    # Trace
+    # NEW: keep stage1 (pre-reviewer) + reviewer result
+    stage1_json: Optional[Dict[str, Any]]
+    reviewer_json: Optional[Dict[str, Any]]
+
+    # Trace of each node's activity
     trace: List[Dict[str, Any]]
-
-
-def _coerce_str(x: Any) -> str:
-    if x is None:
-        return ""
-    try:
-        return str(x).strip()
-    except Exception:
-        return ""
 
 
 def _build_triage_graph():
     """
-    Two-node LangGraph:
+    Build a tiny LangGraph pipeline:
 
-        START -> analyst -> (END if safe, reviewer if not_safe) -> END
-
-    No formatting/normalization steps.
-    Strict parsing:
-      - Analyst: if JSON invalid or label not exactly {"safe","not_safe"}, fail-closed to not_safe.
-      - Reviewer: if JSON invalid or verdict not exactly "confirm_not_safe", treat as refute.
+        START
+          ↓
+       analyst  (gpt-oss:20b)
+         │
+         ├── valid JSON + correct label -> finalize
+         ├── valid JSON but synonyms    -> normalize
+         └── not JSON                   -> format -> normalize -> finalize
     """
     graph = StateGraph(TriageState)
+
+    # --- Nodes --------------------------------------------------------------
 
     def analyst_node(state: TriageState) -> TriageState:
         diff = state["diff"]
@@ -1433,37 +1487,177 @@ def _build_triage_graph():
         func_idx = state["func_idx"]
         notes = state["notes"]
 
-        raw_text, stage1, meta = call_analyst_llm_json(
-            diff_text=diff,
+        user_content = f"FUNCTION UNIFIED DIFF:\n\n{diff}"
+
+        t0 = time.perf_counter()
+        text = call_analyst_llm(
+            user_content=user_content,
             fp_idx=fp_idx,
             func_idx=func_idx,
             notes=notes,
         )
+        dt = time.perf_counter() - t0
 
         trace = list(state.get("trace", []))
         trace.append(
             {
                 "node": "analyst",
-                "attempts": meta.get("attempts"),
-                "parsed_ok": meta.get("parsed_ok"),
-                "repaired": meta.get("repaired"),
-                "duration_s": meta.get("duration_s"),
+                "duration_s": dt,
                 "input_diff_chars": len(diff),
-                "output_len": len(raw_text or ""),
-                "stage1_label": stage1.get("label"),
-                "stage1_trigger_preview": (stage1.get("trigger") or "")[:200],
-                "stage1_why_preview": (stage1.get("why") or "")[:400],
-                "output_preview": (raw_text or "")[:400],
+                "output_len": len(text),
+                "output_preview": text[:400],
             }
         )
 
-        return {
-            "analyst_raw": raw_text,
-            "stage1_json": stage1,
-            "final_json": dict(stage1),  # provisional until reviewer (if invoked)
-            "trace": trace,
-        }
+        return {"raw_output": text, "trace": trace}
 
+    def format_node(state: TriageState) -> TriageState:
+        raw = state.get("raw_output") or ""
+        fp_idx = state["fp_idx"]
+        func_idx = state["func_idx"]
+        notes = state["notes"]
+
+        t0 = time.perf_counter()
+        fixed = call_format_llm(
+            raw_output=raw,
+            fp_idx=fp_idx,
+            func_idx=func_idx,
+            notes=notes,
+        )
+        dt = time.perf_counter() - t0
+
+        trace = list(state.get("trace", []))
+        trace.append(
+            {
+                "node": "format",
+                "duration_s": dt,
+                "input_len": len(raw),
+                "output_len": len(fixed),
+                "output_preview": fixed[:400],
+            }
+        )
+
+        return {"formatted_output": fixed, "trace": trace}
+
+    def normalize_node(state: TriageState) -> TriageState:
+        # Prefer formatted JSON if we have it, otherwise fall back to raw.
+        text_in = state.get("formatted_output") or state.get("raw_output") or ""
+        fp_idx = state["fp_idx"]
+        func_idx = state["func_idx"]
+        notes = state["notes"]
+
+        t0 = time.perf_counter()
+        normalized = call_normalize_llm(
+            raw_json_like=text_in,
+            fp_idx=fp_idx,
+            func_idx=func_idx,
+            notes=notes,
+        )
+        dt = time.perf_counter() - t0
+
+        trace = list(state.get("trace", []))
+        trace.append(
+            {
+                "node": "normalize",
+                "duration_s": dt,
+                "input_len": len(text_in),
+                "output_len": len(normalized),
+                "output_preview": normalized[:400],
+            }
+        )
+
+        return {"normalized_output": normalized, "trace": trace}
+
+    def finalize_node(state: TriageState) -> TriageState:
+        """
+        Choose the best candidate text, parse JSON, and apply a final
+        Python-side normalization + fail-closed semantics.
+        """
+        notes = state["notes"]
+        text = (
+            state.get("normalized_output")
+            or state.get("formatted_output")
+            or state.get("raw_output")
+            or ""
+        )
+
+        data = parse_llm_json(text)
+        from_json = bool(isinstance(data, dict))
+
+        if not isinstance(data, dict):
+            # Hard fail-closed: if we still can't parse JSON at this point,
+            # mark as not_safe.
+            msg = (
+                "Final JSON parse failed even after formatting/normalization; "
+                "marking as not_safe."
+            )
+            notes["observations"].append(msg)
+            final = {
+                "label": "not_safe",
+                "trigger": "",
+                "why": msg,
+            }
+        else:
+            # --- Label normalization (Python fallback) ----------------------
+            label_raw = str(data.get("label", "")).strip().lower().replace("-", "_")
+
+            # Map common synonyms onto the strict vocabulary.
+            if label_raw in {
+                "not_safe",
+                "unsafe",
+                "malicious",
+                "evil",
+                "suspicious",
+                "backdoor",
+                "backdoored",
+                "logic_bomb",
+                "logicbomb",
+                "vulnerable",
+            }:
+                label = "not_safe"
+            elif label_raw in {
+                "safe",
+                "benign",
+                "harmless",
+                "clean",
+                "ok",
+                "no_backdoor",
+                "no_issue",
+                "no_issues",
+                "non_malicious",
+            }:
+                label = "safe"
+            elif isinstance(data.get("label"), bool):
+                label = "not_safe" if data["label"] else "safe"
+            else:
+                # Fail-closed: unrecognized label -> not_safe.
+                label = "not_safe"
+
+            why = (data.get("why") or "").strip() or "model provided no reason"
+
+            raw_trigger = data.get("trigger", "")
+            if raw_trigger is None:
+                trigger = ""
+            else:
+                try:
+                    trigger = str(raw_trigger).strip()
+                except Exception:
+                    trigger = ""
+
+            final = {"label": label, "trigger": trigger, "why": why}
+
+        trace = list(state.get("trace", []))
+        trace.append(
+            {
+                "node": "finalize",
+                "from_valid_json": from_json,
+                "final_label": final["label"],
+                "final_trigger_preview": (final.get("trigger") or "")[:200],
+                "final_why_preview": final["why"][:400],
+            }
+        )
+
+        return {"final_json": final, "stage1_json": final, "trace": trace}
 
     def reviewer_node(state: TriageState) -> TriageState:
         diff = state["diff"]
@@ -1472,12 +1666,9 @@ def _build_triage_graph():
         notes = state["notes"]
 
         stage1 = state.get("stage1_json") or state.get("final_json") or {}
-        stage1_label = _coerce_label(stage1.get("label"))
 
-        if stage1_label != "not_safe":
-            return {}
-
-        reviewer_raw, reviewer_json, meta = run_reviewer_review(
+        t0 = time.perf_counter()
+        reviewer = run_reviewer_review(
             unified_diff=diff,
             stage1_result={
                 "label": stage1.get("label", ""),
@@ -1488,69 +1679,127 @@ def _build_triage_graph():
             func_idx=func_idx,
             notes=notes,
         )
+        dt = time.perf_counter() - t0
 
-        verdict = _coerce_str(reviewer_json.get("verdict")).lower()
-        reason = _coerce_str(reviewer_json.get("reason"))
+        verdict_s = reviewer.get("verdict", "refute")
 
-        # Strict fail-closed gate: only explicit 'refute' makes it safe.
-        if verdict == "refute":
-            final = {
-                "label": "safe",
-                "trigger": "",
-                "why": reason or "Reviewer refuted not_safe; treating as safe.",
-            }
-            reviewer_json_norm = {"verdict": "refute", "reason": reason}
-        else:
-            final = {
-                "label": "not_safe",
-                "trigger": _coerce_str(stage1.get("trigger")),
-                "why": (
-                    f"{_coerce_str(stage1.get('why'))} | Reviewer: {reason}"
-                    if reason
-                    else (_coerce_str(stage1.get("why")) or "Reviewer confirmed not_safe.")
-                ),
-            }
-            reviewer_json_norm = {"verdict": "confirm_not_safe", "reason": reason}
+        # Normalize stage1 label
+        stage1_label_raw = (
+            str(stage1.get("label", "safe")).strip().lower().replace("-", "_")
+        )
+        stage1_label = "not_safe" if stage1_label_raw == "not_safe" else "safe"
+
+        final_label = stage1_label
+        final_why = (stage1.get("why") or "").strip()
+        trigger = (stage1.get("trigger") or "").strip()
+
+        if stage1_label == "not_safe":
+            if verdict_s == "confirm_not_safe":
+                reason_extra = (reviewer.get("reason") or "").strip()
+                if reason_extra:
+                    final_why = (
+                        f"{final_why} | Reviewer: {reason_extra}"
+                        if final_why
+                        else f"Reviewer: {reason_extra}"
+                    )
+            else:
+                final_label = "safe"
+                final_why = (
+                    reviewer.get("reason")
+                    or "Second-stage reviewer did not confirm the backdoor; treating as safe."
+                )
+
+        final = {
+            "label": final_label,
+            "trigger": trigger,
+            "why": final_why,
+        }
 
         trace = list(state.get("trace", []))
         trace.append(
             {
                 "node": "reviewer",
-                "attempts": meta.get("attempts"),
-                "parsed_ok": meta.get("parsed_ok"),
-                "repaired": meta.get("repaired"),
-                "duration_s": meta.get("duration_s"),
-                "verdict": reviewer_json_norm["verdict"],
-                "reason_preview": (reviewer_json_norm.get("reason") or "")[:400],
-                "output_preview": (reviewer_raw or "")[:400],
+                "duration_s": dt,
+                "verdict": verdict_s,
+                "reason_preview": (reviewer.get("reason") or "")[:400],
             }
         )
 
         return {
-            "reviewer_raw": reviewer_raw,
-            "reviewer_json": reviewer_json_norm,
             "final_json": final,
+            "stage1_json": stage1,
+            "reviewer_json": reviewer,
             "trace": trace,
         }
 
+    # --- Routing / condition logic -----------------------------------------
 
     def route_after_analyst(state: TriageState) -> str:
-        stage1 = state.get("stage1_json") or {}
-        label = _coerce_str(stage1.get("label")).lower()
-        return "reviewer" if label == "not_safe" else "end"
+        """
+        Decide where to go after the analyzer LLM:
+
+            - If output isn't JSON -> 'format'
+            - If JSON and label in {safe, not_safe} -> 'finalize'
+            - If JSON but synonyms / weird label -> 'normalize'
+        """
+        raw = state.get("raw_output") or ""
+        data = parse_llm_json(raw)
+
+        if not isinstance(data, dict):
+            return "format"  # not JSON, go to formatter
+
+        label_raw = str(data.get("label", "")).strip().lower().replace("-", "_")
+        if label_raw in ("safe", "not_safe"):
+            return "finalize"
+
+        # JSON but label is wrong / synonym -> use normalizer
+        return "normalize"
+
+    def route_after_finalize(state: TriageState) -> str:
+        final = state.get("final_json") or {}
+        label_raw = (
+            str(final.get("label", "not_safe")).strip().lower().replace("-", "_")
+        )
+        if label_raw == "not_safe":
+            return "needs_reviewer"
+        return "end"
+
+    # --- Wire up the graph -------------------------------------------------
 
     graph.add_node("analyst", analyst_node)
+    graph.add_node("format", format_node)
+    graph.add_node("normalize", normalize_node)
+    graph.add_node("finalize", finalize_node)
     graph.add_node("reviewer", reviewer_node)
 
     graph.add_edge(START, "analyst")
     graph.add_conditional_edges(
         "analyst",
         route_after_analyst,
-        {"reviewer": "reviewer", "end": END},
+        {
+            "format": "format",
+            "normalize": "normalize",
+            "finalize": "finalize",
+        },
     )
+    graph.add_edge("format", "normalize")
+    graph.add_edge("normalize", "finalize")
+
+    # NEW: finalize -> (reviewer | END)
+    graph.add_conditional_edges(
+        "finalize",
+        route_after_finalize,
+        {
+            "needs_reviewer": "reviewer",
+            "end": END,
+        },
+    )
+
+    # Reviewer always ends
     graph.add_edge("reviewer", END)
 
     return graph.compile()
+
 
 def show_and_save_triage_graph_png(path: str = "triage_graph.png") -> None:
     # TRIAGE_GRAPH is the compiled app from _build_triage_graph()
@@ -1814,29 +2063,6 @@ _ASCII_MAP = {
 def ascii_sanitize(s: str) -> str:
     return unicodedata.normalize("NFKC", s).translate(_ASCII_MAP)
 
-_CODE_FENCE_START_RE = re.compile(r"^\s*```[a-zA-Z0-9_-]*\s*\n?")
-_CODE_FENCE_END_RE = re.compile(r"\n?\s*```\s*$")
-
-def strip_code_fences(s: str) -> str:
-    s = (s or "").strip()
-    if s.startswith("```"):
-        s = _CODE_FENCE_START_RE.sub("", s)
-        s = _CODE_FENCE_END_RE.sub("", s)
-    return s.strip()
-
-def parse_llm_json(text: str) -> Optional[dict]:
-    """Parse model output which should be JSON.
-
-    Strategy: strip code fences -> json.loads -> balanced-object extraction -> None.
-    """
-    if not text:
-        return None
-    text = strip_code_fences(text)
-    try:
-        return json.loads(text)
-    except Exception:
-        return _extract_first_balanced_json_object(text)
-
 
 def parse_llm_json(text: str) -> Optional[dict]:
     """Parse model output which *should* be JSON but sometimes isn't.
@@ -1883,17 +2109,11 @@ def load_ground_truth_file(path: Optional[str]) -> Dict[str, Any]:
 
 def get_ground_truth_for_target(gt: Dict[str, Any], target_name: str) -> Optional[Dict[str, Any]]:
     """
-    New convention:
-      { "samples": { "<target_name>": { "backdoor": { "targets": [ {target_addr, target_oid?}, ... ]}}}}
-
-    Returns a normalized object for fast membership checks:
-      {
-        "targets": [{"target_addr_dec": str, "target_oid": Optional[str]}, ...],
-        "addr_set": set([addr_dec, ...]),
-        "addr_oid_set": set([(addr_dec, oid_norm), ...])
-      }
+    Returns a normalized dict:
+      {"target_addr_dec": "<decimal str>", "target_oid": Optional[str]}
+    or None if no ground truth for this target_name.
     """
-    if not isinstance(gt, dict) or not target_name:
+    if not gt or not target_name:
         return None
 
     samples = gt.get("samples")
@@ -1908,57 +2128,28 @@ def get_ground_truth_for_target(gt: Dict[str, Any], target_name: str) -> Optiona
     if not isinstance(backdoor, dict):
         return None
 
-    targets_raw = backdoor.get("targets")
-    if not isinstance(targets_raw, list) or not targets_raw:
+    addr = backdoor.get("target_addr")
+    if addr is None:
         return None
 
-    targets: List[Dict[str, Any]] = []
-    addr_set: Set[str] = set()
-    addr_oid_set: Set[Tuple[str, Optional[str]]] = set()
+    target_addr_dec = ensure_decimal_str(addr)
 
-    for t in targets_raw:
-        if not isinstance(t, dict):
-            continue
-        addr = t.get("target_addr")
-        if addr is None:
-            continue
+    oid = backdoor.get("target_oid", None)
+    target_oid = str(oid) if oid is not None else None
 
-        addr_dec = ensure_decimal_str(addr)
-
-        oid = t.get("target_oid", None)
-        oid_norm = str(oid) if oid is not None else None
-
-        targets.append({"target_addr_dec": addr_dec, "target_oid": oid_norm})
-        addr_set.add(addr_dec)
-        addr_oid_set.add((addr_dec, oid_norm))
-
-    if not targets:
-        return None
-
-    return {"targets": targets, "addr_set": addr_set, "addr_oid_set": addr_oid_set}
+    return {"target_addr_dec": target_addr_dec, "target_oid": target_oid}
 
 
-def gt_row_matches_any(row: Dict[str, Any], gt_norm: Dict[str, Any]) -> bool:
+def gt_row_matches(
+    row: Dict[str, Any],
+    gt_target_addr: str,
+    gt_target_oid: Optional[str],
+) -> bool:
     """
-    True iff this per-function row matches ANY GT target function for the sample.
-    Requires row contains: target_addr, target_oid (target_oid may be None).
+    row is a per-function record containing at least: target_addr, target_oid
     """
-    if not gt_norm:
+    if ensure_decimal_str(row.get("target_addr")) != gt_target_addr:
         return False
-
-    row_addr = ensure_decimal_str(row.get("target_addr"))
-    if row_addr not in gt_norm["addr_set"]:
+    if gt_target_oid and str(row.get("target_oid")) != str(gt_target_oid):
         return False
-
-    # If you don't store OIDs in GT, this becomes an addr-only match.
-    row_oid = row.get("target_oid", None)
-    row_oid_norm = str(row_oid) if row_oid is not None else None
-
-    # exact match if present
-    if (row_addr, row_oid_norm) in gt_norm["addr_oid_set"]:
-        return True
-
-    if (row_addr, None) in gt_norm["addr_oid_set"]:
-        return True
-
-    return False
+    return True

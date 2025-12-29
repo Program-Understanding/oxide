@@ -141,6 +141,7 @@ def compare_all_collections(args: Any, opts: Dict[str, Any]) -> Any:
     rows = []
 
     for idx, (target, baseline) in enumerate(pairs, 1):
+        print(f"{api.get_colname_from_oid(target)} -> {api.get_colname_from_oid(baseline)}")
         res = compare_collections([target, baseline], opts)
 
         # extract totals
@@ -465,3 +466,13 @@ def read_series_file(path: str, sep: str = ",") -> List[Tuple[str, str]]:
             pairs.append((cid_left, cid_right))
 
     return pairs
+
+def retrieve_function_instructions(file, func):
+    """
+    Retrieve function instructions for a specific function by its name.
+    """
+    function_data = api.retrieve('function_representations', file, {'lift_addrs': False})
+    if func in function_data:
+        return function_data[func].get('fun_instructions')
+    
+    return None
