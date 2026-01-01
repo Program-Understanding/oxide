@@ -924,7 +924,6 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
         "hit_final": hit_final,                # any(final_flagged ∩ GT)
         "hit_stage1": hit_stage1,              # any(stage1_not_safe ∩ GT)
 
-        # Counts (what you asked for)
         "tp_final": tp_final,
         "fp_final": fp_final,                  # <-- number of FP flagged (final)
         "tp_stage1": tp_stage1,

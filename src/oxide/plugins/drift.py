@@ -300,13 +300,19 @@ def classify_function_diffs(
     matched = []
     modified = []
 
+    funcs_t = api.get_field("ghidra_disasm", t_oid, "functions") or {}
+    funcs_b = api.get_field("ghidra_disasm", b_oid, "functions") or {}
+
+    name_t = {off: meta.get("name") for off, meta in funcs_t.items()}
+    name_b = {off: meta.get("name") for off, meta in funcs_b.items()}
+
     p = progress.Progress(len(func_matches.items()))
     for (addr_t, addr_b), info in func_matches.items():
 
         sim = info["similarity"]
         meta = {
-            "name_target_func": get_func_name(t_oid, addr_t),
-            "name_baseline_func": get_func_name(b_oid, addr_b),
+            "name_target_func": name_t.get(addr_t),
+            "name_baseline_func": name_b.get(addr_b),
             "bindiff_similarity": sim,
             "bindiff_ranking": rank_map[(addr_t, addr_b)],
         }
@@ -424,16 +430,6 @@ def aggregate_function_stats(
         "total_added": total_added,
         "total_removed": total_removed,
     }
-
-
-def get_func_name(oid, offset):
-    functions = api.get_field("ghidra_disasm", oid, "functions")
-    if functions:
-        for func in functions:
-            if func == offset:
-                return functions[func]["name"]
-    return None
-
 
 def read_series_file(path: str, sep: str = ",") -> List[Tuple[str, str]]:
     """
