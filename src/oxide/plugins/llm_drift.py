@@ -179,7 +179,7 @@ def llm_filter(args: List[str], opts: Dict[str, Any]) -> None:
             b_name = str(baseline)
 
         logger.info(f"[{idx}/{total_pairs}] {t_name} → {b_name}")
-        pair_dir_name = f"cmp_{idx:03d}__{t_name}_to_{b_name}"
+        pair_dir_name = f"{t_name}_to_{b_name}"
         pair_dir = os.path.join(outdir, pair_dir_name)
 
         res = run_one_comparison(target, baseline, pair_dir, opts)
@@ -238,309 +238,6 @@ def llm_filter(args: List[str], opts: Dict[str, Any]) -> None:
         {"functions": per_function_rows},
     )
     return series_summary
-
-
-def test_diff(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Evaluate the function_decomp_diff module with normalize set to True/False.
-
-    For each modified function reported by DRIFT, we:
-      - request a unified diff without normalization
-      - request a unified diff with normalization
-      - measure the size (chars/lines) of each
-      - record per-function and aggregate reduction statistics
-
-    Expected calling patterns:
-      • test_diff([target, baseline], opts)
-      • test_diff([], {"entries": path, ...}) with a plaintext file of CIDs/names
-    """
-    # --- determine pairs (target→baseline) ---
-    pairs: List[Tuple[str, str]]
-    series_file: Optional[str] = opts.get("entries")
-
-    if series_file:
-        pairs = read_series_file(series_file)
-        if len(pairs) < 2:
-            raise ValueError(
-                "entries file must list at least two versions (one per line)"
-            )
-    elif len(args) == 2:
-        pairs = [(args[0], args[1])]
-        logger.info(f"[test_diff] Single comparison: {args[0]} → {args[1]}")
-    else:
-        raise ValueError(
-            "test_diff: pass either [target, baseline] or --entries with at least two lines."
-        )
-
-    outdir: str = opts.get("outdir", "out_test_diff")
-    os.makedirs(outdir, exist_ok=True)
-
-    filter_val = opts.get("filter", None)
-    annotate = bool(opts.get("annotate", False))
-
-    per_function_rows: List[Dict[str, Any]] = []
-    comparison_rows: List[Dict[str, Any]] = []
-
-    total_pairs = len(pairs)
-    logger.info(f"[test_diff] Starting {total_pairs} comparison(s)…")
-
-    for idx, (target, baseline) in enumerate(pairs, 1):
-        try:
-            t_name = oxide.api.get_colname_from_oid(target)
-        except Exception:
-            t_name = str(target)
-        try:
-            b_name = oxide.api.get_colname_from_oid(baseline)
-        except Exception:
-            b_name = str(baseline)
-
-        logger.info(f"[test_diff] [{idx}/{total_pairs}] {t_name} → {b_name}")
-
-        pair_dir_name = f"testdiff_{idx:03d}__{t_name}_to_{b_name}"
-        pair_dir = os.path.join(outdir, pair_dir_name)
-        os.makedirs(pair_dir, exist_ok=True)
-
-        t0 = time.perf_counter()
-        drift_json = run_drift(target, baseline, filter_val) or {}
-        file_pairs: List[Dict[str, Any]] = drift_json.get("file_pairs", []) or []
-
-        if not file_pairs:
-            logger.info(
-                f"[test_diff] [{idx}] No file pairs / modifications reported by drift."
-            )
-
-        pair_total_plain_chars = 0
-        pair_total_norm_chars = 0
-        pair_total_plain_lines = 0
-        pair_total_norm_lines = 0
-        pair_func_count = 0
-
-        for fp_idx, fp in enumerate(file_pairs, 1):
-            baseline_oid = fp.get("baseline_oid")
-            target_oid = fp.get("target_oid")
-            modified = fp.get("modified_functions", []) or []
-
-            logger.info(
-                f"[test_diff]   [fp {fp_idx}/{len(file_pairs)}] "
-                f"modified={len(modified)}"
-            )
-
-            for func_idx, m in enumerate(modified, 1):
-                baddr = ensure_decimal_str(m.get("baseline_func_addr"))
-                taddr = ensure_decimal_str(m.get("target_func_addr"))
-
-                error_msgs: List[str] = []
-
-                # --- plain (unnormalized) diff ---
-                plain_unified = ""
-                try:
-                    raw_plain = oxide.retrieve(
-                        "function_decomp_diff",
-                        [target_oid, baseline_oid],
-                        {
-                            "target": taddr,
-                            "baseline": baddr,
-                            "annotate": annotate,
-                            "normalize": False,
-                        },
-                    )
-                    plain_text = extract_content(raw_plain) or ""
-                    parsed_plain = coerce_json_like(plain_text)
-                    if isinstance(parsed_plain, dict) and "unified" in parsed_plain:
-                        plain_unified = parsed_plain.get("unified") or ""
-                    else:
-                        plain_unified = plain_text
-                except Exception as e:
-                    msg = f"plain diff error: {e}"
-                    logger.error(
-                        f"[test_diff] plain diff failed "
-                        f"(pair={idx}, fp={fp_idx}, func={func_idx}): {e}"
-                    )
-                    error_msgs.append(msg)
-
-                # --- normalized diff ---
-                norm_unified = ""
-                try:
-                    raw_norm = oxide.retrieve(
-                        "function_decomp_diff",
-                        [target_oid, baseline_oid],
-                        {
-                            "target": taddr,
-                            "baseline": baddr,
-                            "annotate": annotate,
-                            "normalize": True,
-                        },
-                    )
-                    norm_text = extract_content(raw_norm) or ""
-                    parsed_norm = coerce_json_like(norm_text)
-                    if isinstance(parsed_norm, dict) and "unified" in parsed_norm:
-                        norm_unified = parsed_norm.get("unified") or ""
-                    else:
-                        norm_unified = norm_text
-                except Exception as e:
-                    msg = f"normalized diff error: {e}"
-                    logger.error(
-                        f"[test_diff] normalized diff failed "
-                        f"(pair={idx}, fp={fp_idx}, func={func_idx}): {e}"
-                    )
-                    error_msgs.append(msg)
-
-                # If both failed, skip this function.
-                if not plain_unified and not norm_unified:
-                    per_function_rows.append(
-                        {
-                            "comparison_index": idx,
-                            "filepair_index": fp_idx,
-                            "function_index": func_idx,
-                            "target": target,
-                            "baseline": baseline,
-                            "target_oid": target_oid,
-                            "baseline_oid": baseline_oid,
-                            "target_addr": taddr,
-                            "baseline_addr": baddr,
-                            "error": "; ".join(error_msgs) if error_msgs else None,
-                        }
-                    )
-                    continue
-
-                plain_chars = len(plain_unified)
-                norm_chars = len(norm_unified)
-
-                plain_lines = plain_unified.count("\n") + (1 if plain_unified else 0)
-                norm_lines = norm_unified.count("\n") + (1 if norm_unified else 0)
-
-                pair_total_plain_chars += plain_chars
-                pair_total_norm_chars += norm_chars
-                pair_total_plain_lines += plain_lines
-                pair_total_norm_lines += norm_lines
-                pair_func_count += 1
-
-                char_delta = plain_chars - norm_chars
-                char_fraction = (norm_chars / plain_chars) if plain_chars else None
-
-                line_delta = plain_lines - norm_lines
-                line_fraction = (norm_lines / plain_lines) if plain_lines else None
-
-                per_function_rows.append(
-                    {
-                        "comparison_index": idx,
-                        "filepair_index": fp_idx,
-                        "function_index": func_idx,
-                        "target": target,
-                        "baseline": baseline,
-                        "target_oid": target_oid,
-                        "baseline_oid": baseline_oid,
-                        "target_addr": taddr,
-                        "baseline_addr": baddr,
-                        "plain_chars": plain_chars,
-                        "normalized_chars": norm_chars,
-                        "char_delta": char_delta,
-                        "char_fraction": char_fraction,
-                        "plain_lines": plain_lines,
-                        "normalized_lines": norm_lines,
-                        "line_delta": line_delta,
-                        "line_fraction": line_fraction,
-                        "error": "; ".join(error_msgs) if error_msgs else None,
-                    }
-                )
-
-        dt = time.perf_counter() - t0
-
-        comp_summary = {
-            "index": idx,
-            "target": target,
-            "baseline": baseline,
-            "target_name": t_name,
-            "baseline_name": b_name,
-            "n_file_pairs": len(file_pairs),
-            "n_modified_functions": pair_func_count,
-            "total_plain_chars": pair_total_plain_chars,
-            "total_normalized_chars": pair_total_norm_chars,
-            "total_plain_lines": pair_total_plain_lines,
-            "total_normalized_lines": pair_total_norm_lines,
-            "avg_plain_chars": (
-                pair_total_plain_chars / pair_func_count if pair_func_count else 0.0
-            ),
-            "avg_normalized_chars": (
-                pair_total_norm_chars / pair_func_count if pair_func_count else 0.0
-            ),
-            "avg_plain_lines": (
-                pair_total_plain_lines / pair_func_count if pair_func_count else 0.0
-            ),
-            "avg_normalized_lines": (
-                pair_total_norm_lines / pair_func_count if pair_func_count else 0.0
-            ),
-            "overall_char_fraction": (
-                (pair_total_norm_chars / pair_total_plain_chars)
-                if pair_total_plain_chars
-                else None
-            ),
-            "overall_line_fraction": (
-                (pair_total_norm_lines / pair_total_plain_lines)
-                if pair_total_plain_lines
-                else None
-            ),
-            "elapsed_s": dt,
-        }
-
-        comparison_rows.append(comp_summary)
-        write_json(os.path.join(pair_dir, "test_diff_pair_summary.json"), comp_summary)
-
-        logger.info(
-            f"[test_diff] [{idx}] functions={pair_func_count}, "
-            f"chars: {pair_total_plain_chars}→{pair_total_norm_chars}, "
-            f"lines: {pair_total_plain_lines}→{pair_total_norm_lines}, "
-            f"time={dt:.2f}s"
-        )
-
-    # ---- global summary ----
-    total_plain_chars = sum(c["total_plain_chars"] for c in comparison_rows)
-    total_norm_chars = sum(c["total_normalized_chars"] for c in comparison_rows)
-    total_plain_lines = sum(c["total_plain_lines"] for c in comparison_rows)
-    total_norm_lines = sum(c["total_normalized_lines"] for c in comparison_rows)
-    total_funcs = sum(c["n_modified_functions"] for c in comparison_rows)
-
-    global_summary: Dict[str, Any] = {
-        "total_pairs": len(comparison_rows),
-        "total_functions": total_funcs,
-        "total_plain_chars": total_plain_chars,
-        "total_normalized_chars": total_norm_chars,
-        "total_plain_lines": total_plain_lines,
-        "total_normalized_lines": total_norm_lines,
-        "overall_char_fraction": (
-            (total_norm_chars / total_plain_chars) if total_plain_chars else None
-        ),
-        "overall_line_fraction": (
-            (total_norm_lines / total_plain_lines) if total_plain_lines else None
-        ),
-        "comparisons": comparison_rows,
-    }
-
-    write_json(os.path.join(outdir, "test_diff_summary.json"), global_summary)
-    write_json(
-        os.path.join(outdir, "test_diff_per_function.json"),
-        {"functions": per_function_rows},
-    )
-
-    if total_plain_chars:
-        logger.info(
-            "[test_diff] DONE: %d functions, chars %d→%d (%.2f%%), lines %d→%d (%.2f%%)",
-            total_funcs,
-            total_plain_chars,
-            total_norm_chars,
-            100.0 * (total_norm_chars / total_plain_chars),
-            total_plain_lines,
-            total_norm_lines,
-            (
-                100.0 * (total_norm_lines / total_plain_lines)
-                if total_plain_lines
-                else 0.0
-            ),
-        )
-    else:
-        logger.info("[test_diff] DONE: no modified functions found.")
-
-    return global_summary
 
 
 def import_rosarum_samples(args: List[str], opts: Dict[str, Any]) -> None:
@@ -632,7 +329,7 @@ def import_rosarum_samples(args: List[str], opts: Dict[str, Any]) -> None:
 
 
 # keep plugin export shape
-exports = [llm_filter, import_rosarum_samples, test_diff]
+exports = [llm_filter, import_rosarum_samples]
 
 # --------------------------------------------------------------------------------------
 # Core pipeline
@@ -642,10 +339,6 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     """
     Run DRIFT for one target→baseline pair, triage all filtered modified functions,
     and compute ground-truth Hit metrics if a ground truth map is present in opts.
-
-    Expects (optional):
-      opts["_ground_truth"] loaded from your ground_truth.json
-      helpers: get_ground_truth_for_target(gt, target_name) and gt_row_matches(row, addr_dec, oid)
     """
     os.makedirs(outdir, exist_ok=True)
 
@@ -654,13 +347,16 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
         f"→ Invoking drift (target='{target}', baseline='{baseline}', filter='{filter_val}')"
     )
 
-    # Timer for this comparison
-    t0 = time.perf_counter()
+    # Timer for this comparison (total)
+    t_total0 = time.perf_counter()
 
     # -------------------------------------------------------------------------
-    # 1) DRIFT
+    # 1) DRIFT (timed)
     # -------------------------------------------------------------------------
+    t_drift0 = time.perf_counter()
     drift_res = run_drift(target, baseline, filter_val)
+    drift_elapsed_s = time.perf_counter() - t_drift0
+
     drift_json = coerce_json_like(getattr(drift_res, "content", drift_res)) or {}
     write_json(os.path.join(outdir, "drift_raw.json"), dump_json_safe(drift_json))
 
@@ -707,6 +403,14 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     analyst_identified = 0
     n_reviewer_refuted = 0
     n_reviewer_confirmed = 0
+
+    # Timing breakdown accumulators (filtered functions only)
+    sum_diff_elapsed_s = 0.0
+    sum_stage1_elapsed_s = 0.0
+    sum_reviewer_elapsed_s = 0.0
+    sum_llm_elapsed_s = 0.0
+    sum_stage1_attempts = 0
+    sum_reviewer_attempts = 0
 
     if not file_pairs:
         report_lines.append("No file pairs or modifications were reported by drift.")
@@ -768,6 +472,14 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
                 opts=opts,
             )
 
+            # --- timing accumulation (requires analyze_function_pair to return these) ---
+            sum_diff_elapsed_s += float(res.get("diff_elapsed_s") or 0.0)
+            sum_stage1_elapsed_s += float(res.get("stage1_elapsed_s") or 0.0)
+            sum_reviewer_elapsed_s += float(res.get("reviewer_elapsed_s") or 0.0)
+            sum_llm_elapsed_s += float(res.get("llm_elapsed_s") or 0.0)
+            sum_stage1_attempts += int(res.get("stage1_attempts") or 0)
+            sum_reviewer_attempts += int(res.get("reviewer_attempts") or 0)
+
             # Record per-function row for evaluation and debugging
             per_function_results.append(
                 {
@@ -777,11 +489,23 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
                     "target_oid": target_oid,
                     "baseline_addr": baddr,
                     "target_addr": taddr,
+
                     "final_label": res.get("label"),
                     "flagged_final": bool(res.get("flagged")),
                     "stage1_label": res.get("stage1_label"),
                     "refuted_by_reviewer": bool(res.get("refuted_by_reviewer")),
                     "confirmed_by_reviewer": bool(res.get("confirmed_by_reviewer")),
+
+                    # OPTIONAL BUT RECOMMENDED: per-function timings
+                    "diff_elapsed_s": float(res.get("diff_elapsed_s") or 0.0),
+                    "stage1_elapsed_s": float(res.get("stage1_elapsed_s") or 0.0),
+                    "reviewer_elapsed_s": float(res.get("reviewer_elapsed_s") or 0.0),
+                    "llm_elapsed_s": float(res.get("llm_elapsed_s") or 0.0),
+                    "stage1_attempts": int(res.get("stage1_attempts") or 0),
+                    "reviewer_attempts": int(res.get("reviewer_attempts") or 0),
+
+                    "triage_ran": bool(res.get("triage_ran")),
+                    "failure_reason": res.get("failure_reason"),
                 }
             )
 
@@ -819,7 +543,17 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     # Treat excluded-by-filter functions as safe for "overall safe"
     overall_safe = n_safe_filtered + (total_modified_all - total_modified_filtered)
 
-    elapsed_s = time.perf_counter() - t0
+    # Total elapsed (includes drift + triage + I/O)
+    elapsed_s = time.perf_counter() - t_total0
+
+    # Derived breakdown: incremental triage time excluding DRIFT
+    triage_elapsed_s_excluding_drift = max(0.0, elapsed_s - drift_elapsed_s)
+
+    # Optional: "other overhead" not captured in diff + llm (parsing/writes/bookkeeping)
+    other_elapsed_s = max(
+        0.0,
+        triage_elapsed_s_excluding_drift - (sum_diff_elapsed_s + sum_llm_elapsed_s),
+    )
 
     # -------------------------------------------------------------------------
     # 5) Ground truth computation (optional, multi-function)
@@ -845,10 +579,7 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
         gt_compromised_count = len(gt_targets)
 
         # Whether any GT function appears in the filtered set we actually analyzed
-        gt_in_filtered = any(
-            gt_row_matches_any(r, gt_norm)
-            for r in per_function_results
-        )
+        gt_in_filtered = any(gt_row_matches_any(r, gt_norm) for r in per_function_results)
 
         # Hit: at least one compromised function is identified
         hit_final = any(
@@ -890,7 +621,7 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     fp_rate_stage1 = None
 
     if gt_norm and total_modified_all:
-        # multi-function FP rates (denominator matches your paper: all modified functions)
+        # multi-function FP rates
         fp_rate_final = float(fp_final) / float(total_modified_all) if fp_final is not None else None
         fp_rate_stage1 = float(fp_stage1) / float(total_modified_all) if fp_stage1 is not None else None
 
@@ -912,20 +643,30 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
         "reviewer_refuted": n_reviewer_refuted,
         "reviewer_confirmed": n_reviewer_confirmed,
 
-        # Timing
-        "elapsed_s": elapsed_s,
+        # ---- Timing (new) ----
+        "elapsed_s": elapsed_s,                               # total wall time
+        "drift_elapsed_s": drift_elapsed_s,                   # DRIFT only
+        "triage_elapsed_s_excluding_drift": triage_elapsed_s_excluding_drift,
 
-        # Ground truth summary (if present)
+        # Aggregated triage-stage components (filtered functions only)
+        "diff_elapsed_s": sum_diff_elapsed_s,                 # function_decomp_diff retrieve time
+        "stage1_elapsed_s": sum_stage1_elapsed_s,             # analyst LLM time
+        "reviewer_elapsed_s": sum_reviewer_elapsed_s,         # reviewer LLM time
+        "llm_elapsed_s": sum_llm_elapsed_s,                   # stage1 + reviewer
+        "other_elapsed_s": other_elapsed_s,                   # parsing/writes/etc.
+        "stage1_attempts": sum_stage1_attempts,
+        "reviewer_attempts": sum_reviewer_attempts,
+
+        # ---- GT summary ----
         "gt_compromised_count": gt_compromised_count,
-        "gt_targets": gt_targets,              # list of {"target_addr_dec", "target_oid"}
+        "gt_targets": gt_targets,
         "gt_in_filtered": gt_in_filtered,
 
-        # Hit definitions (multi-function)
-        "hit_final": hit_final,                # any(final_flagged ∩ GT)
-        "hit_stage1": hit_stage1,              # any(stage1_not_safe ∩ GT)
+        "hit_final": hit_final,
+        "hit_stage1": hit_stage1,
 
         "tp_final": tp_final,
-        "fp_final": fp_final,                  # <-- number of FP flagged (final)
+        "fp_final": fp_final,
         "tp_stage1": tp_stage1,
         "fp_stage1": fp_stage1,
 
@@ -946,7 +687,8 @@ def run_one_comparison(target: str, baseline: str, outdir: str, opts) -> Dict[st
     logger.info(
         f"✓ Done {t_name} → {b_name}: "
         f"modified_all={total_modified_all}, filtered={total_modified_filtered}, "
-        f"identified={identified}, hit_final={hit_final}, elapsed={elapsed_s:.2f}s"
+        f"identified={identified}, hit_final={hit_final}, elapsed={elapsed_s:.2f}s "
+        f"(drift={drift_elapsed_s:.2f}s, llm={sum_llm_elapsed_s:.2f}s)"
     )
 
     return {
@@ -980,40 +722,78 @@ def analyze_function_pair(
     notes_path = os.path.join(func_dir, "notes.json")
     notes: Dict[str, Any] = {"observations": [], "artifacts": []}
 
-    diff_raw = oxide.retrieve(
+    # Track whether we actually ran the LLM triage graph, and why we didn't (if not).
+    triage_ran = False
+    failure_reason: Optional[str] = None
+
+    diff_t0 = time.perf_counter()
+    diff = oxide.retrieve(
         "function_decomp_diff",
         [target_oid, baseline_oid],
-        {"target": taddr, "baseline": baddr, "raw": True},
+        {"target": taddr, "baseline": baddr, "raw": False},
     )
+    diff_elapsed_s = time.perf_counter() - diff_t0
 
-    if isinstance(diff_raw, dict) and "error" in diff_raw:
-        notes["observations"].append("diff tool failed")
-        # Save and return safe verdict if we can't diff
+    # -------------------------------------------------------------------------
+    # FAIL-CLOSED: if diff tool fails, label not_safe (do NOT silently mark safe)
+    # -------------------------------------------------------------------------
+    if isinstance(diff, dict) and "error" in diff:
+        failure_reason = "diff_tool_error"
+        notes["observations"].append(f"diff tool failed: {diff.get('error')!r}")
         write_json(notes_path, notes)
         write_text(os.path.join(func_dir, "diff.txt"), "")
-        verdict = "Label: safe — no diff available (tool error)"
+
+        verdict = "Label: needs further inspection — diff generation failed (tool error)"
         write_json(
             os.path.join(func_dir, "analysis.json"),
             {
-                "label": "safe",
-                "why": "no diff available",
-                "flagged": False,
+                "label": "not_safe",
+                "why": "Diff generation failed (tool error); fail-closed to not_safe.",
+                "flagged": True,
                 "verdict": verdict,
-                "stage1": None,
+                "stage1": {
+                    "label": "not_safe",
+                    "trigger": "",
+                    "why": "Stage1 did not run because diff generation failed; fail-closed.",
+                },
                 "reviewer": None,
+                "refuted_by_reviewer": False,
+                "confirmed_by_reviewer": False,
+                "triage_ran": False,
+                "failure_reason": failure_reason,
+                "timing": {
+                    "diff_elapsed_s": diff_elapsed_s,
+                    "stage1_elapsed_s": 0.0,
+                    "reviewer_elapsed_s": 0.0,
+                    "llm_elapsed_s": 0.0,
+                    "stage1_attempts": 0,
+                    "reviewer_attempts": 0,
+                },
             },
         )
         write_text(os.path.join(func_dir, "verdict.txt"), verdict)
+
         return {
-            "label": "safe",
-            "why": "no diff available",
-            "flagged": False,
+            "label": "not_safe",
+            "why": "Diff generation failed (tool error); fail-closed to not_safe.",
+            "flagged": True,
             "verdict": verdict,
             "func_dir": func_dir,
             "reviewer": None,
+            "stage1_label": "not_safe",
+            "refuted_by_reviewer": False,
+            "confirmed_by_reviewer": False,
+            "triage_ran": False,
+            "failure_reason": failure_reason,
+            "diff_elapsed_s": diff_elapsed_s,
+            "stage1_elapsed_s": 0.0,
+            "reviewer_elapsed_s": 0.0,
+            "llm_elapsed_s": 0.0,
+            "stage1_attempts": 0,
+            "reviewer_attempts": 0,
         }
 
-    diff_text = extract_content(diff_raw) or ""
+    diff_text = extract_content(diff) or ""
     write_text(os.path.join(func_dir, "diff.txt"), diff_text)
 
     parsed = coerce_json_like(diff_text)
@@ -1022,21 +802,28 @@ def analyze_function_pair(
     else:
         unified = diff_text
 
-    # Defaults
-    label = "safe"
-    why = ""
-    flagged = False
-    verdict = "Label: safe — model provided no reason"
+    # -------------------------------------------------------------------------
+    # FAIL-CLOSED defaults: if triage is skipped (empty diff) we keep not_safe
+    # -------------------------------------------------------------------------
+    label = "not_safe"
+    why = "Triage did not run or produced no usable diff; fail-closed to not_safe."
+    flagged = True
+    verdict = "Label: needs further inspection — triage did not run or produced no usable diff"
 
-    label_stage1 = "safe"
+    label_stage1 = "not_safe"
     trigger_stage1 = ""
-    why_stage1 = ""
+    why_stage1 = "Stage1 did not run; fail-closed to not_safe."
     reviewer_result: Optional[Dict[str, Any]] = None
 
-    # ------------------------
-    # 2) LLM triage via LangGraph (+ reviewer)
-    # ------------------------
+    # timing defaults
+    stage1_elapsed_s = 0.0
+    reviewer_elapsed_s = 0.0
+    llm_elapsed_s = 0.0
+    stage1_attempts = 0
+    reviewer_attempts = 0
+
     if unified.strip():
+        triage_ran = True
         triage = run_triage_langgraph(
             unified_diff=unified,
             fp_idx=fp_idx,
@@ -1046,8 +833,15 @@ def analyze_function_pair(
 
         triage_trace = triage.get("trace") or []
 
-        # Final decision from graph (after reviewer)
-        label = triage.get("label", "safe")
+        # Extract LLM timings from trace
+        timing = extract_llm_timings_from_trace(triage_trace)
+        stage1_elapsed_s = float(timing["stage1_elapsed_s"])
+        reviewer_elapsed_s = float(timing["reviewer_elapsed_s"])
+        llm_elapsed_s = float(timing["llm_elapsed_s"])
+        stage1_attempts = int(timing["stage1_attempts"])
+        reviewer_attempts = int(timing["reviewer_attempts"])
+
+        label = triage.get("label", "not_safe")
         why = (triage.get("why") or "").strip()
 
         # Stage1 result (before reviewer) for metrics
@@ -1067,12 +861,22 @@ def analyze_function_pair(
             "trace": triage_trace,
         }
         write_json(os.path.join(func_dir, "triage_trace.json"), trace_payload)
-        notes["artifacts"].append(
-            {
-                "kind": "triage_trace",
-                "path": "triage_trace.json",
-            }
-        )
+        notes["artifacts"].append({"kind": "triage_trace", "path": "triage_trace.json"})
+    else:
+        # FAIL-CLOSED: empty unified diff => keep not_safe defaults
+        failure_reason = "empty_unified_diff"
+        notes["observations"].append("empty unified diff; fail-closed to not_safe")
+
+        trace_payload = {
+            "fp_index": fp_idx,
+            "func_index": func_idx,
+            "baseline_addr": baddr,
+            "target_addr": taddr,
+            "diff_chars": len(unified or ""),
+            "trace": [{"node": "triage_skipped", "reason": "empty unified diff"}],
+        }
+        write_json(os.path.join(func_dir, "triage_trace.json"), trace_payload)
+        notes["artifacts"].append({"kind": "triage_trace", "path": "triage_trace.json"})
 
     # Did the reviewer overturn or confirm a stage1 "not_safe"?
     refuted_by_reviewer = bool(label_stage1 == "not_safe" and label == "safe")
@@ -1083,7 +887,7 @@ def analyze_function_pair(
         and reviewer_result.get("verdict") == "confirm_not_safe"
     )
 
-    flagged = label == "not_safe"
+    flagged = (label == "not_safe")
     verdict = (
         f"Label: {'needs further inspection' if flagged else 'safe'} — "
         f"{why or 'model provided no reason'}"
@@ -1098,14 +902,20 @@ def analyze_function_pair(
             "why": why,
             "flagged": flagged,
             "verdict": verdict,
-            "stage1": {
-                "label": label_stage1,
-                "trigger": trigger_stage1,
-                "why": why_stage1,
-            },
+            "stage1": {"label": label_stage1, "trigger": trigger_stage1, "why": why_stage1},
             "reviewer": reviewer_result,
             "refuted_by_reviewer": refuted_by_reviewer,
             "confirmed_by_reviewer": confirmed_by_reviewer,
+            "triage_ran": triage_ran,
+            "failure_reason": failure_reason,
+            "timing": {
+                "diff_elapsed_s": diff_elapsed_s,
+                "stage1_elapsed_s": stage1_elapsed_s,
+                "reviewer_elapsed_s": reviewer_elapsed_s,
+                "llm_elapsed_s": llm_elapsed_s,
+                "stage1_attempts": stage1_attempts,
+                "reviewer_attempts": reviewer_attempts,
+            },
         },
     )
     write_text(os.path.join(func_dir, "verdict.txt"), verdict)
@@ -1120,7 +930,17 @@ def analyze_function_pair(
         "stage1_label": label_stage1,
         "refuted_by_reviewer": refuted_by_reviewer,
         "confirmed_by_reviewer": confirmed_by_reviewer,
+        "triage_ran": triage_ran,
+        "failure_reason": failure_reason,
+        "diff_elapsed_s": diff_elapsed_s,
+        "stage1_elapsed_s": stage1_elapsed_s,
+        "reviewer_elapsed_s": reviewer_elapsed_s,
+        "llm_elapsed_s": llm_elapsed_s,
+        "stage1_attempts": stage1_attempts,
+        "reviewer_attempts": reviewer_attempts,
     }
+
+
 
 
 # --------------------------------------------------------------------------------------
@@ -1661,6 +1481,40 @@ def run_triage_langgraph(
 # Utilities
 # --------------------------------------------------------------------------------------
 
+def extract_llm_timings_from_trace(trace: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Extract stage timings from LangGraph trace entries.
+    Returns:
+      {
+        "stage1_elapsed_s": float,
+        "reviewer_elapsed_s": float,
+        "llm_elapsed_s": float,
+        "stage1_attempts": int,
+        "reviewer_attempts": int,
+      }
+    """
+    stage1_s = 0.0
+    reviewer_s = 0.0
+    stage1_attempts = 0
+    reviewer_attempts = 0
+
+    for ev in (trace or []):
+        node = (ev.get("node") or "").strip().lower()
+        if node == "analyst":
+            stage1_s = float(ev.get("duration_s") or 0.0)
+            stage1_attempts = int(ev.get("attempts") or 0)
+        elif node == "reviewer":
+            reviewer_s = float(ev.get("duration_s") or 0.0)
+            reviewer_attempts = int(ev.get("attempts") or 0)
+
+    return {
+        "stage1_elapsed_s": stage1_s,
+        "reviewer_elapsed_s": reviewer_s,
+        "llm_elapsed_s": stage1_s + reviewer_s,
+        "stage1_attempts": stage1_attempts,
+        "reviewer_attempts": reviewer_attempts,
+    }
+
 
 def read_series_file(path: str, sep: str = ",") -> List[Tuple[str, str]]:
     """
@@ -1835,21 +1689,6 @@ def parse_llm_json(text: str) -> Optional[dict]:
         return json.loads(text)
     except Exception:
         return _extract_first_balanced_json_object(text)
-
-
-def parse_llm_json(text: str) -> Optional[dict]:
-    """Parse model output which *should* be JSON but sometimes isn't.
-
-    Strategy: json.loads → balanced-object extraction → return None.
-    """
-    if not text:
-        return None
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    return _extract_first_balanced_json_object(text)
-
 
 def _dec_str(v: Any) -> Optional[str]:
     """Return a decimal string for an int or decimal-string input; else None."""

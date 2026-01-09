@@ -16,6 +16,13 @@ Full pipeline (default):
 Raw mode (new flag: raw=True):
   Turns off ALL processing steps (no normalize, no mapping, no projection, no refinement,
   no annotation, no compaction). Produces a straightforward unified diff of ORIGINAL lines.
+
+Behavior policy (important):
+  - retrieve_function_decomp_lines(...) returns:
+      * None  => hard failure (function not found / decmap missing / bad structure)
+      * []    => function resolved but no decompiler lines (treated as SAFE/benign)
+  - results(...) treats None as an error and emits error_kind metadata.
+    Empty lists are allowed and produce a valid (possibly header-only) unified diff.
 """
 
 DESC = ""
@@ -100,10 +107,10 @@ _VAR_TOKEN_RE = re.compile(
     r"unaff_[A-Za-z0-9_]+)"
 )
 
-
 # ---------------------------
 # Public entry
 # ---------------------------
+
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     oid_list = api.expand_oids(oid_list)
@@ -119,16 +126,32 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     tgt_orig = retrieve_function_decomp_lines(target_oid, target_addr)
     base_orig = retrieve_function_decomp_lines(baseline_oid, baseline_addr)
 
-    tgt_orig = _strip_decmap_prefix_if_present(tgt_orig or [])
-    base_orig = _strip_decmap_prefix_if_present(base_orig or [])
+    # None = hard failure (function not found / decmap missing / malformed)
+    if tgt_orig is None or base_orig is None:
+        return {
+            "error": "Could not retrieve function decomp lines for one or both sides.",
+            "error_kind": "missing_function_or_decmap",
+            "meta": {
+                "target_oid": target_oid,
+                "baseline_oid": baseline_oid,
+                "target_addr": str(target_addr),
+                "baseline_addr": str(baseline_addr),
+                "target_none": tgt_orig is None,
+                "baseline_none": base_orig is None,
+            },
+        }
 
-    if not tgt_orig or not base_orig:
-        return {"error": "Could not retrieve function decomp lines for one or both sides."}
+    # [] is allowed (empty decomp output is not an error)
+    tgt_orig = _strip_decmap_prefix_if_present(tgt_orig)
+    base_orig = _strip_decmap_prefix_if_present(base_orig)
 
     fn_b = _get_function_name(baseline_oid, baseline_addr) or f"{baseline_addr}"
     fn_t = _get_function_name(target_oid, target_addr) or f"{target_addr}"
     fromfile = f"{fn_b} (baseline {baseline_oid})"
     tofile = f"{fn_t} (target   {target_oid})"
+
+    target_decomp_empty = (len(tgt_orig) == 0)
+    baseline_decomp_empty = (len(base_orig) == 0)
 
     # ---------------------------
     # RAW MODE: turn off ALL steps
@@ -146,6 +169,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
                 "normalized_alignment": False,
                 "raw": True,
                 "unified_len": len(unified_raw),
+                "target_decomp_empty": target_decomp_empty,
+                "baseline_decomp_empty": baseline_decomp_empty,
             },
         }
 
@@ -237,6 +262,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
             "unified_full_len": len(unified_full),
             "unified_compact_len": len(unified_compact),
             "unified_truncated": len(unified_compact) < len(unified_full),
+            "target_decomp_empty": target_decomp_empty,
+            "baseline_decomp_empty": baseline_decomp_empty,
         },
     }
 
@@ -244,6 +271,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
 # ---------------------------
 # RAW diff emitter
 # ---------------------------
+
 
 def _emit_unified_raw(base_lines: List[str], tgt_lines: List[str], fromfile: str, tofile: str) -> str:
     a_len = len(base_lines)
@@ -286,6 +314,7 @@ def _emit_unified_raw(base_lines: List[str], tgt_lines: List[str], fromfile: str
 # ---------------------------
 # Label + variable mapping helpers
 # ---------------------------
+
 
 def _build_lab_map_from_opcodes(
     base_orig: List[str],
@@ -432,6 +461,7 @@ def _project_var_tokens(lines: List[str], var_map: Dict[str, str]) -> List[str]:
 # Maps via function_call_diff (target-centric)
 # ---------------------------
 
+
 def _parse_addr_any(v: Any) -> Optional[int]:
     try:
         if isinstance(v, int):
@@ -507,6 +537,7 @@ def _build_maps(
 # ---------------------------
 # Projection / Normalization
 # ---------------------------
+
 
 def _project_fun_tokens(lines: List[str], projmap: Dict[str, str]) -> List[str]:
     # Build int->int map
@@ -675,6 +706,7 @@ def _emit_refined(out: List[str], base_slice: List[str], tgt_slice: List[str]) -
 # Known calls loader (TARGET side) + post-diff annotation
 # ---------------------------
 
+
 def _normalize_known_calls_shape(obj: Any) -> Optional[Dict[str, int]]:
     if obj is None:
         return None
@@ -684,7 +716,9 @@ def _normalize_known_calls_shape(obj: Any) -> Optional[Dict[str, int]]:
     if isinstance(obj, dict):
         numeric_like_keys = True
         for k in obj.keys():
-            if not isinstance(k, int) and not (isinstance(k, str) and (k.isdigit() or k.lower().startswith("0x"))):
+            if not isinstance(k, int) and not (
+                isinstance(k, str) and (k.isdigit() or k.lower().startswith("0x"))
+            ):
                 numeric_like_keys = False
                 break
 
@@ -724,7 +758,9 @@ def _normalize_known_calls_shape(obj: Any) -> Optional[Dict[str, int]]:
     return None
 
 
-def _get_function_calls(target_oid, baseline_oid, target_func, baseline_func) -> Optional[Dict[str, int]]:
+def _get_function_calls(
+    target_oid, baseline_oid, target_func, baseline_func
+) -> Optional[Dict[str, int]]:
     diff = (
         api.retrieve(
             "function_call_diff",
@@ -780,7 +816,9 @@ def _annotate_unified_with_tags(
     if not names_sorted:
         return unified
 
-    call_pat = re.compile(r"\b(" + "|".join(re.escape(n) for n in names_sorted) + r")\b\s*\(")
+    call_pat = re.compile(
+        r"\b(" + "|".join(re.escape(n) for n in names_sorted) + r")\b\s*\("
+    )
 
     out_lines: List[str] = []
     for line in unified.splitlines():
@@ -961,30 +999,48 @@ def _resolve_func_key(decompile: Dict[str, Any], want: str) -> Optional[str]:
         return want
 
     want_short = want.split("::")[-1]
-    cands = [k for k in decompile.keys() if isinstance(k, str) and k.split("::")[-1] == want_short]
+    cands = [
+        k
+        for k in decompile.keys()
+        if isinstance(k, str) and k.split("::")[-1] == want_short
+    ]
     if len(cands) == 1:
         return cands[0]
     return None
 
 
 def retrieve_function_decomp_lines(oid: str, func_addr: Any) -> Optional[List[str]]:
+    """
+    Return:
+      - None  => hard failure (can't resolve function or decmap)
+      - []    => function resolved but no decompiler output (benign/empty)
+      - [...] => decompiler lines
+    """
     func_name = _get_function_name(oid, func_addr)
     if not func_name:
+        # Can't even identify the function => hard failure
         return None
 
     decmap = api.retrieve("ghidra_decmap", [oid], {"org_by_func": True})
     if not isinstance(decmap, dict) or not decmap:
+        # Missing/invalid decmap => hard failure
         return None
 
     dm = decmap.get(oid, decmap) if isinstance(decmap.get(oid), dict) else decmap
     decompile = dm.get("decompile") if isinstance(dm, dict) else None
     if not isinstance(decompile, dict):
+        # Missing/invalid decompile section => hard failure
         return None
 
     func_key = func_name if func_name in decompile else _resolve_func_key(decompile, func_name)
-    func_blocks = decompile.get(func_key) if func_key else None
+    if not func_key:
+        # Function exists (ghidra_disasm) but no decompile entry => empty decomp, NOT failure
+        return []
+
+    func_blocks = decompile.get(func_key)
     if not isinstance(func_blocks, dict):
-        return None
+        # Function exists but no blocks => empty decomp, NOT failure
+        return []
 
     decomp_map: Dict[int, str] = {}
     saw_any_tagged = False
@@ -1020,7 +1076,8 @@ def retrieve_function_decomp_lines(oid: str, func_addr: Any) -> Optional[List[st
     if untagged_fallback:
         return untagged_fallback
 
-    return None
+    # Function existed, but no usable lines => empty decomp
+    return []
 
 
 def _strip_decmap_prefix_if_present(lines: List[str]) -> List[str]:
