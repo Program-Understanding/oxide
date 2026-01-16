@@ -173,7 +173,7 @@ public class ghidra_extract extends GhidraScript {
             // }
             Blocks += "]";
 
-            print("\nRESULTF: {\"name\":\"" + function.getName() + "\","          +
+            print("\nRESULTF: {\"name\":\"" + function.getName(true) + "\","          +
                 "\"vaddr\":\"" + function.getEntryPoint() + "\","    +
                 "\"blocks\":" + Blocks + ","                         +
                 "\"params\": " + Parms + ","                         + //list of parameters, iterator?
