@@ -1,30 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-function_decomp_diff — unified diff of decompiler text for one function.
-
-Full pipeline (default):
-  1) Retrieve baseline/target decompiler text.
-  2) Build call pairing from function_call_diff (target-centric labels).
-  3) Normalize both sides to stable labels (for alignment).
-  4) Align with SequenceMatcher to get opcodes.
-  5) Infer baseline→target LAB_ and variable/DAT/PTR/etc mappings from normalized equal lines.
-  6) Project baseline ORIGINAL names into the target namespace (FUN_/LAB_/vars).
-  7) Emit unified diff with replace-refinement (collapse identical lines to context).
-  8) Optionally post-annotate ONLY '+' lines with tags for known target calls.
-  9) Optionally compact to fit an LLM budget.
-
-Raw mode (new flag: raw=True):
-  Turns off ALL processing steps (no normalize, no mapping, no projection, no refinement,
-  no annotation, no compaction). Produces a straightforward unified diff of ORIGINAL lines.
-
-Behavior policy (important):
-  - retrieve_function_decomp_lines(...) returns:
-      * None  => hard failure (function not found / decmap missing / bad structure)
-      * []    => function resolved but no decompiler lines (treated as SAFE/benign)
-  - results(...) treats None as an error and emits error_kind metadata.
-    Empty lists are allowed and produce a valid (possibly header-only) unified diff.
-"""
-
 DESC = ""
 NAME = "function_decomp_diff"
 
@@ -43,8 +17,8 @@ logger.debug("init")
 # ---------------------------
 
 _LLM_NUM_CTX_TOKENS = 8192
-_LLM_RESERVED_TOKENS = 1024
-_APPROX_CHARS_PER_TOKEN = 4
+_LLM_RESERVED_TOKENS = 2048
+_APPROX_CHARS_PER_TOKEN = 3.0
 
 _MAX_UNIFIED_CHARS = (_LLM_NUM_CTX_TOKENS - _LLM_RESERVED_TOKENS) * _APPROX_CHARS_PER_TOKEN
 _LLM_DIFF_CHAR_BUDGET = min(_MAX_UNIFIED_CHARS, 20000)
