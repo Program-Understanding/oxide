@@ -3,10 +3,42 @@ from typing import Dict, Any, List, Tuple
 import networkx as nx
 import textwrap
 from oxide.core import api
-from ollama_service import runner
 import re
-import time
+import os
+import ollama
 
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M")
+OLLAMA_SYSTEM = os.getenv("OLLAMA_SYSTEM_PROMPT", "You are an expert reverse-engineer")
+OLLAMA_NUM_CTX = int(os.getenv("CONTEXT_LIMIT", "8192"))
+
+_ollama_client = ollama.Client(host=OLLAMA_HOST)
+
+def _ensure_model_available() -> None:
+    try:
+        _ollama_client.show(OLLAMA_MODEL)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Ollama model '{OLLAMA_MODEL}' not found locally. Run: `ollama pull {OLLAMA_MODEL}`"
+        ) from exc
+
+_ensure_model_available()
+
+def llm_generate(prompt: str, temperature: float = 0.15, max_new_tokens: int = 150) -> str:
+    resp = _ollama_client.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": OLLAMA_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        options={
+            "temperature": float(temperature),
+            "num_predict": int(max_new_tokens),
+            "num_ctx": int(OLLAMA_NUM_CTX),
+        },
+        stream=False,
+    )
+    return resp["message"]["content"]
 
 def run(oid, func_offset):
     func_name = get_func_name(oid, func_offset)
