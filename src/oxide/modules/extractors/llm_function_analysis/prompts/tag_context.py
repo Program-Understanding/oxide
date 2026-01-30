@@ -22,7 +22,6 @@ def _ensure_model_available() -> None:
             f"Ollama model '{OLLAMA_MODEL}' not found locally. Run: `ollama pull {OLLAMA_MODEL}`"
         ) from exc
 
-_ensure_model_available()
 
 def llm_generate(prompt: str, temperature: float = 0.15, max_new_tokens: int = 150) -> str:
     resp = _ollama_client.chat(
@@ -43,6 +42,7 @@ def llm_generate(prompt: str, temperature: float = 0.15, max_new_tokens: int = 1
 
 
 def run(oid, func_offset):
+    _ensure_model_available() # lazy check so it only runs when needed
     func_name = get_func_name(oid, func_offset)
 
     full_graph: nx.DiGraph = api.get_field("call_graph", oid, oid)
