@@ -39,6 +39,10 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
 
     oid = oid_list[0]
 
+    # Read-through cache stored under target_oid
+    if api.exists(NAME, oid, opts):
+        return api.retrieve(NAME, oid, opts)
+
     if opts["function_name"] != "None":
         func_name = opts["function_name"]
     elif opts["function_addr"] != "None":
@@ -46,8 +50,13 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
         func_name = _get_function_name(oid, func_addr)
     else:
         return {"ERROR": "Please pass in either function_name or function_addr"}
+    
+    results = {'decomp': retrieve_function_decomp_text(oid, func_name)}
+
+    # Store/update cache
+    api.store(NAME, oid, results, opts)
         
-    return retrieve_function_decomp_lines(oid, func_name)
+    return results
 # ---------------------------
 # Ghidra helpers
 # ---------------------------
@@ -68,37 +77,33 @@ def _resolve_func_key(decompile: Dict[str, Any], want: str) -> Optional[str]:
     return None
 
 
-def retrieve_function_decomp_lines(oid: str, func_name: Any) -> Optional[List[str]]:
+def retrieve_function_decomp_text(oid: str, func_name: Any) -> Optional[str]:
     """
     Return:
-      - None  => hard failure (can't resolve function or decmap)
-      - []    => function resolved but no decompiler output (benign/empty)
-      - [...] => decompiler lines
+      - None   => hard failure (can't resolve function or decmap)
+      - ""     => function resolved but no decompiler output (benign/empty)
+      - "..."  => decompiler text
     """
     if not func_name:
-        # Can't even identify the function => hard failure
         return None
 
     decmap = api.retrieve("ghidra_decmap", [oid], {"org_by_func": True})
     if not isinstance(decmap, dict) or not decmap:
-        # Missing/invalid decmap => hard failure
         return None
 
     dm = decmap.get(oid, decmap) if isinstance(decmap.get(oid), dict) else decmap
     decompile = dm.get("decompile") if isinstance(dm, dict) else None
     if not isinstance(decompile, dict):
-        # Missing/invalid decompile section => hard failure
         return None
 
-    func_key = func_name if func_name in decompile else _resolve_func_key(decompile, func_name)
+    func_key = func_name if func_name in decompile else _resolve_func_key(decompile, str(func_name))
     if not func_key:
-        # Function exists (ghidra_disasm) but no decompile entry => empty decomp, NOT failure
-        return []
+        # function resolved in disasm but no decompile entry
+        return ""
 
     func_blocks = decompile.get(func_key)
     if not isinstance(func_blocks, dict):
-        # Function exists but no blocks => empty decomp, NOT failure
-        return []
+        return ""
 
     decomp_map: Dict[int, str] = {}
     saw_any_tagged = False
@@ -115,7 +120,6 @@ def retrieve_function_decomp_lines(oid: str, func_name: Any) -> Optional[List[st
             if not isinstance(raw, str):
                 continue
 
-            # Prefer split parsing to preserve indentation after the colon.
             try:
                 left, right = raw.split(":", 1)
                 ln = int(left.strip())
@@ -129,13 +133,13 @@ def retrieve_function_decomp_lines(oid: str, func_name: Any) -> Optional[List[st
             untagged_fallback.append(raw.rstrip("\r\n"))
 
     if saw_any_tagged and decomp_map:
-        return [decomp_map[ln] for ln in sorted(decomp_map)]
+        ordered = [decomp_map[ln] for ln in sorted(decomp_map)]
+        return "\n".join(ordered)
 
     if untagged_fallback:
-        return untagged_fallback
+        return "\n".join(untagged_fallback)
 
-    # Function existed, but no usable lines => empty decomp
-    return []
+    return ""
 
 def _get_function_name(oid: str, addr: Any) -> Optional[str]:
     if addr is None:

@@ -95,6 +95,12 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     target_addr = opts["target"]
     baseline_addr = opts["baseline"]
 
+    # Read-through cache stored under target_oid, keyed by baseline_oid
+    if api.exists(NAME, target_oid, opts):
+        data = api.retrieve(NAME, target_oid, opts) or {}
+        if isinstance(data, dict) and baseline_oid in data:
+            return data[baseline_oid]
+
     raw = bool(opts.get("raw", False))
 
     tgt_orig = retrieve_function_decomp_lines(target_oid, target_addr)
@@ -223,7 +229,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     else:
         unified = unified_full
 
-    return {
+    results = {
         "unified": unified,
         "meta": {
             "pipeline": "full",
@@ -240,6 +246,18 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
             "baseline_decomp_empty": baseline_decomp_empty,
         },
     }
+
+    # Store/update cache
+    if api.exists(NAME, target_oid, opts):
+        data = api.retrieve(NAME, target_oid, opts) or {}
+        if not isinstance(data, dict):
+            data = {}
+        data[baseline_oid] = results
+        api.store(NAME, target_oid, data, opts)
+    else:
+        api.store(NAME, target_oid, {baseline_oid: results}, opts)
+
+    return results
 
 
 # ---------------------------
