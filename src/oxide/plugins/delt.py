@@ -777,7 +777,7 @@ def analyze_function_pair(
     diff = oxide.retrieve(
         "function_decomp_diff",
         [target_oid, baseline_oid],
-        {"target": taddr, "baseline": baddr, "raw": True},
+        {"target": taddr, "baseline": baddr, "raw": False},
     )
     diff_elapsed_s = time.perf_counter() - diff_t0
 
