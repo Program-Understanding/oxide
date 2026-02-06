@@ -40,11 +40,11 @@ def _get_offset(bv, addr: int):
 
 def _binja_analyze(fname: str) -> Dict:
     output = {'functions': {}, 'blocks': {}, 'insns': {}}
-    with bn.open_view(fname) as bv:
+    with bn.load(fname) as bv:
         logger.debug(f"Opening {bv.file.filename} which has {len(list(bv.functions))} functions")
         # For each function
         for function in bv.functions:
-            output['functions'][function.start] = {'name': function.name, 'clobbered_regs': str(function.clobbered_regs), 'returns': str(function.can_return), 'convention': str(function.calling_convention), 'calls': function.callee_addresses, 'num_args': len(function.parameter_vars), 'return_regs': str(function.return_regs), 'signature': str(function.function_type)}
+            output['functions'][function.start] = {'name': function.name, 'clobbered_regs': str(function.clobbered_regs), 'returns': str(function.can_return), 'convention': str(function.calling_convention), 'calls': function.callee_addresses, 'num_args': len(function.parameter_vars), 'return_regs': str(function.return_regs), 'signature': str(function.type)}
 
             # 'return_vals': function.get_reg_value_at_exit(function.return_regs)}
             # For each basic block
