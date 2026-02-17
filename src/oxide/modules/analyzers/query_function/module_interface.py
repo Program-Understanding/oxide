@@ -7,7 +7,6 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
 from oxide.core import api
 
@@ -93,7 +92,8 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     t_model = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    qvec = model.encode(query, normalize_embeddings=True).astype(np.float32)
+    q_text = _truncate_text_for_model(query, model)
+    qvec = model.encode(q_text, normalize_embeddings=True).astype(np.float32)
     t_qemb = time.perf_counter() - t0
 
     if timing and progress:
@@ -252,7 +252,7 @@ def _load_or_build_index(
     batch_size: int,
     use_cache: bool,
     rebuild: bool,
-    model: SentenceTransformer,
+    model: "SentenceTransformer",
     counts: Dict[str, Dict[str, Any]],
     timing: bool,
     progress: bool,
@@ -377,8 +377,9 @@ def _load_or_build_index(
 
     # embed
     t_embed0 = time.perf_counter()
+    text_batch = _truncate_texts_for_model(texts, model)
     emb = model.encode(
-        texts,
+        text_batch,
         batch_size=max(1, batch_size),
         normalize_embeddings=True,
         show_progress_bar=False,
@@ -649,14 +650,82 @@ def _normalize_decomp_blob(f_decomp: Any, max_chars: int) -> str:
     return s
 
 
+def _truncate_text_for_model(text: str, model: "SentenceTransformer") -> str:
+    """
+    Quietly cap text length to model token budget before embedding.
+    """
+    s = str(text or "").strip()
+    if not s:
+        return s
+    tokenizer = getattr(model, "tokenizer", None)
+    max_tokens = int(getattr(model, "max_seq_length", 0) or 0)
+    if tokenizer is None or max_tokens <= 0:
+        return s
+
+    try:
+        enc = tokenizer(
+            s,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=max_tokens,
+            return_attention_mask=False,
+            return_token_type_ids=False,
+            verbose=False,
+        )
+    except TypeError:
+        # Some tokenizers do not support the `verbose` kwarg.
+        try:
+            enc = tokenizer(
+                s,
+                add_special_tokens=False,
+                truncation=True,
+                max_length=max_tokens,
+                return_attention_mask=False,
+                return_token_type_ids=False,
+            )
+        except Exception:
+            return s
+    except Exception:
+        return s
+
+    ids = enc.get("input_ids") if isinstance(enc, dict) else None
+    if ids is None:
+        return s
+    if isinstance(ids, list) and ids and isinstance(ids[0], list):
+        ids = ids[0]
+    if not isinstance(ids, list) or not ids:
+        return s
+
+    try:
+        out = str(
+            tokenizer.decode(
+                ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True,
+            )
+            or ""
+        ).strip()
+        return out or s
+    except Exception:
+        return s
+
+
+def _truncate_texts_for_model(
+    texts: List[str], model: "SentenceTransformer"
+) -> List[str]:
+    return [_truncate_text_for_model(t, model) for t in texts]
+
+
 # -----------------------------------------------------------------------------
 # Model singleton
 # -----------------------------------------------------------------------------
-_MODEL: Optional[SentenceTransformer] = None
+_MODEL: Optional["SentenceTransformer"] = None
 _MODEL_ID: Optional[str] = None
 
 
-def _get_model(model_id: str) -> SentenceTransformer:
+def _get_model(model_id: str) -> "SentenceTransformer":
+    from sentence_transformers import SentenceTransformer
+
     global _MODEL, _MODEL_ID
     if _MODEL is None or _MODEL_ID != model_id:
         _MODEL = SentenceTransformer(model_id)

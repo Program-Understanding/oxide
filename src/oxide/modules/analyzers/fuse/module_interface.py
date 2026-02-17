@@ -1,4 +1,4 @@
-DESC = "Strings-only file retrieval using auto-calibrated IDF evidence packing"
+DESC = "Strings-only file retrieval using auto-calibrated IDF evidence packing (+ optional BM25-confidence gate)"
 NAME = "fuse"
 
 import hashlib
@@ -10,7 +10,6 @@ from collections import Counter
 from typing import List, Dict, Tuple, Any, Optional
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
 
 from oxide.core import api
@@ -23,44 +22,60 @@ opts_doc = {
     "top_k": {"type": int, "mangle": False, "default": 50},
     "string_emb_batch_size": {"type": int, "mangle": False, "default": 128},
     "debug_select": {"type": bool, "mangle": False, "default": False},
-    "ablate_noise_filter": {"type": bool, "mangle": False, "default": False},
-    "ablate_redundancy": {"type": bool, "mangle": False, "default": False},
-    "ablate_idf": {"type": bool, "mangle": False, "default": False},
     "pack_budget_tokens": {"type": int, "mangle": False, "default": 0},
+    # Canonical FUSE behavior includes a BM25 confidence gate.
+    # These options are for ablation experiments only.
+    "ablate_no_gate": {"type": bool, "mangle": False, "default": False},
+    "ablate_bm25_only": {"type": bool, "mangle": False, "default": False},
+    "ablate_debug": {"type": bool, "mangle": False, "default": False},
 }
 
 # -------------------------------------------------------------
 # Model setup
 # -------------------------------------------------------------
 MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
-_MODEL: Optional[SentenceTransformer] = None
-_TOKENIZER: Optional[Any] = None
-_MAX_TOKENS: Optional[int] = None
+# Bump to invalidate any localstore caches that depend on packed-doc behavior.
+PACKED_DOC_CACHE_VERSION = 1
 
 # Allow alnum tokens; keep this conservative but not letters-only
 TERM = re.compile(r"[a-z][a-z0-9]{2,}", re.IGNORECASE)
-CAPABILITY_TERMS = {
-    "http", "https", "tcp", "udp", "dns", "dhcp", "ssh", "rpc", "socket", "port",
-    "config", "cfg", "json", "xml", "init", "daemon", "service", "system",
-    "usr", "bin", "sbin", "etc", "lib", "tmp", "proc", "sys", "var",
-    "uci", "ubus", "netifd", "opkg", "dropbear", "dnsmasq", "uhttpd", "odhcpd",
-}
 
-def _get_model() -> Tuple[SentenceTransformer, Any, int]:
-    global _MODEL, _TOKENIZER, _MAX_TOKENS
-    if _MODEL is None or _TOKENIZER is None or _MAX_TOKENS is None:
-        tok = AutoTokenizer.from_pretrained(MODEL_ID)
-        mdl = SentenceTransformer(MODEL_ID)
+def _infer_model_token_budget(tokenizer: Any, model: Any, default: int = 512) -> int:
+    # HuggingFace tokenizers sometimes use a huge sentinel for "infinite" max length.
+    tok_limit = getattr(tokenizer, "model_max_length", None)
+    try:
+        tok_limit_i = int(tok_limit) if tok_limit is not None else int(default)
+    except Exception:
+        tok_limit_i = int(default)
+    if tok_limit_i <= 0 or tok_limit_i > 100000:
+        tok_limit_i = int(default)
 
-        # SentenceTransformers often truncates to mdl.max_seq_length (commonly 256)
-        mdl_limit = getattr(mdl, "max_seq_length", None)
-        tok_limit = getattr(tok, "model_max_length", None) or 512
-        budget = min(tok_limit, mdl_limit) if mdl_limit else tok_limit
+    mdl_limit = getattr(model, "max_seq_length", None)
+    try:
+        mdl_limit_i = int(mdl_limit) if mdl_limit is not None else 0
+    except Exception:
+        mdl_limit_i = 0
 
-        _TOKENIZER = tok
-        _MODEL = mdl
-        _MAX_TOKENS = int(budget)
-    return _MODEL, _TOKENIZER, _MAX_TOKENS
+    if mdl_limit_i > 0:
+        return int(min(tok_limit_i, mdl_limit_i))
+    return int(tok_limit_i)
+
+
+_MODEL_BUNDLE: Optional[Tuple["SentenceTransformer", Any, int]] = None
+
+
+def _get_model() -> Tuple["SentenceTransformer", Any, int]:
+    from sentence_transformers import SentenceTransformer
+
+    global _MODEL_BUNDLE
+    if _MODEL_BUNDLE is not None:
+        return _MODEL_BUNDLE
+
+    tok = AutoTokenizer.from_pretrained(MODEL_ID)
+    mdl = SentenceTransformer(MODEL_ID)
+    budget = _infer_model_token_budget(tok, mdl, default=512)
+    _MODEL_BUNDLE = (mdl, tok, budget)
+    return _MODEL_BUNDLE
 
 
 def documentation() -> Dict[str, Any]:
@@ -90,10 +105,23 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     top_k = int(opts.get("top_k", 50))
     string_emb_batch_size = int(opts.get("string_emb_batch_size", 128) or 128)
     debug_select = bool(opts.get("debug_select", False))
-    ablate_noise_filter = bool(opts.get("ablate_noise_filter", False))
-    ablate_redundancy = bool(opts.get("ablate_redundancy", False))
-    ablate_idf = bool(opts.get("ablate_idf", False))
     pack_budget_tokens = int(opts.get("pack_budget_tokens", 0) or 0)
+
+    # Canonical behavior: confidence-gated BM25 override is ON by default.
+    # Ablations:
+    # - ablate_no_gate: keep dense ranking (no BM25 override)
+    # - ablate_bm25_only: ignore dense ranking and return BM25 ranking
+    # Backward compat:
+    # - hybrid_enable=False means ablate_no_gate=True
+    # - hybrid_debug maps to ablate_debug
+    ablate_no_gate = bool(opts.get("ablate_no_gate", False))
+    ablate_bm25_only = bool(opts.get("ablate_bm25_only", False))
+    ablate_debug = bool(opts.get("ablate_debug", False))
+
+    if "hybrid_enable" in opts and "ablate_no_gate" not in opts:
+        ablate_no_gate = not bool(opts.get("hybrid_enable", True))
+    if "hybrid_debug" in opts and "ablate_debug" not in opts:
+        ablate_debug = bool(opts.get("hybrid_debug", False))
 
     return search_prompt(
         oid_list,
@@ -101,10 +129,10 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         top_k=top_k,
         string_emb_batch_size=string_emb_batch_size,
         debug_select=debug_select,
-        ablate_noise_filter=ablate_noise_filter,
-        ablate_redundancy=ablate_redundancy,
-        ablate_idf=ablate_idf,
         pack_budget_tokens=pack_budget_tokens,
+        ablate_no_gate=ablate_no_gate,
+        ablate_bm25_only=ablate_bm25_only,
+        ablate_debug=ablate_debug,
     )
 
 
@@ -123,8 +151,9 @@ def _cache_key(
     for oid in sorted(oids):
         h.update(oid.encode("utf-8"))
         h.update(b"\n")
+    model_key = re.sub(r"[\\\\/]", "_", str(MODEL_ID))
     return (
-        f"{MODEL_ID}|str_select=idf_pack_auto|cfg={cfg_hash}|"
+        f"{model_key}|str_select=idf_pack_auto|cfg={cfg_hash}|"
         f"n={len(oids)}|{h.hexdigest()[:16]}"
     )
 
@@ -134,9 +163,6 @@ def build_embedding_matrix(
     string_emb_batch_size: int = 128,
     debug_select: bool = False,
     debug_out: Optional[Dict[str, Any]] = None,
-    ablate_noise_filter: bool = False,
-    ablate_redundancy: bool = False,
-    ablate_idf: bool = False,
     pack_budget_tokens: int = 0,
 ) -> Tuple[np.ndarray, List[str]]:
     """
@@ -173,8 +199,6 @@ def build_embedding_matrix(
         noise_threshold=float(pack_cfg["noise_threshold"]),
         max_words=int(pack_cfg["max_words"]),
         min_terms=int(pack_cfg["min_terms"]),
-        apply_noise_filter=not ablate_noise_filter,
-        use_idf=not ablate_idf,
     )
 
     dim = model.get_sentence_embedding_dimension()
@@ -184,11 +208,6 @@ def build_embedding_matrix(
         debug_out.setdefault("string_counts", [])
         debug_out["idf_pack_params"] = dict(pack_cfg)
         debug_out["effective_pack_budget_tokens"] = int(effective_budget)
-        debug_out["ablation_flags"] = {
-            "ablate_noise_filter": bool(ablate_noise_filter),
-            "ablate_redundancy": bool(ablate_redundancy),
-            "ablate_idf": bool(ablate_idf),
-        }
 
     for oid in ordered:
         strs = select_strings_by_idf_pack(
@@ -200,10 +219,12 @@ def build_embedding_matrix(
             noise_threshold=float(pack_cfg["noise_threshold"]),
             max_words=int(pack_cfg["max_words"]),
             min_terms=int(pack_cfg["min_terms"]),
-            apply_noise_filter=not ablate_noise_filter,
-            apply_redundancy=not ablate_redundancy,
         )
-        str_doc = " ".join(strs).strip()
+        str_doc = _truncate_text_to_budget(
+            " ".join(strs).strip(),
+            tokenizer=tokenizer,
+            budget=effective_budget,
+        )
 
         # Encode empty docs safely
         if not str_doc:
@@ -229,13 +250,14 @@ def search_prompt(
     top_k: int = 50,
     string_emb_batch_size: int = 128,
     debug_select: bool = False,
-    ablate_noise_filter: bool = False,
-    ablate_redundancy: bool = False,
-    ablate_idf: bool = False,
     pack_budget_tokens: int = 0,
+    ablate_no_gate: bool = False,
+    ablate_bm25_only: bool = False,
+    ablate_debug: bool = False,
 ) -> Dict[str, Any]:
     """Search prompt over candidate OIDs; return ranked results."""
     model, _, _ = _get_model()
+    debug_needed = bool(debug_select or ablate_debug)
 
     exes = filter_executables(oids)
     if not exes:
@@ -243,33 +265,29 @@ def search_prompt(
 
     q = model.encode(prompt, normalize_embeddings=True).astype("float32")
     cache_cfg: Dict[str, Any] = {
-        "ablate_noise_filter": bool(ablate_noise_filter),
-        "ablate_redundancy": bool(ablate_redundancy),
-        "ablate_idf": bool(ablate_idf),
         "pack_budget_tokens": int(pack_budget_tokens),
+        "cache_version": int(PACKED_DOC_CACHE_VERSION),
     }
     key = _cache_key(exes, cache_cfg)
 
     cached = api.local_retrieve(NAME, key) if api.local_exists(NAME, key) else None
     if cached and "oids" in cached and "emb" in cached and cached["oids"] == exes:
         emb_mat = cached["emb"]
-        debug_out = {"cache_hit": True, "selection_config": cache_cfg} if debug_select else None
+        debug_out = {"cache_hit": True, "selection_config": cache_cfg} if debug_needed else None
     else:
-        debug_out = {"cache_hit": False, "selection_config": cache_cfg} if debug_select else None
+        debug_out = {"cache_hit": False, "selection_config": cache_cfg} if debug_needed else None
         emb_mat, ordered = build_embedding_matrix(
             exes,
             string_emb_batch_size=string_emb_batch_size,
             debug_select=debug_select,
             debug_out=debug_out,
-            ablate_noise_filter=ablate_noise_filter,
-            ablate_redundancy=ablate_redundancy,
-            ablate_idf=ablate_idf,
             pack_budget_tokens=pack_budget_tokens,
         )
         api.local_store(NAME, key, {"oids": ordered, "emb": emb_mat})
     sims = emb_mat.dot(q)
 
-    idxs = np.argsort(-sims)
+    idxs_all = np.argsort(-sims)
+    idxs = idxs_all
     if top_k > 0:
         idxs = idxs[:top_k]
 
@@ -278,12 +296,368 @@ def search_prompt(
         return {"oid": oid, "names": get_names(oid), "score": float(sims[i])}
 
     ranked = [fmt(i) for i in idxs]
+    bm25_top_oid: Optional[str] = None
+    override_applied = False
+    gate_stats: Dict[str, Any] = {}
+
+    # Canonical FUSE behavior uses a BM25 confidence gate to optionally override dense top-1.
+    # Ablations can disable the gate or return BM25-only results.
+    gate_enabled = not bool(ablate_no_gate) and not bool(ablate_bm25_only)
+    if gate_enabled or ablate_bm25_only or debug_needed:
+        raw_docs = _build_raw_string_docs(exes)
+        query_terms = _query_terms_for_lexical(prompt)
+        bm25_ranked, bm25_scores, bm25_meta = _bm25_rank_with_scores(raw_docs, query_terms)
+        bm25_top_oid = bm25_ranked[0] if bm25_ranked else None
+
+        docs_term_sets: Dict[str, set] = {}
+        for oid, doc_text in raw_docs.items():
+            terms = [t for t in doc_text.split() if TERM.fullmatch(t)]
+            docs_term_sets[oid] = set(terms)
+        term_idf = _term_idf_for_terms(set(query_terms), docs_term_sets)
+
+        bm25_score_sorted = [float(bm25_scores.get(oid, 0.0)) for oid in bm25_ranked]
+        bm25_top_terms = docs_term_sets.get(str(bm25_top_oid), set()) if bm25_top_oid else set()
+        bm25_conf = _bm25_confidence(
+            bm25_score_sorted,
+            query_terms=query_terms,
+            top_doc_terms=bm25_top_terms,
+            term_idf=term_idf,
+        )
+        dense_sorted = [float(sims[i]) for i in idxs_all]
+        fuse_conf = _dense_confidence(dense_sorted)
+        should_override = _should_override_with_bm25(
+            bm25_stats=bm25_conf,
+            fuse_stats=fuse_conf,
+        )
+
+        if gate_enabled and should_override and bm25_top_oid:
+            # Preserve FUSE ordering except for promoting BM25's top candidate.
+            promoted = _apply_top1_override(ranked, bm25_top_oid)
+            if promoted and promoted[0].get("oid") == bm25_top_oid:
+                ranked = promoted
+                override_applied = True
+            else:
+                oid_to_idx = {oid: i for i, oid in enumerate(exes)}
+                top_idx = oid_to_idx.get(bm25_top_oid)
+                if top_idx is not None:
+                    bm25_top_item = fmt(top_idx)
+                    keep = [r for r in ranked if r.get("oid") != bm25_top_oid]
+                    ranked = [bm25_top_item] + keep
+                    if top_k > 0:
+                        ranked = ranked[:top_k]
+                    override_applied = True
+
+        try:
+            from rank_bm25 import BM25Okapi as _BM25Okapi  # type: ignore
+
+            bm25_supported = True
+        except Exception:
+            bm25_supported = False
+
+        gate_stats = {
+            "enabled": bool(gate_enabled),
+            "bm25_backend": str(bm25_meta.get("backend", "unknown")),
+            "query_term_count": len(query_terms),
+            "bm25_top_oid": bm25_top_oid,
+            "fuse_top_oid": ranked[0].get("oid") if ranked else None,
+            "bm25_confidence": bm25_conf,
+            "fuse_confidence": fuse_conf,
+            "decision_rule": "bm25_conf > fuse_conf",
+            "override_applied": bool(override_applied),
+            "bm25_supported": bool(bm25_supported),
+            "ablate_no_gate": bool(ablate_no_gate),
+            "ablate_bm25_only": bool(ablate_bm25_only),
+        }
+        if "fallback_reason" in bm25_meta:
+            gate_stats["fallback_reason"] = str(bm25_meta["fallback_reason"])
+
+        if ablate_bm25_only:
+            oid_to_idx = {oid: i for i, oid in enumerate(exes)}
+
+            def fmt_bm25(oid: str) -> Dict[str, Any]:
+                dense_i = oid_to_idx.get(oid)
+                dense_score = float(sims[dense_i]) if dense_i is not None else None
+                return {
+                    "oid": oid,
+                    "names": get_names(oid),
+                    "score": float(bm25_scores.get(oid, 0.0)),
+                    "bm25_score": float(bm25_scores.get(oid, 0.0)),
+                    "dense_score": dense_score,
+                }
+
+            ranked = [fmt_bm25(oid) for oid in bm25_ranked]
+            if top_k > 0:
+                ranked = ranked[:top_k]
+
     best = ranked[0] if ranked else None
 
     resp = {"prompt": prompt, "results": {"best_match": best, "candidates": ranked}}
-    if debug_select:
+    if debug_needed:
+        if debug_out is None:
+            debug_out = {}
+        if gate_enabled or ablate_debug or ablate_bm25_only:
+            # New name:
+            debug_out["confidence_gate"] = gate_stats or {
+                "enabled": bool(gate_enabled),
+                "override_applied": False,
+            }
+            # Backward-compat alias:
+            debug_out["hybrid"] = debug_out["confidence_gate"]
         resp["debug_select"] = debug_out or {}
     return resp
+
+
+def _clamp01(v: float) -> float:
+    return float(min(1.0, max(0.0, float(v))))
+
+
+def _query_terms_for_lexical(prompt: str) -> List[str]:
+    norm = normalize(prompt or "")
+    if not norm:
+        return []
+    return [t for t in norm.split() if TERM.fullmatch(t)]
+
+
+def _build_raw_string_docs(exes: List[str]) -> Dict[str, str]:
+    docs: Dict[str, str] = {}
+    for oid in exes:
+        raw_strs = api.get_field("strings", oid, oid) or {}
+        parts: List[str] = []
+        for s in raw_strs.values():
+            if not isinstance(s, str):
+                continue
+            if len(s) >= 200:
+                continue
+            ns = normalize(s)
+            if TERM.search(ns):
+                parts.append(ns)
+        docs[oid] = " ".join(parts).strip()
+    return docs
+
+
+def _bm25_lite_scores(
+    query_terms: List[str],
+    doc_terms_by_oid: Dict[str, List[str]],
+) -> Dict[str, float]:
+    N = max(1, len(doc_terms_by_oid))
+    avgdl = (
+        sum(len(terms) for terms in doc_terms_by_oid.values()) / float(N)
+        if doc_terms_by_oid
+        else 1.0
+    )
+    avgdl = max(avgdl, 1e-8)
+
+    df = Counter()
+    for terms in doc_terms_by_oid.values():
+        for t in set(terms):
+            df[t] += 1
+
+    q_tf = Counter(query_terms)
+    k1 = 1.2
+    b = 0.75
+    out: Dict[str, float] = {}
+    for oid, terms in doc_terms_by_oid.items():
+        tf = Counter(terms)
+        dl = max(len(terms), 1)
+        score = 0.0
+        for t, qcnt in q_tf.items():
+            f = float(tf.get(t, 0))
+            if f <= 0:
+                continue
+            term_df = float(df.get(t, 0))
+            idf = math.log((N - term_df + 0.5) / (term_df + 0.5) + 1.0)
+            denom = f + k1 * (1.0 - b + b * (float(dl) / avgdl))
+            score += float(qcnt) * idf * ((f * (k1 + 1.0)) / max(denom, 1e-8))
+        out[oid] = float(score)
+    return out
+
+
+def _bm25_rank_with_scores(
+    docs: Dict[str, str],
+    query_terms: List[str],
+) -> Tuple[List[str], Dict[str, float], Dict[str, Any]]:
+    try:
+        from rank_bm25 import BM25Okapi  # type: ignore
+    except Exception:
+        BM25Okapi = None
+
+    ordered_oids = list(docs.keys())
+    doc_terms_by_oid: Dict[str, List[str]] = {
+        oid: [t for t in str(docs.get(oid, "")).split() if TERM.fullmatch(t)]
+        for oid in ordered_oids
+    }
+
+    if not ordered_oids:
+        return [], {}, {"backend": "none"}
+
+    query_terms = [t for t in query_terms if TERM.fullmatch(t)]
+    if not query_terms:
+        scores = {oid: 0.0 for oid in ordered_oids}
+        ranked = sorted(ordered_oids)
+        return ranked, scores, {"backend": "no_query_terms"}
+
+    if BM25Okapi is not None:
+        try:
+            corpus = [doc_terms_by_oid[oid] for oid in ordered_oids]
+            bm25 = BM25Okapi(corpus)
+            raw_scores = bm25.get_scores(query_terms)
+            scores = {
+                oid: float(raw_scores[i]) for i, oid in enumerate(ordered_oids)
+            }
+            ranked = sorted(ordered_oids, key=lambda oid: (-scores[oid], oid))
+            return ranked, scores, {"backend": "rank_bm25"}
+        except Exception as e:
+            lite = _bm25_lite_scores(query_terms, doc_terms_by_oid)
+            ranked = sorted(ordered_oids, key=lambda oid: (-lite.get(oid, 0.0), oid))
+            return ranked, lite, {
+                "backend": "bm25_lite",
+                "fallback_reason": f"rank_bm25_failed:{e}",
+            }
+
+    lite = _bm25_lite_scores(query_terms, doc_terms_by_oid)
+    ranked = sorted(ordered_oids, key=lambda oid: (-lite.get(oid, 0.0), oid))
+    return ranked, lite, {"backend": "bm25_lite"}
+
+
+def _term_idf_for_terms(
+    query_terms: set,
+    docs_term_sets: Dict[str, set],
+) -> Dict[str, float]:
+    if not query_terms:
+        return {}
+    N = max(1, len(docs_term_sets))
+    out: Dict[str, float] = {}
+    for t in query_terms:
+        df = sum(1 for s in docs_term_sets.values() if t in s)
+        out[t] = math.log((N + 1.0) / (float(df) + 1.0)) + 1.0
+    return out
+
+
+def _plain_coverage(query_terms: List[str], top_doc_terms: set) -> float:
+    q = set(query_terms)
+    if not q:
+        return 0.0
+    return _clamp01(float(sum(1 for t in q if t in top_doc_terms)) / float(len(q)))
+
+
+def _idf_coverage(
+    query_terms: List[str],
+    top_doc_terms: set,
+    term_idf: Dict[str, float],
+) -> float:
+    q = set(query_terms)
+    if not q:
+        return 0.0
+    den = float(sum(float(term_idf.get(t, 1.0)) for t in q))
+    if den <= 0.0:
+        return 0.0
+    num = float(sum(float(term_idf.get(t, 1.0)) for t in q if t in top_doc_terms))
+    return _clamp01(num / den)
+
+
+def _normalized_margin(s1: float, s2: float) -> float:
+    gap = max(float(s1) - float(s2), 0.0)
+    denom = abs(float(s1)) + abs(float(s2)) + 1e-8
+    return _clamp01(gap / denom)
+
+
+def _robust_spread(vals: List[float]) -> float:
+    if not vals:
+        return 0.0
+    arr = np.asarray(vals, dtype=np.float32)
+    if arr.size == 0:
+        return 0.0
+    med = float(np.median(arr))
+    mad = float(np.median(np.abs(arr - med)))
+    if mad > 1e-8:
+        return float(1.4826 * mad)
+    q75 = float(np.quantile(arr, 0.75))
+    q25 = float(np.quantile(arr, 0.25))
+    iqr = q75 - q25
+    if iqr > 1e-8:
+        return float(iqr / 1.349)
+    std = float(np.std(arr))
+    return std if std > 0.0 else 0.0
+
+
+def _distribution_confidence(sorted_scores: List[float]) -> Dict[str, float]:
+    if not sorted_scores:
+        return {"top1": 0.0, "top2": 0.0, "gap": 0.0, "spread": 0.0, "conf": 0.0}
+    s1 = float(sorted_scores[0])
+    s2 = float(sorted_scores[1]) if len(sorted_scores) > 1 else s1
+    gap = max(s1 - s2, 0.0)
+
+    window = [float(x) for x in sorted_scores[: min(len(sorted_scores), 20)]]
+    spread_input = window[1:] if len(window) > 1 else window
+    spread = max(_robust_spread(spread_input), 1e-8)
+    conf = _clamp01(gap / (gap + spread))
+    return {
+        "top1": s1,
+        "top2": s2,
+        "gap": float(gap),
+        "spread": float(spread),
+        "conf": float(conf),
+    }
+
+
+def _dense_confidence(sorted_sims: List[float]) -> Dict[str, float]:
+    dist = _distribution_confidence(sorted_sims)
+    return {
+        "fuse_top1": float(dist["top1"]),
+        "fuse_top2": float(dist["top2"]),
+        "fuse_gap": float(dist["gap"]),
+        "fuse_spread": float(dist["spread"]),
+        "fuse_conf": float(dist["conf"]),
+    }
+
+
+def _bm25_confidence(
+    scores_sorted: List[float],
+    *,
+    query_terms: List[str],
+    top_doc_terms: set,
+    term_idf: Dict[str, float],
+) -> Dict[str, float]:
+    dist = _distribution_confidence(scores_sorted)
+    coverage = _plain_coverage(query_terms, top_doc_terms)
+    idf_coverage = _idf_coverage(query_terms, top_doc_terms, term_idf)
+    return {
+        "bm25_top1": float(dist["top1"]),
+        "bm25_top2": float(dist["top2"]),
+        "bm25_gap": float(dist["gap"]),
+        "bm25_spread": float(dist["spread"]),
+        "bm25_coverage": float(coverage),
+        "bm25_idf_coverage": float(idf_coverage),
+        "bm25_conf": float(dist["conf"]),
+    }
+
+
+def _should_override_with_bm25(
+    bm25_stats: Dict[str, float],
+    fuse_stats: Dict[str, float],
+) -> bool:
+    bm25_conf = float(bm25_stats.get("bm25_conf", 0.0))
+    fuse_conf = float(fuse_stats.get("fuse_conf", 0.0))
+    return bm25_conf > fuse_conf
+
+
+def _apply_top1_override(
+    fuse_ranked: List[Dict[str, Any]],
+    bm25_top_oid: Optional[str],
+) -> List[Dict[str, Any]]:
+    if not fuse_ranked or not bm25_top_oid:
+        return list(fuse_ranked)
+    if str(fuse_ranked[0].get("oid", "")) == str(bm25_top_oid):
+        return list(fuse_ranked)
+
+    idx = next(
+        (i for i, row in enumerate(fuse_ranked) if str(row.get("oid", "")) == str(bm25_top_oid)),
+        None,
+    )
+    if idx is None:
+        return list(fuse_ranked)
+    top = fuse_ranked[idx]
+    return [top] + [row for i, row in enumerate(fuse_ranked) if i != idx]
 
 
 # -------------------------------------------------------------
@@ -347,12 +721,125 @@ def _canon_string_for_pack(text: str) -> str:
     return s
 
 
+def _token_ids_for_text_quiet(tokenizer: Any, text: str) -> List[int]:
+    """
+    Tokenize without max-length warnings; caller enforces chunk/budget behavior.
+    """
+    if tokenizer is None:
+        return []
+    try:
+        enc = tokenizer(
+            text,
+            add_special_tokens=False,
+            truncation=False,
+            return_attention_mask=False,
+            return_token_type_ids=False,
+            verbose=False,
+        )
+    except TypeError:
+        # Some tokenizers do not support the `verbose` kwarg.
+        try:
+            enc = tokenizer(
+                text,
+                add_special_tokens=False,
+                truncation=False,
+                return_attention_mask=False,
+                return_token_type_ids=False,
+            )
+        except Exception:
+            return []
+    except Exception:
+        return []
+
+    ids = enc.get("input_ids") if isinstance(enc, dict) else None
+    if ids is None:
+        return []
+    if isinstance(ids, list) and ids and isinstance(ids[0], list):
+        ids = ids[0]
+    return list(ids) if isinstance(ids, list) else []
+
+
+def _token_len_quiet(tokenizer: Any, text: str) -> int:
+    """
+    Best-effort token length.
+    Falls back to tokenizer.tokenize() and then whitespace terms if ID extraction fails.
+    """
+    ids = _token_ids_for_text_quiet(tokenizer, text)
+    if ids:
+        return len(ids)
+    if tokenizer is not None:
+        try:
+            toks = tokenizer.tokenize(text)
+            if isinstance(toks, list) and toks:
+                return len(toks)
+        except Exception:
+            pass
+    s = normalize(text or "")
+    if not s:
+        return 0
+    return max(1, len(s.split()))
+
+
+def _truncate_text_to_budget(text: str, tokenizer: Any, budget: int) -> str:
+    """
+    Hard cap text length by tokenizer token budget to avoid model overlength input.
+    """
+    s = (text or "").strip()
+    if not s or budget <= 0:
+        return s
+    ids = _token_ids_for_text_quiet(tokenizer, s)
+    if not ids:
+        return s
+    if len(ids) <= budget:
+        return s
+    ids = ids[:budget]
+    try:
+        return str(
+            tokenizer.decode(
+                ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True,
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return s
+
+
 def _terms_for_pack(text: str) -> List[str]:
     return [t for t in text.split() if TERM.fullmatch(t)]
 
 
-def _is_capability_candidate(terms: List[str]) -> bool:
-    return any(t in CAPABILITY_TERMS for t in terms)
+def _is_capability_candidate(canon: str, terms: List[str]) -> bool:
+    """
+    Vocabulary-agnostic proxy for semantically meaningful strings.
+    This avoids hardcoded benchmark terms.
+    """
+    if not canon or not terms:
+        return False
+
+    chars = [c for c in canon if not c.isspace()]
+    if not chars:
+        return False
+
+    n = float(len(chars))
+    n_alpha = sum(1 for c in chars if c.isalpha())
+    n_digit = sum(1 for c in chars if c.isdigit())
+    alpha_ratio = n_alpha / n
+    digit_ratio = n_digit / n
+
+    term_count = len(terms)
+    unique_terms = len(set(terms))
+    has_long_term = any(len(t) >= 4 for t in set(terms))
+
+    return (
+        unique_terms >= 2
+        and has_long_term
+        and alpha_ratio >= 0.50
+        and digit_ratio <= 0.45
+        and term_count <= 64
+        and (unique_terms / max(term_count, 1)) >= 0.35
+    )
 
 
 def _extract_string_features(
@@ -375,7 +862,6 @@ def _extract_string_features(
         seen.add(canon)
 
         terms = _terms_for_pack(canon)
-        is_cap = _is_capability_candidate(terms)
         chars = [c for c in canon if not c.isspace()]
         if not chars:
             continue
@@ -385,6 +871,7 @@ def _extract_string_features(
         n_alpha = sum(1 for c in chars if c.isalpha())
         n_other = len(chars) - n_digit - n_alpha
         noise_ratio = (n_digit + n_other) / n
+        is_cap = _is_capability_candidate(canon, terms)
 
         out.append(
             {
@@ -548,6 +1035,16 @@ def compute_term_idf_from_strings(
             seen_terms.update(c["term_set"])
         for t in seen_terms:
             df[t] += 1
+    if not df and apply_noise_filter:
+        # Fallback: if adaptive filters prune everything, recompute IDF without filtering.
+        return compute_term_idf_from_strings(
+            docs,
+            noise_threshold=noise_threshold,
+            max_words=max_words,
+            min_terms=min_terms,
+            apply_noise_filter=False,
+            use_idf=use_idf,
+        )
     if not use_idf:
         return {t: 1.0 for t in df.keys()}
     return {t: math.log((N + 1) / (cnt + 1)) + 1.0 for t, cnt in df.items()}
@@ -603,6 +1100,33 @@ def select_strings_by_idf_pack(
         min_terms=min_terms,
         apply_noise_filter=apply_noise_filter,
     )
+    if not cands and apply_noise_filter:
+        # Fallback when the adaptive noise filter is too strict for this collection.
+        cands = _prepare_string_candidates(
+            tokens,
+            noise_threshold=noise_threshold,
+            max_words=max_words,
+            min_terms=min_terms,
+            apply_noise_filter=False,
+        )
+    if not cands:
+        # Last-resort candidate pool: retain any normalized string with at least one TERM token.
+        for raw in tokens:
+            canon = _canon_string_for_pack(raw)
+            if not canon:
+                continue
+            terms = _terms_for_pack(canon)
+            if not terms:
+                continue
+            cands.append(
+                {
+                    "raw": raw,
+                    "canon": canon,
+                    "terms": terms,
+                    "term_set": set(terms),
+                    "score": 0.0,
+                }
+            )
     if not cands:
         return []
 
@@ -616,7 +1140,7 @@ def select_strings_by_idf_pack(
     def _pick_from(pool: List[Dict[str, Any]], stage_budget: Optional[int] = None) -> None:
         nonlocal used
         for c in sorted(pool, key=lambda x: (float(x["score"]), x["canon"]), reverse=True):
-            tlen = len(tokenizer.tokenize(c["raw"]))
+            tlen = _token_len_quiet(tokenizer, c["raw"])
             if tlen <= 0:
                 continue
             if used + tlen > budget:
@@ -633,4 +1157,102 @@ def select_strings_by_idf_pack(
                 break
 
     _pick_from(cands, stage_budget=None)
+    if not picked:
+        # Rescue pass: keep at least one candidate even if token-id extraction failed globally.
+        for c in sorted(cands, key=lambda x: (float(x["score"]), x["canon"]), reverse=True):
+            raw = str(c.get("raw") or "").strip()
+            if not raw:
+                continue
+            picked.append(raw)
+            break
     return picked
+
+
+def build_packed_docs_for_oids(
+    oids: List[str],
+    *,
+    pack_budget_tokens: int = 0,
+) -> Dict[str, str]:
+    """
+    Build query-independent packed surrogate text per executable OID.
+
+    This exposes the same IDF packing path used by fuse retrieval so other
+    retrievers can index/search over packed documents directly.
+    """
+    _, tokenizer, max_tokens = _get_model()
+    exes = filter_executables(list(oids))
+    if not exes:
+        return {}
+
+    tokens_map = {oid: extract_tokens(oid) for oid in exes}
+    str_docs = {oid: tokens_map[oid]["str"] for oid in exes}
+
+    pack_cfg: Dict[str, float] = {
+        "noise_threshold": 0.70,
+        "max_words": 48.0,
+        "min_terms": 2.0,
+        "redundancy_threshold": 0.80,
+        "prune_keep_quantile": 0.75,
+        "prune_min_keep": 8.0,
+    }
+    pack_cfg.update(derive_idf_pack_auto_params(str_docs))
+
+    effective_budget = max_tokens
+    if pack_budget_tokens > 0:
+        effective_budget = max(1, min(max_tokens, int(pack_budget_tokens)))
+
+    str_term_idf = compute_term_idf_from_strings(
+        str_docs,
+        noise_threshold=float(pack_cfg["noise_threshold"]),
+        max_words=int(pack_cfg["max_words"]),
+        min_terms=int(pack_cfg["min_terms"]),
+    )
+
+    out: Dict[str, str] = {}
+    for oid in exes:
+        selected = select_strings_by_idf_pack(
+            tokens_map[oid]["str"],
+            budget=effective_budget,
+            tokenizer=tokenizer,
+            term_idf=str_term_idf,
+            redundancy_threshold=float(pack_cfg["redundancy_threshold"]),
+            noise_threshold=float(pack_cfg["noise_threshold"]),
+            max_words=int(pack_cfg["max_words"]),
+            min_terms=int(pack_cfg["min_terms"]),
+        )
+        out[oid] = " ".join(selected).strip()
+
+    return out
+
+
+def build_packed_docs_for_collection(
+    cid: str,
+    *,
+    pack_budget_tokens: int = 0,
+) -> Dict[str, str]:
+    """Build packed surrogate text for all executable files in one collection."""
+    oids = api.expand_oids(cid)
+    return build_packed_docs_for_oids(
+        oids,
+        pack_budget_tokens=pack_budget_tokens,
+    )
+
+
+def build_packed_doc_for_oid(
+    oid: str,
+    *,
+    corpus_oids: Optional[List[str]] = None,
+    pack_budget_tokens: int = 0,
+) -> str:
+    """
+    Build one packed surrogate text.
+
+    If corpus_oids is provided, IDF is computed over that corpus and the target
+    doc is extracted from it. Otherwise IDF is computed on the single OID only.
+    """
+    oids = list(corpus_oids) if corpus_oids else [oid]
+    docs = build_packed_docs_for_oids(
+        oids,
+        pack_budget_tokens=pack_budget_tokens,
+    )
+    return docs.get(oid, "")
