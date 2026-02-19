@@ -7,17 +7,43 @@ name = "oxide-re"
 version = "4.0.0"
 description = "Oxide is a flexible, modular, distributed framework for performing analysis of data files, including executables."
 readme = "README.md"
-requires-python = ">=3.6"
+requires-python = ">=3.9"
 classifiers = ["Programming Language :: Python :: 3"]
-dependencies = []
+dependencies = [
+
+]
 
 [project.optional-dependencies]
+ghidra = [
+    "pyghidra>=3.0.2",
+]
 full = [
+    "pandas>=2.3.3",
     "colorama",
     "termcolor",
     "r2pipe",
     "flare-capa",
-] # or include minimal dependencies if there are any
+    "pyghidra>=3.0.2",
+    "networkx>=3.1",
+    "numpy>=2.0.2",
+    "scipy>=1.13.1",
+    "sympy>=1.14.0",
+    "matplotlib>=3.9.4",
+    "capstone>=5.0.0.post1",
+    "pyyaml>=6.0.3",
+    "py-tlsh>=4.12.1",
+    "pyahocorasick>=2.2.0",
+    "binwalk>=2.1.0",
+    "opencv-python>=4.13.0.92",
+    "python-bindiff>=0.3.4",
+    "angr>=9.2.102",
+    "cle>=9.2.102",
+    "ollama>=0.6.1",
+    "stopit>=1.1.2",
+    "sentence-transformers>=5.1.2",
+    "scikit-learn>=1.6.1",
+    "pyinstrument>=5.1.2",
+]
 
 
 [project.urls] # Optional
@@ -30,3 +56,15 @@ full = [
 oxide = "oxide.shell:main"
 oxide-remote = "oxide.rshell:main"
 oxide-server = "oxide.server:main"
+
+[tool.ruff.lint]
+ignore = ["E402", "I001"]
+
+[tool.ruff.format]
+exclude = ["*"]
+
+[dependency-groups]
+dev = [
+    "ghidra-stubs>=12.0.2",
+    "ruff>=0.0.17",
+]

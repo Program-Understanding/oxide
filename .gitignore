@@ -8,7 +8,7 @@ uv.lock
 api_server/config.ini
 node_modules/
 web_app/client/.nuxt/
-
+.zed/
 
 # residual oxide directories and files
 !datastore/sample_datasets
@@ -49,3 +49,4 @@ localstore/*
 *.pt
 
 /src/oxide/modules/extractors_dev/path_complexity/src
+profile.html
