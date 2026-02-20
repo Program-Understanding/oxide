@@ -4,6 +4,6 @@
 # Ensures this works regardless of where script is executed from
 cd "$(dirname "$0")"
 
-# Execute your Python script
-cd web_app/client/
-npm run dev
+# Launch frontend
+cd web_interface/oxide-app/
+./web_app.sh
