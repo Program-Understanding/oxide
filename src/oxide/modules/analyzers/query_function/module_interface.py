@@ -607,10 +607,11 @@ def _iter_functions(funcs: Any):
 def _safe_decompile(oid: str, addr: Any) -> Dict[str, Any]:
     """
     Oxide style output always dict.
-    function_decomp is expected to return a dict that includes func_name and decomp.
+    function_decomp is expected to return a dict that includes decomp.
     This unwraps either {oid: payload} or payload directly.
     """
-    res = api.retrieve("function_decomp", [oid], {"func_addr": addr})
+    # function_decomp expects the option name "function_addr".
+    res = api.retrieve("function_decomp", [oid], {"function_addr": addr})
 
     payload = None
     if isinstance(res, dict):

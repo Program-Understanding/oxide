@@ -10,6 +10,7 @@ from oxide.core import api
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
+_FUN_TOKEN_RE = re.compile(r"\bFUN_([0-9a-fA-F]+)\b")
 # ---------------------------
 # Options
 # ---------------------------
@@ -145,4 +146,76 @@ def _get_function_name(oid: str, addr: Any) -> Optional[str]:
     if addr is None:
         return None
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
-    return funcs.get(addr, {}).get("name")
+    if not isinstance(funcs, dict):
+        return None
+
+    def _name_from_meta(meta: Any) -> Optional[str]:
+        if isinstance(meta, dict):
+            n = meta.get("name")
+            if isinstance(n, str) and n:
+                return n
+            return None
+        if isinstance(meta, str) and meta:
+            return meta
+        return None
+
+    for key in _candidate_func_keys(addr):
+        if key in funcs:
+            name = _name_from_meta(funcs.get(key))
+            if name:
+                return name
+
+    addr_int = _parse_addr_any(addr)
+    if addr_int is not None:
+        for k, meta in funcs.items():
+            if _parse_addr_any(k) == addr_int:
+                name = _name_from_meta(meta)
+                if name:
+                    return name
+    return None
+
+
+def _candidate_func_keys(addr: Any) -> List[Any]:
+    keys: List[Any] = []
+    seen: set = set()
+
+    def _add(v: Any) -> None:
+        marker = repr(v)
+        if marker in seen:
+            return
+        seen.add(marker)
+        keys.append(v)
+
+    _add(addr)
+    _add(str(addr))
+
+    parsed = _parse_addr_any(addr)
+    if parsed is not None:
+        _add(parsed)
+        _add(str(parsed))
+        _add(hex(parsed))
+        _add(hex(parsed).upper())
+        _add(f"FUN_{parsed:x}")
+        _add(f"FUN_{parsed:X}")
+
+    return keys
+
+
+def _parse_addr_any(v: Any) -> Optional[int]:
+    try:
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            m = _FUN_TOKEN_RE.fullmatch(s) or _FUN_TOKEN_RE.search(s)
+            if m:
+                return int(m.group(1), 16)
+            if s.lower().startswith("0x"):
+                return int(s, 16)
+            if s.isdigit():
+                return int(s, 10)
+    except Exception:
+        return None
+    return None

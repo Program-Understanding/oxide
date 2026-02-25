@@ -16,7 +16,9 @@ NAME = "fuse_test"
 logger = logging.getLogger(NAME)
 
 FUSE_TOOLSET = "fuse"
-DEFAULT_TOP_K_FILES = 50
+# Use a very large default so evaluation effectively ranks across the full
+# executable candidate set without a practical top-k cutoff.
+DEFAULT_TOP_K_FILES = 1_000_000
 PAPER_OPT_KEYS = (
     "string_emb_batch_size",
     "debug_select",
@@ -112,6 +114,7 @@ FACTOR_RETRIEVER_IDS = [
     "bm25f",
     "chargram_bm25",
     "dense_chunked",
+    "dense_file",
     "splade",
     "colbert",
     "bm25_ce",
@@ -132,62 +135,53 @@ FACTOR_RETRIEVER_ALIASES = {
 
 TOOL_METHOD_IDS = [
     "bm25_tool",
-    "bm25_ce_tool",
     "dense_tool",
     "func_emb_tool",
     "fuse_tool",
-    "fuse_e_tool",
 ]
 E1_METHODS = [
     "bm25_tool",
     "dense_tool",
-    "bm25_ce_tool",
     "func_emb_tool",
     "fuse_tool",
 ]
 E2_METHODS = [
     "bm25_tool",
+    "dense_tool",
+    "func_emb_tool",
     "fuse_tool",
-    "fuse_e_tool",
 ]
-E2_RETRIEVERS = ["bm25", "dense", "ce"]
+E2_RETRIEVERS = ["bm25", "dense"]
 E3_HIT_K_DEFAULT = [1, 2, 5, 10, 20, 50]
-E4_METHODS = ["bm25_tool", "bm25_ce_tool", "func_emb_tool", "fuse_tool"]
-E5_METHODS = ["bm25_tool", "bm25_ce_tool", "func_emb_tool", "fuse_tool"]
+E4_METHODS = [
+    "bm25_tool",
+    "dense_tool",
+    "func_emb_tool",
+    "fuse_tool",
+]
+E5_METHODS = [
+    "bm25_tool",
+    "dense_tool",
+    "func_emb_tool",
+    "fuse_tool",
+]
 E1_METHOD_ALIASES = {
     "bm25": "bm25_tool",
-    "bm25_ce": "bm25_ce_tool",
-    "bm25_rerank_ce": "bm25_ce_tool",
-    "bm25->ce": "bm25_ce_tool",
+    "bm25_single": "bm25_tool",
+    "bm25_onepass": "bm25_tool",
+    "bm25_sp": "bm25_tool",
     "dense": "dense_tool",
     "func": "func_emb_tool",
-    "function": "func_emb_tool",
+    "func_emb": "func_emb_tool",
+    "function_embeddings": "func_emb_tool",
     "fuse": "fuse_tool",
-    "fuse_gate": "fuse_tool",
-    "fuse_hybrid": "fuse_tool",
-    "fuse_bm25_gate": "fuse_tool",
-    "fuse_bm25_gate_tool": "fuse_tool",
-    # FUSE-E: gate disabled (packed-surrogate dense retrieval only).
-    "fuse_e": "fuse_e_tool",
-    "fuse-e": "fuse_e_tool",
-    "fuse_e_tool": "fuse_e_tool",
-    "fuse_e_ablate": "fuse_e_tool",
-    "fuse_ablate": "fuse_e_tool",
-    "fuse_ablate_tool": "fuse_e_tool",
-    "fuse_nogate": "fuse_e_tool",
-    "fuse_no_gate": "fuse_e_tool",
-    "fuse_nobm25": "fuse_e_tool",
-    "fuse_no_bm25": "fuse_e_tool",
 }
 E2_RETRIEVER_ALIASES = {
     "dense_chunked": "dense",
-    "bm25_ce": "ce",
-    "cross_encoder": "ce",
 }
 E2_RETRIEVER_INTERNAL = {
     "bm25": "bm25",
     "dense": "dense_chunked",
-    "ce": "ce",
 }
 
 DEFAULT_TEXT_MODE = "norm"
@@ -601,13 +595,13 @@ def _build_docs_for_collection_with_timing(
                 {"cache_hit": True, "cache_key": key, "representation": rep, "cid": cid}
             )
             if rep == "r2_packed":
-                empty = sum(
-                    1 for oid in exes if not str(docs.get(oid) or "").strip()
-                )
+                empty = sum(1 for oid in exes if not str(docs.get(oid) or "").strip())
                 if empty == len(exes) and len(exes) > 0:
                     # Old caches can be poisoned (all-empty packed docs). Treat as a cache miss.
                     logger.warning(
-                        "Discarding cached packed docs (all empty): cid=%s key=%s", cid, key
+                        "Discarding cached packed docs (all empty): cid=%s key=%s",
+                        cid,
+                        key,
                     )
                 else:
                     _FACTORIZED_DOC_MEM_CACHE[key] = docs
@@ -625,8 +619,9 @@ def _build_docs_for_collection_with_timing(
             docs[oid] = " ".join(_strings_for_oid(oid)).strip()
     elif rep == "r1_norm":
         for oid in exes:
+            raw_text = " ".join(_strings_for_oid(oid)).strip()
             docs[oid] = _document_text_from_tokens(
-                _tokens_for_oid_text_mode(oid, "norm")
+                _bm25_tokens_for_text(raw_text, normalize=True)
             )
     else:
         try:
@@ -739,6 +734,74 @@ def _metrics_from_rank_values(ranks: Sequence[int]) -> Dict[str, float]:
         "Hit@5": sum(1 for r in ranks if r <= 5) / n,
         "MRR": sum((1.0 / r) for r in ranks) / n,
         "Mean": sum(ranks) / n,
+    }
+
+
+def _rank_stats(ranks: List[int]) -> Dict[str, Optional[float]]:
+    """
+    Per-component stats similar to fuse.py's component_analysis.
+
+    Returns None-valued metrics when ranks is empty (instead of zeros), so
+    missing components are distinguishable from "always wrong".
+    """
+    if not ranks:
+        return {
+            "median": None,
+            "mean": None,
+            "p75": None,
+            "p90": None,
+            "P@1": None,
+            "Hit@2": None,
+            "Hit@5": None,
+            "MRR": None,
+        }
+
+    n = len(ranks)
+    arr = sorted(float(r) for r in ranks)
+
+    def _q(p: float) -> float:
+        if n == 1:
+            return float(arr[0])
+        pp = max(0.0, min(1.0, float(p)))
+        idx = int(round(pp * (n - 1)))
+        return float(arr[idx])
+
+    mean_v = (
+        float(statistics.fmean(arr))
+        if hasattr(statistics, "fmean")
+        else float(sum(arr) / n)
+    )
+    return {
+        "median": float(statistics.median(arr)),
+        "mean": mean_v,
+        "p75": _q(0.75),
+        "p90": _q(0.90),
+        "P@1": float(sum(1 for r in ranks if r == 1) / n),
+        "Hit@2": float(sum(1 for r in ranks if r <= 2) / n),
+        "Hit@5": float(sum(1 for r in ranks if r <= 5) / n),
+        "MRR": float(sum((1.0 / float(r)) for r in ranks) / n),
+    }
+
+
+def _latency_stats(ms: List[float]) -> Dict[str, float]:
+    if not ms:
+        return {"mean_ms": 0.0, "median_ms": 0.0, "p90_ms": 0.0}
+    vals = sorted(float(v) for v in ms)
+    n = len(vals)
+    mean_v = (
+        float(statistics.fmean(vals))
+        if hasattr(statistics, "fmean")
+        else float(sum(vals) / n)
+    )
+    if n == 1:
+        p90 = float(vals[0])
+    else:
+        idx = int(round(0.90 * (n - 1)))
+        p90 = float(vals[max(0, min(n - 1, idx))])
+    return {
+        "mean_ms": mean_v,
+        "median_ms": float(statistics.median(vals)),
+        "p90_ms": p90,
     }
 
 
@@ -1484,12 +1547,10 @@ def _batch_function_embeddings(args: List[str], opts: Dict[str, Any]) -> Dict[st
 
     try:
         func_similarity_threshold = float(
-            opts.get("func_similarity_threshold", 0.0) or 0.0
+            opts.get("func_similarity_threshold", -1.0) or -1.0
         )
     except Exception:
-        func_similarity_threshold = 0.0
-    if func_similarity_threshold < 0:
-        func_similarity_threshold = 0.0
+        func_similarity_threshold = -1.0
 
     per_collection: Dict[str, Any] = {}
     attempted = 0
@@ -3332,12 +3393,10 @@ def _time_breakdown_function_embeddings(
         func_attn_tau = 0.07
     try:
         func_similarity_threshold = float(
-            opts.get("func_similarity_threshold", 0.0) or 0.0
+            opts.get("func_similarity_threshold", -1.0) or -1.0
         )
     except Exception:
-        func_similarity_threshold = 0.0
-    if func_similarity_threshold < 0:
-        func_similarity_threshold = 0.0
+        func_similarity_threshold = -1.0
 
     one_time_ms = 0.0
     warmup_query_ms_total = 0.0
@@ -3719,28 +3778,36 @@ def _factorized_retriever_params(
                 ),
             }
         )
-    elif retriever == "dense_chunked":
+    elif retriever in {"dense_chunked", "dense_file"}:
         base.update(
             {
                 "dense_model_id": str(
                     opts.get("dense_model_id", DEFAULT_DENSE_MODEL_ID)
                     or DEFAULT_DENSE_MODEL_ID
                 ).strip(),
-                "dense_chunk_tokens": _as_int_opt(
-                    opts, "dense_chunk_tokens", DEFAULT_DENSE_CHUNK_TOKENS, min_value=8
-                ),
-                "dense_chunk_overlap": _as_int_opt(
-                    opts,
-                    "dense_chunk_overlap",
-                    DEFAULT_DENSE_CHUNK_OVERLAP,
-                    min_value=0,
-                ),
                 "local_files_only": _as_bool(
                     opts.get("local_files_only", DEFAULT_LOCAL_FILES_ONLY),
                     DEFAULT_LOCAL_FILES_ONLY,
                 ),
             }
         )
+        if retriever == "dense_chunked":
+            base.update(
+                {
+                    "dense_chunk_tokens": _as_int_opt(
+                        opts,
+                        "dense_chunk_tokens",
+                        DEFAULT_DENSE_CHUNK_TOKENS,
+                        min_value=8,
+                    ),
+                    "dense_chunk_overlap": _as_int_opt(
+                        opts,
+                        "dense_chunk_overlap",
+                        DEFAULT_DENSE_CHUNK_OVERLAP,
+                        min_value=0,
+                    ),
+                }
+            )
     elif retriever == "splade":
         base.update(
             {
@@ -4024,7 +4091,7 @@ def _factorized_prepare_index(
         handle["chargram_corpus"] = corpus
         handle["chargram_bm25"] = _safe_build_bm25(corpus)
 
-    if retriever in {"dense_chunked", "dense_ce", "rrf_bm25_dense"}:
+    if retriever in {"dense_chunked", "dense_file", "dense_ce", "rrf_bm25_dense"}:
         dep_err = _require_numpy()
         if dep_err:
             return {"error": dep_err}
@@ -4037,44 +4104,61 @@ def _factorized_prepare_index(
             )
         except Exception as e:
             return {"error": f"dense model load failed: {e}"}
-        chunk_tokens = int(params.get("dense_chunk_tokens", DEFAULT_DENSE_CHUNK_TOKENS))
-        chunk_overlap = int(
-            params.get("dense_chunk_overlap", DEFAULT_DENSE_CHUNK_OVERLAP)
-        )
-        chunk_overlap = max(0, min(chunk_overlap, max(0, chunk_tokens - 1)))
-        chunk_texts: List[str] = []
-        owners: List[str] = []
-        tokenizer = getattr(model, "tokenizer", None)
-        for oid in exes:
-            doc_text = str(docs.get(oid, "") or "")
-            windows = _chunk_text_for_tokenizer(
-                doc_text,
-                tokenizer=tokenizer,
-                chunk_tokens=chunk_tokens,
-                chunk_overlap=chunk_overlap,
+        if retriever == "dense_chunked":
+            chunk_tokens = int(
+                params.get("dense_chunk_tokens", DEFAULT_DENSE_CHUNK_TOKENS)
             )
-            if not windows and doc_text.strip():
-                windows = [doc_text]
-            for w in windows:
-                chunk_texts.append(w)
-                owners.append(oid)
-        doc_chunk_emb: Dict[str, Any] = {oid: None for oid in exes}
-        if chunk_texts:
-            embs = model.encode(
-                chunk_texts,
-                batch_size=32,
-                show_progress_bar=False,
-                normalize_embeddings=True,
+            chunk_overlap = int(
+                params.get("dense_chunk_overlap", DEFAULT_DENSE_CHUNK_OVERLAP)
             )
-            embs = _ensure_np_array(embs)
-            grouped: Dict[str, List[Any]] = defaultdict(list)
-            for i, oid in enumerate(owners):
-                grouped[oid].append(embs[i])
+            chunk_overlap = max(0, min(chunk_overlap, max(0, chunk_tokens - 1)))
+            chunk_texts: List[str] = []
+            owners: List[str] = []
+            tokenizer = getattr(model, "tokenizer", None)
             for oid in exes:
-                rows = grouped.get(oid) or []
-                if rows:
-                    doc_chunk_emb[oid] = _ensure_np_array(rows)
-        handle.update({"dense_model": model, "dense_chunk_emb": doc_chunk_emb})
+                doc_text = str(docs.get(oid, "") or "")
+                windows = _chunk_text_for_tokenizer(
+                    doc_text,
+                    tokenizer=tokenizer,
+                    chunk_tokens=chunk_tokens,
+                    chunk_overlap=chunk_overlap,
+                )
+                if not windows and doc_text.strip():
+                    windows = [doc_text]
+                for w in windows:
+                    chunk_texts.append(w)
+                    owners.append(oid)
+            doc_chunk_emb: Dict[str, Any] = {oid: None for oid in exes}
+            if chunk_texts:
+                embs = model.encode(
+                    chunk_texts,
+                    batch_size=32,
+                    show_progress_bar=False,
+                    normalize_embeddings=True,
+                )
+                embs = _ensure_np_array(embs)
+                grouped: Dict[str, List[Any]] = defaultdict(list)
+                for i, oid in enumerate(owners):
+                    grouped[oid].append(embs[i])
+                for oid in exes:
+                    rows = grouped.get(oid) or []
+                    if rows:
+                        doc_chunk_emb[oid] = _ensure_np_array(rows)
+            handle.update({"dense_model": model, "dense_chunk_emb": doc_chunk_emb})
+        else:
+            doc_file_emb: Dict[str, Any] = {oid: None for oid in exes}
+            if exes:
+                doc_texts = [str(docs.get(oid, "") or "") for oid in exes]
+                embs = model.encode(
+                    doc_texts,
+                    batch_size=32,
+                    show_progress_bar=False,
+                    normalize_embeddings=True,
+                )
+                embs = _ensure_np_array(embs)
+                for i, oid in enumerate(exes):
+                    doc_file_emb[oid] = _ensure_np_array(embs[i])
+            handle.update({"dense_model": model, "dense_file_emb": doc_file_emb})
 
     if retriever in {"splade", "rrf_bm25_splade"}:
         if torch is None or AutoTokenizer is None or AutoModelForMaskedLM is None:
@@ -4210,7 +4294,7 @@ def _factorized_search(
     oids = list(handle.get("oids") or [])
     raw_query = str(query or "").strip()
     q_text = raw_query
-    if retriever in {"dense_chunked", "dense_ce", "ce"}:
+    if retriever in {"dense_chunked", "dense_file", "dense_ce", "ce"}:
         if not raw_query:
             return {"ranked": [], "query_time_ms": 0.0, "stage_times_ms": {}}
     elif not q_text:
@@ -4344,6 +4428,35 @@ def _factorized_search(
             "ranked": ranked,
             "query_time_ms": ms,
             "stage_times_ms": {"dense_chunked": ms},
+        }
+
+    if retriever == "dense_file":
+        model = handle.get("dense_model")
+        if model is None or np is None:
+            return {"ranked": [], "query_time_ms": 0.0, "stage_times_ms": {}}
+        if not raw_query:
+            return {"ranked": [], "query_time_ms": 0.0, "stage_times_ms": {}}
+        t0 = time.perf_counter_ns()
+        q_vec = _ensure_np_array(
+            model.encode(raw_query, show_progress_bar=False, normalize_embeddings=True)
+        )
+        if isinstance(q_vec, np.ndarray) and q_vec.ndim > 1:
+            q_vec = q_vec.reshape(-1)
+        scored: List[Tuple[str, float]] = []
+        emb_by_oid = handle.get("dense_file_emb") or {}
+        for oid in oids:
+            emb = emb_by_oid.get(oid)
+            if isinstance(emb, np.ndarray) and emb.size > 0:
+                scored.append((oid, float(np.dot(emb, q_vec))))
+            else:
+                scored.append((oid, -1e9))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        ranked = [oid for oid, _ in scored[:top_k]]
+        ms = (time.perf_counter_ns() - t0) / 1_000_000.0
+        return {
+            "ranked": ranked,
+            "query_time_ms": ms,
+            "stage_times_ms": {"dense_file": ms},
         }
 
     if retriever == "splade":
@@ -4520,49 +4633,6 @@ def _factorized_search(
         }
 
     return {"ranked": [], "query_time_ms": 0.0, "stage_times_ms": {}}
-
-
-def _run_factorized_func_cell(
-    ground_truth: Dict[str, Dict[str, str]],
-    prompt_map: Dict[str, str],
-    opts: Dict[str, Any],
-) -> Dict[str, Any]:
-    out = _batch_function_embeddings([], opts)
-    if not isinstance(out, dict) or out.get("error"):
-        return {
-            "representation": "granularity_function",
-            "retriever": "func",
-            "params": {},
-            "error": (
-                (out or {}).get("error")
-                if isinstance(out, dict)
-                else "Function baseline failed."
-            ),
-        }
-    attempted = int(out.get("attempted_queries", 0) or 0)
-    avg_ms = float(out.get("avg_retrieval_ms", 0.0) or 0.0)
-    return {
-        "representation": "granularity_function",
-        "retriever": "func",
-        "params": {
-            "top_k_funcs": int(opts.get("top_k_funcs", 1) or 1),
-            "func_file_agg": str(opts.get("func_file_agg", "top1") or "top1"),
-        },
-        "top_k_files": int(
-            opts.get("top_k_files", DEFAULT_TOP_K_FILES) or DEFAULT_TOP_K_FILES
-        ),
-        "attempted_queries": attempted,
-        "global_metrics": dict(out.get("global_metrics") or {}),
-        "timing": {
-            "one_time_doc_ms": 0.0,
-            "one_time_index_ms": 0.0,
-            "query_time_ms_total": float(f"{(avg_ms * max(attempted, 0)):.3f}"),
-            "query_time_ms_avg": float(f"{avg_ms:.3f}"),
-            "stage_times_ms": {},
-        },
-        "per_collection": dict(out.get("per_collection") or {}),
-        "granularity": "function",
-    }
 
 
 def _run_factorized_cell(
@@ -4834,101 +4904,15 @@ def _factorized_r2_deltas(cells: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def agent_factorized_eval_all(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Deprecated entrypoint kept for compatibility.
+    """
     return {
         "error": (
             "agent_factorized_eval_all is deprecated. "
             "Use agent_eval_all (or agent_eval_e2 for representation matrix only)."
         )
     }
-
-    """
-    Run factorized matrix evaluation: method = (representation, retriever).
-
-    Outputs:
-      - factorized_cells.json
-      - factorized_retriever_comparison.json
-      - factorized_representation_comparison.json
-      - factorized_r2_delta_summary.json
-      - factorized_eval_all.json
-    """
-    ground_truth, prompt_map, load_err = _load_eval_inputs(opts)
-    if load_err:
-        return {"error": load_err}
-    if ground_truth is None or prompt_map is None:
-        return {"error": "Failed loading evaluation inputs."}
-
-    reps, rep_err = _parse_representation_ids_opt(opts)
-    if rep_err:
-        return {"error": rep_err}
-    retrievers, ret_err = _parse_factorized_retriever_ids_opt(opts)
-    if ret_err:
-        return {"error": ret_err}
-
-    started_ns = time.time_ns()
-    top_k_files = _as_int_opt(opts, "top_k_files", DEFAULT_TOP_K_FILES, min_value=1)
-    cells: List[Dict[str, Any]] = []
-
-    for rep in reps or []:
-        for ret in retrievers or []:
-            if ret == "func":
-                continue
-            cell = _run_factorized_cell(
-                ground_truth=ground_truth,
-                prompt_map=prompt_map,
-                rep=rep,
-                retriever=ret,
-                opts=opts,
-            )
-            cells.append(cell)
-
-    if "func" in (retrievers or []):
-        cells.append(_run_factorized_func_cell(ground_truth, prompt_map, opts))
-
-    retriever_comparison = _factorized_retriever_comparison(cells)
-    representation_comparison = _factorized_representation_comparison(cells)
-    r2_delta_summary = _factorized_r2_deltas(cells)
-
-    payload = {
-        "toolset": FUSE_TOOLSET,
-        "mode": "factorized",
-        "candidate_filter": "executables_only_excluding_.so_and_.ko",
-        "representations": reps,
-        "retrievers": retrievers,
-        "top_k_files": top_k_files,
-        "started_unix_ns": started_ns,
-        "elapsed_ms": float(f"{(time.time_ns() - started_ns) / 1_000_000.0:.3f}"),
-        "cells": cells,
-        "retriever_comparison": retriever_comparison,
-        "representation_comparison": representation_comparison,
-        "r2_delta_summary": r2_delta_summary,
-    }
-
-    outdir = (opts.get("outdir") or "").strip()
-    artifacts: Dict[str, str] = {}
-    if outdir:
-        try:
-            outpath = Path(outdir).expanduser()
-            outpath.mkdir(parents=True, exist_ok=True)
-            artifacts["cells"] = _write_json(
-                outpath, "factorized_cells.json", {"cells": cells}
-            )
-            artifacts["retriever_comparison"] = _write_json(
-                outpath, "factorized_retriever_comparison.json", retriever_comparison
-            )
-            artifacts["representation_comparison"] = _write_json(
-                outpath,
-                "factorized_representation_comparison.json",
-                representation_comparison,
-            )
-            artifacts["r2_delta_summary"] = _write_json(
-                outpath, "factorized_r2_delta_summary.json", r2_delta_summary
-            )
-            artifacts["all"] = _write_json(outpath, "factorized_eval_all.json", payload)
-        except Exception as e:
-            payload["artifact_error"] = f"Failed writing outdir artifacts: {e}"
-    if artifacts:
-        payload["artifacts"] = artifacts
-    return payload
 
 
 def _parse_named_ids_opt(
@@ -5191,34 +5175,51 @@ def _run_doc_tool_method(
     )
 
 
-def _run_func_tool_method(
+def _run_func_emb_tool_method(
     tasks: List[Dict[str, Any]], opts: Dict[str, Any]
 ) -> Dict[str, Any]:
+    """
+    Function-level semantic baseline using query_function and file aggregation.
+    """
     top_k_files = _as_int_opt(opts, "top_k_files", DEFAULT_TOP_K_FILES, min_value=1)
     top_k_funcs = _as_int_opt(opts, "top_k_funcs", 1, min_value=1)
+    backfill_unscored_files = _as_bool(
+        opts.get("func_backfill_unscored_files", True), True
+    )
     func_file_agg = str(opts.get("func_file_agg", "top1") or "top1").strip().lower()
     if func_file_agg not in {"top1", "mean", "attn"}:
         func_file_agg = "top1"
-    func_attn_tau = _as_float_opt(opts, "func_attn_tau", 0.07, min_value=1e-6)
+    func_attn_tau = _as_float_opt(opts, "func_attn_tau", 0.07, min_value=1e-9)
+    # Cosine scores can be negative; default to -1.0 to keep all scored files.
     func_similarity_threshold = _as_float_opt(
-        opts, "func_similarity_threshold", 0.0, min_value=0.0
+        opts, "func_similarity_threshold", -1.0, min_value=-1.0
     )
-
-    by_cid_exes: Dict[str, List[str]] = {}
-    for cid in sorted({str(t["cid"]) for t in tasks}):
-        by_cid_exes[cid] = filter_executables(api.expand_oids(cid))
 
     per_query: List[Dict[str, Any]] = []
     stage_times: Dict[str, float] = defaultdict(float)
+    exes_by_cid: Dict[str, List[str]] = {}
+
     for task in tasks:
-        cid = str(task["cid"])
-        exes = by_cid_exes.get(cid) or []
+        cid = str(task.get("cid") or "")
+        if not cid:
+            continue
+        exes = exes_by_cid.get(cid)
+        if exes is None:
+            exes = filter_executables(api.expand_oids(cid))
+            exes_by_cid[cid] = exes
+        if not exes:
+            continue
+
+        prompt = str(task.get("prompt") or "").strip()
+        if not prompt:
+            continue
+
         t0 = time.perf_counter_ns()
         qf_out = api.retrieve(
             "query_function",
             exes,
             {
-                "query": str(task.get("prompt", "")),
+                "query": prompt,
                 "top_k": top_k_funcs,
                 "return_file_embeddings": True,
                 "file_agg": func_file_agg,
@@ -5237,11 +5238,52 @@ def _run_func_tool_method(
                 qf_out, top_k_files=top_k_files
             )
         q_ms = (time.perf_counter_ns() - t0) / 1_000_000.0
-        stage_times["query_function"] += q_ms
-        ranked = [r.get("oid") for r in ranked_files if isinstance(r, dict)]
+        stage_times["func_query"] += q_ms
+
+        ranked = [r["oid"] for r in ranked_files[:top_k_files]]
+        backfilled_count = 0
+        if backfill_unscored_files and len(ranked) < min(len(exes), top_k_files):
+            seen = set(ranked)
+            remaining = top_k_files - len(ranked)
+            for oid in exes:
+                if oid in seen:
+                    continue
+                ranked.append(oid)
+                seen.add(oid)
+                backfilled_count += 1
+                remaining -= 1
+                if remaining <= 0:
+                    break
+
         rank = _rank_from_oid_list(ranked, str(task.get("gold_oid", "")))
         if rank is None:
             rank = top_k_files + 1
+
+        qf_counts = qf_out.get("counts") if isinstance(qf_out, dict) else {}
+        qf_file_scores = qf_out.get("file_scores") if isinstance(qf_out, dict) else {}
+        qf_candidates = (
+            ((qf_out.get("results") or {}).get("candidates") or [])
+            if isinstance(qf_out, dict)
+            else []
+        )
+        gold_oid = str(task.get("gold_oid", "") or "")
+        gold_counts = qf_counts.get(gold_oid) if isinstance(qf_counts, dict) else None
+        gold_num_functions = (
+            int(gold_counts.get("num_functions", 0))
+            if isinstance(gold_counts, dict)
+            else None
+        )
+        gold_num_indexed = (
+            int(gold_counts.get("num_indexed", 0))
+            if isinstance(gold_counts, dict)
+            else None
+        )
+        scored_file_count = len(qf_file_scores) if isinstance(qf_file_scores, dict) else 0
+        candidate_count = len(qf_candidates) if isinstance(qf_candidates, list) else 0
+        gold_scored = bool(
+            isinstance(qf_file_scores, dict) and gold_oid and gold_oid in qf_file_scores
+        )
+
         per_query.append(
             {
                 "task_id": task.get("task_id"),
@@ -5250,21 +5292,28 @@ def _run_func_tool_method(
                 "cid": cid,
                 "collection": task.get("collection"),
                 "component": task.get("component"),
-                "query": task.get("prompt"),
+                "query": prompt,
                 "gold_oid": task.get("gold_oid"),
                 "rank": rank,
-                "top_k_oids": ranked[:top_k_files],
+                "top_k_oids": ranked,
+                "func_backfilled_count": backfilled_count,
+                "func_scored_file_count": scored_file_count,
+                "func_candidate_count": candidate_count,
+                "func_gold_num_functions": gold_num_functions,
+                "func_gold_num_indexed": gold_num_indexed,
+                "func_gold_scored": gold_scored,
                 "runtime_ms": float(f"{q_ms:.3f}"),
             }
         )
 
     return _finalize_method_result(
         method="func_emb_tool",
-        representation=None,
-        retriever="func",
+        representation="function_level",
+        retriever="query_function",
         params={
             "top_k_files": top_k_files,
             "top_k_funcs": top_k_funcs,
+            "func_backfill_unscored_files": backfill_unscored_files,
             "func_file_agg": func_file_agg,
             "func_attn_tau": func_attn_tau,
             "func_similarity_threshold": func_similarity_threshold,
@@ -5278,106 +5327,18 @@ def _run_func_tool_method(
     )
 
 
-def _run_fuse_e_tool_method(
-    tasks: List[Dict[str, Any]], opts: Dict[str, Any]
-) -> Dict[str, Any]:
-    # Ablation: enforce the same dense mechanism used by `dense_tool`, but over R2 packed docs.
-    return _run_doc_tool_method(
-        method="fuse_e_tool",
-        representation="r2_packed",
-        retriever="dense_chunked",
-        tasks=tasks,
-        opts=opts,
-    )
-
-
-def _run_fuse_ablate_tool_method(
-    tasks: List[Dict[str, Any]], opts: Dict[str, Any]
-) -> Dict[str, Any]:
-    # Backwards compatibility (renamed to fuse_e_tool).
-    return _run_fuse_e_tool_method(tasks, opts)
-
-
 def _run_fuse_tool_method(
     tasks: List[Dict[str, Any]], opts: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Run the core fuse analyzer with BM25-confidence gating enabled.
-    This is the default "FUSE" tool-level method.
+    FUSE tool method: dense-file ranking on packed docs (Dense-P behavior).
     """
-    top_k_files = _as_int_opt(opts, "top_k_files", DEFAULT_TOP_K_FILES, min_value=1)
-    fuse_opts = _extract_paper_opts(opts)
-    # Enforce canonical FUSE behavior (confidence gate enabled).
-    # This method is not an ablation; ablations should use different methods/flags.
-    fuse_opts["ablate_no_gate"] = False
-    fuse_opts["ablate_bm25_only"] = False
-
-    per_query: List[Dict[str, Any]] = []
-    stage_times: Dict[str, float] = defaultdict(float)
-
-    for task in tasks:
-        cid = str(task.get("cid", "") or "")
-        prompt = str(task.get("prompt", "") or "")
-        if not cid or not prompt:
-            continue
-
-        t0 = time.perf_counter_ns()
-        out = _call_fuse(
-            cid=cid,
-            query=prompt,
-            top_k=top_k_files,
-            fuse_opts=fuse_opts,
-        )
-        q_ms = (time.perf_counter_ns() - t0) / 1_000_000.0
-        # Keep legacy key for older analysis scripts.
-        stage_times["fuse_hybrid"] += q_ms
-        stage_times["fuse_confidence_gate"] += q_ms
-
-        if isinstance(out, dict) and out.get("error"):
-            return {"method": "fuse_tool", "error": str(out.get("error"))}
-
-        ranked_files = _extract_file_candidates_from_fuse(out, top_k=top_k_files)
-        ranked = [r.get("oid") for r in ranked_files if isinstance(r, dict)]
-
-        rank = _rank_from_oid_list(ranked, str(task.get("gold_oid", "")))
-        if rank is None:
-            rank = top_k_files + 1
-
-        per_query.append(
-            {
-                "task_id": task.get("task_id"),
-                "pair_id": task.get("pair_id"),
-                "variant_id": task.get("variant_id"),
-                "cid": cid,
-                "collection": task.get("collection"),
-                "component": task.get("component"),
-                "query": prompt,
-                "gold_oid": task.get("gold_oid"),
-                "rank": rank,
-                "top_k_oids": ranked[:top_k_files],
-                "runtime_ms": float(f"{q_ms:.3f}"),
-            }
-        )
-
-    return _finalize_method_result(
+    return _run_doc_tool_method(
         method="fuse_tool",
         representation="r2_packed",
-        retriever="dense_chunked+bm25_gate",
-        params={
-            "top_k_files": top_k_files,
-            "confidence_gate_enabled": True,
-            "ablate_no_gate": False,
-            "ablate_bm25_only": False,
-            # Legacy fields (keep stable for existing result parsers).
-            "hybrid_enable": True,
-            "hybrid_selector": "confidence_race",
-        },
-        top_k_files=top_k_files,
-        per_query=per_query,
-        one_time_doc_ms=0.0,
-        one_time_index_ms=0.0,
-        stage_times=stage_times,
-        ci_opts=opts,
+        retriever="dense_file",
+        tasks=tasks,
+        opts=opts,
     )
 
 
@@ -5402,33 +5363,10 @@ def _run_eval_method(
             tasks=tasks,
             opts=opts,
         )
-    if method == "bm25_ce_tool":
-        ce_opts = dict(opts)
-        if "rerank_candidate_ks" not in ce_opts:
-            k = _as_int_opt(opts, "top_k_files", DEFAULT_TOP_K_FILES, min_value=1)
-            ce_opts["rerank_candidate_ks"] = str(min(50, k))
-        if "rerank_eval_k" not in ce_opts:
-            k = _as_int_opt(opts, "top_k_files", DEFAULT_TOP_K_FILES, min_value=1)
-            ce_opts["rerank_eval_k"] = int(min(50, k))
-        return _run_doc_tool_method(
-            method=method,
-            representation="r0_raw",
-            retriever="bm25_ce",
-            tasks=tasks,
-            opts=ce_opts,
-        )
     if method == "func_emb_tool":
-        return _run_func_tool_method(tasks, opts)
+        return _run_func_emb_tool_method(tasks, opts)
     if method == "fuse_tool":
         return _run_fuse_tool_method(tasks, opts)
-    if method == "fuse_e_tool":
-        return _run_fuse_e_tool_method(tasks, opts)
-    # Backwards compatibility (renamed to fuse_tool).
-    if method == "fuse_bm25_gate_tool":
-        return _run_fuse_tool_method(tasks, opts)
-    # Backwards compatibility (renamed to fuse_e_tool).
-    if method == "fuse_ablate_tool":
-        return _run_fuse_e_tool_method(tasks, opts)
     return {"method": method, "error": f"Unknown method '{method}'."}
 
 
@@ -5584,12 +5522,11 @@ def agent_eval_e1(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     E1: End-to-End Effectiveness (tool-level comparison).
 
     Methods:
-      - bm25_tool   (BM25 over R0 raw strings)
-      - dense_tool  (chunked bi-encoder retrieval over R0 raw strings)
-      - bm25_ce_tool (BM25->CrossEncoder rerank over R0 raw strings)
-      - func_emb_tool (function embeddings aggregated to files)
-      - fuse_tool   (FUSE primitive: fuse analyzer + BM25-confidence gating)
-    Defaults to bm25_tool,dense_tool,bm25_ce_tool,func_emb_tool,fuse_tool.
+      - bm25_tool (BM25 single-pass on R0 raw strings)
+      - dense_tool (chunked bi-encoder retrieval over R0 raw strings)
+      - func_emb_tool (function-level semantic retrieval via query_function)
+      - fuse_tool (dense-file retrieval over R2 packed strings)
+    Defaults to bm25_tool,dense_tool,func_emb_tool,fuse_tool.
     """
     ground_truth, prompt_map, err = _load_eval_inputs(opts)
     if err:
@@ -5633,13 +5570,14 @@ def agent_eval_e1(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
 def agent_eval_e2(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
-    E2: Gate ablation (BM25 vs FUSE vs FUSE-E).
+    E2: Comparison set for canonical FUSE against retained baselines.
 
     Methods:
-      - bm25_tool   (BM25 over R0 raw strings)
-      - fuse_tool   (FUSE primitive: fuse analyzer + BM25-confidence gating)
-      - fuse_e_tool (FUSE-E: packed-surrogate dense retrieval only; gate disabled)
-    Defaults to bm25_tool,fuse_tool,fuse_e_tool.
+      - bm25_tool (BM25 single-pass on R0 raw strings)
+      - dense_tool (chunked bi-encoder retrieval over R0 raw strings)
+      - func_emb_tool (function-level semantic retrieval via query_function)
+      - fuse_tool (dense-file retrieval over R2 packed strings)
+    Defaults to bm25_tool,dense_tool,func_emb_tool,fuse_tool.
     """
     ground_truth, prompt_map, err = _load_eval_inputs(opts)
     if err:
@@ -5759,7 +5697,7 @@ def _parse_hit_ks(opts: Dict[str, Any]) -> List[int]:
 def agent_eval_e4(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
     E4: Agent-centric tradeoff (Hit@K vs warm query latency).
-    Defaults to bm25_tool,bm25_ce_tool,func_emb_tool,fuse_tool.
+    Defaults to bm25_tool,dense_tool,func_emb_tool,fuse_tool.
     """
     ground_truth, prompt_map, err = _load_eval_inputs(opts)
     if err:
@@ -5890,7 +5828,7 @@ def _load_prompt_variants(
 def agent_eval_e5(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
     E5: Query variation robustness using provided prompt_variants JSON.
-    Defaults to bm25_tool,bm25_ce_tool,func_emb_tool,fuse_tool.
+    Defaults to bm25_tool,dense_tool,func_emb_tool,fuse_tool.
     """
     ground_truth, prompt_map, err = _load_eval_inputs(opts)
     if err:
@@ -5990,7 +5928,58 @@ def agent_eval_e5(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             ),
             f"any_variant_hit@{stable_k}": (any_ok / pair_count) if pair_count else 0.0,
         }
+
+        # Per-component robustness summary (paper-style hit counts @k).
+        per_component_metrics: Dict[str, Any] = {}
+        for comp, row in per_component.items():
+            ranks = list(row.get("rank_distribution") or [])
+            total = len(ranks)
+            hit = sum(1 for r in ranks if int(r) <= stable_k)
+            mrr = (sum(1.0 / float(r) for r in ranks) / total) if total else 0.0
+            per_component_metrics[comp] = {
+                "stable_k": stable_k,
+                "total_variants": total,
+                "hit": hit,
+                "hit_rate": (hit / total) if total else 0.0,
+                f"hit@{stable_k}": hit,
+                f"hit@{stable_k}_rate": (hit / total) if total else 0.0,
+                "mrr_over_variants": float(f"{mrr:.6f}"),
+            }
+
+        # Pair-level robustness (paper-style aggregates).
+        pair_hit_rates: List[float] = []
+        pair_medians: List[float] = []
+        pair_worsts: List[float] = []
+        for rs in pair_ranks.values():
+            if not rs:
+                continue
+            pair_hit_rates.append(
+                float(sum(1 for r in rs if int(r) <= stable_k) / len(rs))
+            )
+            pair_medians.append(float(statistics.median(rs)))
+            pair_worsts.append(float(max(rs)))
+        ge80 = sum(1 for x in pair_hit_rates if x >= 0.80)
+        ge50 = sum(1 for x in pair_hit_rates if x >= 0.50)
+        pair_level = {
+            "stable_k": stable_k,
+            "pairs": pair_count,
+            f"ge_80pct_variants_at_{stable_k}": (
+                (ge80 / pair_count) if pair_count else 0.0
+            ),
+            f"ge_50pct_variants_at_{stable_k}": (
+                (ge50 / pair_count) if pair_count else 0.0
+            ),
+            "mean_median_rank_per_pair": float(
+                f"{(sum(pair_medians) / max(len(pair_medians), 1)):.6f}"
+            ),
+            "mean_worst_rank_per_pair": float(
+                f"{(sum(pair_worsts) / max(len(pair_worsts), 1)):.6f}"
+            ),
+        }
+
         result["per_component"] = per_component
+        result["per_component_metrics"] = per_component_metrics
+        result["pair_level"] = pair_level
         per_method[method] = result
 
     payload = {
@@ -6012,7 +6001,12 @@ def agent_eval_e5(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
 def agent_eval_all(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Run E1/E2/E3/E4/E5 and write all evaluation artifacts.
+    Run the full paper evaluation suite and write all evaluation artifacts.
+
+    Includes:
+      - E1/E2/E3/E4/E5
+      - component_analysis
+      - effort_analysis
     Uses the same per-experiment default method lists unless an explicit methods list is provided.
     """
     started_ns = time.time_ns()
@@ -6024,12 +6018,69 @@ def agent_eval_all(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     e3_opts = dict(run_opts)
     e4_opts = dict(run_opts)
     e5_opts = dict(run_opts)
+    effort_opts = dict(run_opts)
+
+    def _set_default_methods(local_opts: Dict[str, Any], defaults: Sequence[str]) -> None:
+        raw = str(local_opts.get("methods", "") or "").strip()
+        if raw:
+            return
+        local_opts["methods"] = ",".join(defaults)
+
+    _set_default_methods(
+        e1_opts,
+        [
+            "bm25_tool",
+            "dense_tool",
+            "func_emb_tool",
+            "fuse_tool",
+        ],
+    )
+    _set_default_methods(
+        e2_opts,
+        [
+            "bm25_tool",
+            "dense_tool",
+            "func_emb_tool",
+            "fuse_tool",
+        ],
+    )
+    if not str(e3_opts.get("retrievers", "") or "").strip():
+        e3_opts["retrievers"] = "bm25,dense"
+    _set_default_methods(
+        e4_opts,
+        [
+            "bm25_tool",
+            "dense_tool",
+            "func_emb_tool",
+            "fuse_tool",
+        ],
+    )
+    _set_default_methods(
+        e5_opts,
+        [
+            "bm25_tool",
+            "dense_tool",
+            "func_emb_tool",
+            "fuse_tool",
+        ],
+    )
+    _set_default_methods(
+        effort_opts,
+        [
+            "bm25_tool",
+            "dense_tool",
+            "func_emb_tool",
+            "fuse_tool",
+        ],
+    )
 
     e1 = agent_eval_e1(args, e1_opts)
     e2 = agent_eval_e2(args, e2_opts)
     e3 = agent_eval_e3(args, e3_opts)
     e4 = agent_eval_e4(args, e4_opts)
     e5 = agent_eval_e5(args, e5_opts)
+    comp = component_analysis(args, dict(run_opts))
+    effort = effort_analysis(args, effort_opts)
 
     payload = {
         "suite": "fuse_eval_all",
@@ -6042,6 +6093,8 @@ def agent_eval_all(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             "e3": e3,
             "e4": e4,
             "e5": e5,
+            "component_analysis": comp,
+            "effort_analysis": effort,
         },
     }
 
@@ -6054,9 +6107,13 @@ def agent_eval_all(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             ("e3", "e3_rep_matrix.json", e3),
             ("e4", "e4_tradeoff.json", e4),
             ("e5", "e5_query_variation.json", e5),
+            ("component_analysis", "component_analysis.json", comp),
+            ("effort_analysis", "effort_analysis.json", effort),
             ("all", "eval_all.json", payload),
         ]
         for k, fname, obj in mapping:
+            if obj is None:
+                continue
             p = _write_artifact(
                 outdir, fname, obj if isinstance(obj, dict) else {"value": obj}
             )
@@ -6067,8 +6124,645 @@ def agent_eval_all(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Per-component analysis (tool-level)
+# ---------------------------------------------------------------------------
+def component_analysis(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Per-component "performance by component" similar to src/oxide/plugins/fuse.py
+    component_analysis, but built on this plugin's tool-level eval methods.
+
+    Defaults to methods=fuse_tool,bm25_tool and includes per-component latency stats.
+    Component features are limited to avg file size and avg string count.
+    """
+    ground_truth, prompt_map, err = _load_eval_inputs(opts)
+    if err:
+        return {"error": err}
+    if ground_truth is None or prompt_map is None:
+        return {"error": "Failed loading evaluation inputs."}
+
+    methods, method_err = _parse_named_ids_opt(
+        opts,
+        key="methods",
+        default_ids=["fuse_tool", "bm25_tool"],
+        allowed_ids=TOOL_METHOD_IDS,
+        aliases=E1_METHOD_ALIASES,
+    )
+    if method_err:
+        return {"error": method_err}
+    methods = methods or []
+
+    top_k_files = _as_int_opt(opts, "top_k_files", DEFAULT_TOP_K_FILES, min_value=1)
+    tasks = _build_eval_tasks(ground_truth, prompt_map)
+
+    # Run selected methods using shared tool-level infrastructure.
+    method_results: Dict[str, Dict[str, Any]] = {}
+    per_method: Dict[str, Dict[str, Any]] = {}
+    for method in methods:
+        res = _run_eval_method(method, tasks, opts)
+        if not isinstance(res, dict):
+            res = {"method": method, "error": "Method returned non-dict result."}
+        method_results[method] = res
+        per_method[method] = {
+            "error": res.get("error"),
+            "global_metrics": (
+                dict(res.get("global_metrics") or {})
+                if isinstance(res.get("global_metrics"), dict)
+                else res.get("global_metrics")
+            ),
+            "timing": (
+                dict(res.get("timing") or {})
+                if isinstance(res.get("timing"), dict)
+                else res.get("timing")
+            ),
+        }
+
+    # Task-derived component universe.
+    components = sorted(
+        {str(t.get("component") or "") for t in tasks if str(t.get("component") or "")}
+    )
+
+    # Compute component features across unique gold_oids.
+    by_component_oids: Dict[str, Set[str]] = defaultdict(set)
+    for t in tasks:
+        comp = str(t.get("component") or "")
+        oid = str(t.get("gold_oid") or "")
+        if comp and oid:
+            by_component_oids[comp].add(oid)
+
+    oid_feat_cache: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+
+    def _oid_feats(oid: str) -> Tuple[Optional[float], Optional[float]]:
+        if oid in oid_feat_cache:
+            return oid_feat_cache[oid]
+        size_v: Optional[float]
+        strings_v: Optional[float]
+        try:
+            size_raw = api.get_field("file_meta", oid, "size")
+            size_v = float(size_raw) if size_raw is not None else None
+        except Exception:
+            size_v = None
+        try:
+            strings_raw = api.get_field("strings", oid, oid) or {}
+            strings_v = (
+                float(len(strings_raw)) if isinstance(strings_raw, dict) else None
+            )
+        except Exception:
+            strings_v = None
+        oid_feat_cache[oid] = (size_v, strings_v)
+        return oid_feat_cache[oid]
+
+    def _avg(vals: List[float]) -> Optional[float]:
+        if not vals:
+            return None
+        return (
+            float(statistics.fmean(vals))
+            if hasattr(statistics, "fmean")
+            else float(sum(vals) / len(vals))
+        )
+
+    comp_features: Dict[str, Dict[str, Optional[float]]] = {}
+    for comp in components:
+        oids = sorted(by_component_oids.get(comp) or [])
+        sizes: List[float] = []
+        strs: List[float] = []
+        for oid in oids:
+            s, st = _oid_feats(oid)
+            if s is not None:
+                sizes.append(float(s))
+            if st is not None:
+                strs.append(float(st))
+        comp_features[comp] = {
+            "avg_size": _avg(sizes),
+            "avg_strings": _avg(strs),
+        }
+
+    # Optional label mapping for common pair.
+    display_name: Dict[str, str] = {m: m for m in methods}
+    if set(methods) == {"fuse_tool", "bm25_tool"}:
+        display_name["fuse_tool"] = "FUSE"
+        display_name["bm25_tool"] = "BM25"
+
+    # Build per-component performance table.
+    per_component: Dict[str, Dict[str, Any]] = {}
+    for comp in components:
+        row: Dict[str, Any] = {"features": dict(comp_features.get(comp) or {})}
+        for method in methods:
+            res = method_results.get(method) or {}
+            if not isinstance(res, dict):
+                row[display_name[method]] = {"error": "Invalid method result."}
+                continue
+            if res.get("error"):
+                row[display_name[method]] = {"error": str(res.get("error"))}
+                continue
+            pq = res.get("per_query")
+            if not isinstance(pq, list):
+                row[display_name[method]] = {"error": "Missing per_query output."}
+                continue
+
+            ranks: List[int] = []
+            lats: List[float] = []
+            for q in pq:
+                if not isinstance(q, dict):
+                    continue
+                if str(q.get("component") or "") != comp:
+                    continue
+                try:
+                    ranks.append(int(q.get("rank", top_k_files + 1)))
+                except Exception:
+                    ranks.append(top_k_files + 1)
+                try:
+                    lats.append(float(q.get("runtime_ms", 0.0) or 0.0))
+                except Exception:
+                    lats.append(0.0)
+
+            stats = _rank_stats(ranks)
+            row[display_name[method]] = {
+                **stats,
+                "attempted_queries": len(ranks),
+                "latency_ms": {
+                    k: float(f"{v:.3f}") for k, v in _latency_stats(lats).items()
+                },
+            }
+
+        per_component[comp] = row
+
+    # Optional deltas (only when comparing exactly two methods).
+    if len(methods) == 2:
+        a, b = methods[0], methods[1]
+        a_name, b_name = display_name[a], display_name[b]
+
+        def _delta(x: Any, y: Any) -> Optional[float]:
+            try:
+                if x is None or y is None:
+                    return None
+                return float(float(x) - float(y))
+            except Exception:
+                return None
+
+        for comp, row in per_component.items():
+            aa = row.get(a_name) if isinstance(row.get(a_name), dict) else {}
+            bb = row.get(b_name) if isinstance(row.get(b_name), dict) else {}
+            if not isinstance(aa, dict) or not isinstance(bb, dict):
+                continue
+            if aa.get("error") or bb.get("error"):
+                continue
+            lat_a = (
+                (aa.get("latency_ms") or {})
+                if isinstance(aa.get("latency_ms"), dict)
+                else {}
+            )
+            lat_b = (
+                (bb.get("latency_ms") or {})
+                if isinstance(bb.get("latency_ms"), dict)
+                else {}
+            )
+
+            row["deltas"] = {
+                "A": a_name,
+                "B": b_name,
+                "ΔP@1": _delta(aa.get("P@1"), bb.get("P@1")),
+                "ΔHit@2": _delta(aa.get("Hit@2"), bb.get("Hit@2")),
+                "ΔHit@5": _delta(aa.get("Hit@5"), bb.get("Hit@5")),
+                "ΔMRR": _delta(aa.get("MRR"), bb.get("MRR")),
+                "Δmean": _delta(aa.get("mean"), bb.get("mean")),
+                "Δmedian": _delta(aa.get("median"), bb.get("median")),
+                "Δlatency_mean_ms": _delta(lat_a.get("mean_ms"), lat_b.get("mean_ms")),
+            }
+
+    def _pearsonr(xs: List[float], ys: List[float]) -> Optional[float]:
+        if len(xs) != len(ys) or len(xs) < 2:
+            return None
+        mx = (
+            float(statistics.fmean(xs))
+            if hasattr(statistics, "fmean")
+            else float(sum(xs) / len(xs))
+        )
+        my = (
+            float(statistics.fmean(ys))
+            if hasattr(statistics, "fmean")
+            else float(sum(ys) / len(ys))
+        )
+        num = 0.0
+        dx2 = 0.0
+        dy2 = 0.0
+        for x, y in zip(xs, ys):
+            dx = float(x) - mx
+            dy = float(y) - my
+            num += dx * dy
+            dx2 += dx * dx
+            dy2 += dy * dy
+        den = math.sqrt(dx2) * math.sqrt(dy2)
+        if den <= 0.0:
+            return None
+        return float(num / den)
+
+    correlations: Dict[str, Dict[str, Optional[float]]] = {}
+    for method in methods:
+        label = display_name.get(method, method)
+
+        def _series_for_feature(feature_key: str) -> Tuple[List[float], List[float]]:
+            rs: List[float] = []
+            fs: List[float] = []
+            for comp in components:
+                row = per_component.get(comp) or {}
+                feats = (
+                    row.get("features") if isinstance(row.get("features"), dict) else {}
+                )
+                sysrow = row.get(label) if isinstance(row.get(label), dict) else {}
+                med = sysrow.get("median")
+                fv = feats.get(feature_key)
+                if med is None or fv is None:
+                    continue
+                rs.append(float(med))
+                fs.append(float(fv))
+            return rs, fs
+
+        correlations[label] = {}
+        for feat in ["avg_size", "avg_strings"]:
+            rs, fs = _series_for_feature(feat)
+            correlations[label][feat] = _pearsonr(rs, fs)
+
+    payload: Dict[str, Any] = {
+        "analysis": "component_analysis",
+        "candidate_filter": "executables_only_excluding_.so_and_.ko",
+        "methods": methods,
+        "top_k_files": top_k_files,
+        "task_count": len(tasks),
+        "component_count": len(components),
+        "per_method": per_method,
+        "per_component": per_component,
+        "correlations": correlations,
+    }
+
+    outdir = str(opts.get("outdir", "") or "").strip()
+    artifact = _write_artifact(outdir, "component_analysis.json", payload)
+    if artifact:
+        payload["artifact"] = artifact
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Analyst effort (rank distribution + optional CDF)
+# ---------------------------------------------------------------------------
+def effort_analysis(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Compute rank-distribution effort metrics (Mean/Median/P75/P90) per method and
+    optionally emit CDF-ready points.
+    """
+    ground_truth, prompt_map, err = _load_eval_inputs(opts)
+    if err:
+        return {"error": err}
+    if ground_truth is None or prompt_map is None:
+        return {"error": "Failed loading evaluation inputs."}
+
+    methods, method_err = _parse_named_ids_opt(
+        opts,
+        key="methods",
+        default_ids=[
+            "bm25_tool",
+            "dense_tool",
+            "func_emb_tool",
+            "fuse_tool",
+        ],
+        allowed_ids=TOOL_METHOD_IDS,
+        aliases=E1_METHOD_ALIASES,
+    )
+    if method_err:
+        return {"error": method_err}
+    methods = methods or []
+
+    top_k_files = _as_int_opt(opts, "top_k_files", DEFAULT_TOP_K_FILES, min_value=1)
+    include_cdf = _as_bool(opts.get("include_cdf", True), True)
+    tasks = _build_eval_tasks(ground_truth, prompt_map)
+
+    per_method: Dict[str, Any] = {}
+    for method in methods:
+        res = _run_eval_method(method, tasks, opts)
+        if not isinstance(res, dict) or res.get("error"):
+            per_method[method] = {
+                "error": (
+                    (res or {}).get("error")
+                    if isinstance(res, dict)
+                    else "method failed"
+                )
+            }
+            continue
+        pq = res.get("per_query")
+        if not isinstance(pq, list):
+            per_method[method] = {"error": "Missing per_query output."}
+            continue
+        ranks: List[int] = []
+        for q in pq:
+            if not isinstance(q, dict):
+                continue
+            try:
+                ranks.append(int(q.get("rank", top_k_files + 1)))
+            except Exception:
+                ranks.append(top_k_files + 1)
+
+        stats = _rank_stats(ranks)
+        out = {
+            "attempted_queries": len(ranks),
+            "Mean": stats.get("mean"),
+            "Median": stats.get("median"),
+            "P75": stats.get("p75"),
+            "P90": stats.get("p90"),
+        }
+        if include_cdf and ranks:
+            mx = max(ranks)
+            pts = []
+            for r in range(1, mx + 1):
+                pts.append(
+                    {
+                        "rank": r,
+                        "fraction": float(sum(1 for x in ranks if x <= r) / len(ranks)),
+                    }
+                )
+            out["cdf"] = pts
+        per_method[method] = out
+
+    payload: Dict[str, Any] = {
+        "analysis": "effort_analysis",
+        "candidate_filter": "executables_only_excluding_.so_and_.ko",
+        "methods": methods,
+        "top_k_files": top_k_files,
+        "task_count": len(tasks),
+        "per_method": per_method,
+    }
+    outdir = str(opts.get("outdir", "") or "").strip()
+    artifact = _write_artifact(outdir, "effort_analysis.json", payload)
+    if artifact:
+        payload["artifact"] = artifact
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Alternate implementations (TinySSH/OpenSSH) per-prompt ranks
+# ---------------------------------------------------------------------------
+def alt_impl_ranks(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Produce per-prompt rank tables for a single collection (CID) and 1-2 target binaries.
+
+    Inputs:
+      - args[0]: search-space CID
+      - args[1]: target CID (single-target convenience)
+      - opts["prompt_variants_path"]: JSON mapping component -> [prompts]
+      - opts["targets"]: JSON string/dict/file mapping target_label -> oid
+      - opts["target_cid"]: single CID containing the target binary
+      - opts["target_cids"]: JSON/dict/list/csv containing one or more target CIDs
+    """
+    if not args:
+        return {"error": "Provide search CID as args[0]."}
+    cid = str(args[0] or "").strip()
+    if not cid:
+        return {"error": "Provide search CID as args[0]."}
+    positional_target_cid = str(args[1] or "").strip() if len(args) > 1 else ""
+
+    variants_path = str((opts.get("prompt_variants_path") or "").strip())
+    if not variants_path:
+        return {"error": "Provide prompt_variants_path."}
+    variants_map, var_err = _load_prompt_variants(variants_path)
+    if var_err:
+        return {"error": var_err}
+    if not variants_map:
+        return {"error": "Failed loading prompt variants."}
+
+    # Choose component.
+    component = str(opts.get("component", "") or "").strip()
+    if component:
+        prompts = variants_map.get(component) or []
+        if not prompts:
+            return {
+                "error": f"Component '{component}' not found in prompt_variants_path."
+            }
+    else:
+        component = sorted(variants_map.keys())[0]
+        prompts = variants_map.get(component) or []
+
+    # Parse targets mapping (label -> oid).
+    raw_targets = opts.get("targets")
+    targets: Dict[str, str] = {}
+    if isinstance(raw_targets, dict):
+        targets = {str(k): str(v) for k, v in raw_targets.items() if k and v}
+    elif isinstance(raw_targets, str):
+        s = raw_targets.strip()
+        if not s:
+            targets = {}
+        else:
+            try:
+                obj = json.loads(s)
+                if isinstance(obj, dict):
+                    targets = {str(k): str(v) for k, v in obj.items() if k and v}
+            except Exception:
+                try:
+                    obj = json.loads(Path(s).read_text())
+                    if isinstance(obj, dict):
+                        targets = {str(k): str(v) for k, v in obj.items() if k and v}
+                except Exception as e:
+                    return {"error": f"Failed parsing targets: {e}"}
+
+    # Parse target CID(s) and resolve to OID(s).
+    def _resolve_single_target_oid_from_cid(target_cid: str) -> Tuple[Optional[str], Optional[str]]:
+        tcid = str(target_cid or "").strip()
+        if not tcid:
+            return None, "Empty target CID."
+        try:
+            exes = filter_executables(api.expand_oids(tcid))
+        except Exception as e:
+            return None, f"Failed expanding target CID '{tcid}': {e}"
+        if len(exes) == 1:
+            return str(exes[0]), None
+        if len(exes) > 1:
+            return (
+                None,
+                f"Target CID '{tcid}' is ambiguous ({len(exes)} executables). "
+                "Provide targets mapping label->oid to disambiguate.",
+            )
+        try:
+            all_oids = list(api.expand_oids(tcid) or [])
+        except Exception as e:
+            return None, f"Failed expanding target CID '{tcid}': {e}"
+        if len(all_oids) == 1:
+            return str(all_oids[0]), None
+        if len(all_oids) == 0:
+            return None, f"Target CID '{tcid}' contains no files."
+        return (
+            None,
+            f"Target CID '{tcid}' is ambiguous ({len(all_oids)} files). "
+            "Provide targets mapping label->oid to disambiguate.",
+        )
+
+    def _default_label_for_target_cid(target_cid: str, idx: int) -> str:
+        try:
+            name = str(api.get_colname_from_oid(str(target_cid)) or "").strip()
+        except Exception:
+            name = ""
+        if name:
+            return name
+        return f"target_{idx}"
+
+    if positional_target_cid:
+        oid, err = _resolve_single_target_oid_from_cid(positional_target_cid)
+        if err:
+            return {"error": err}
+        targets.setdefault("target", str(oid))
+
+    raw_target_cid = str(opts.get("target_cid", "") or "").strip()
+    if raw_target_cid:
+        oid, err = _resolve_single_target_oid_from_cid(raw_target_cid)
+        if err:
+            return {"error": err}
+        targets.setdefault("target", str(oid))
+
+    raw_target_cids = opts.get("target_cids")
+    cid_targets: Dict[str, str] = {}
+    if isinstance(raw_target_cids, dict):
+        cid_targets = {
+            str(k): str(v) for k, v in raw_target_cids.items() if str(k).strip() and str(v).strip()
+        }
+    elif isinstance(raw_target_cids, list):
+        for i, v in enumerate(raw_target_cids, 1):
+            vcid = str(v or "").strip()
+            if not vcid:
+                continue
+            cid_targets[_default_label_for_target_cid(vcid, i)] = vcid
+    elif isinstance(raw_target_cids, str):
+        s = raw_target_cids.strip()
+        if s:
+            try:
+                obj = json.loads(s)
+            except Exception:
+                obj = [tok.strip() for tok in s.split(",") if tok.strip()]
+            if isinstance(obj, dict):
+                cid_targets = {
+                    str(k): str(v) for k, v in obj.items() if str(k).strip() and str(v).strip()
+                }
+            elif isinstance(obj, list):
+                for i, v in enumerate(obj, 1):
+                    vcid = str(v or "").strip()
+                    if not vcid:
+                        continue
+                    cid_targets[_default_label_for_target_cid(vcid, i)] = vcid
+            else:
+                return {
+                    "error": "target_cids must be dict/list/csv/JSON (e.g. '{\"sshd\":\"<cid>\"}')."
+                }
+
+    for label, tcid in cid_targets.items():
+        oid, err = _resolve_single_target_oid_from_cid(tcid)
+        if err:
+            return {"error": err}
+        targets[str(label)] = str(oid)
+
+    if not targets:
+        return {
+            "error": "Provide target via args[1] (target CID) or one of: targets, target_cid, target_cids."
+        }
+
+    methods, method_err = _parse_named_ids_opt(
+        opts,
+        key="methods",
+        default_ids=[
+            "bm25_tool",
+            "dense_tool",
+            "func_emb_tool",
+            "fuse_tool",
+        ],
+        allowed_ids=TOOL_METHOD_IDS,
+        aliases=E1_METHOD_ALIASES,
+    )
+    if method_err:
+        return {"error": method_err}
+    methods = methods or []
+
+    top_k_files = _as_int_opt(opts, "top_k_files", DEFAULT_TOP_K_FILES, min_value=1)
+    include_topk = _as_bool(opts.get("include_topk", False), False)
+    include_debug = _as_bool(opts.get("include_debug", False), False)
+
+    # Use a stable gold for method calls; ranks for other targets are derived from top_k list.
+    first_gold = sorted(targets.values())[0]
+    colname = api.get_colname_from_oid(cid)
+
+    rows: List[Dict[str, Any]] = []
+    for idx, prompt in enumerate(prompts):
+        row: Dict[str, Any] = {
+            "prompt_id": f"P{idx}",
+            "prompt": prompt,
+        }
+        for method in methods:
+            task = {
+                "task_id": f"{cid}:{component}:P{idx}:{method}",
+                "cid": cid,
+                "collection": colname,
+                "component": component,
+                "prompt": prompt,
+                "gold_oid": first_gold,
+            }
+            run_opts = dict(opts)
+            run_opts["top_k_files"] = top_k_files
+            res = _run_eval_method(method, [task], run_opts)
+            if not isinstance(res, dict) or res.get("error"):
+                row[method] = {
+                    "error": (
+                        (res or {}).get("error")
+                        if isinstance(res, dict)
+                        else "method failed"
+                    )
+                }
+                continue
+            pq = res.get("per_query")
+            q0 = pq[0] if isinstance(pq, list) and pq else {}
+            topk = list(q0.get("top_k_oids") or []) if isinstance(q0, dict) else []
+            method_out: Dict[str, Any] = {
+                "runtime_ms": q0.get("runtime_ms") if isinstance(q0, dict) else None,
+                "targets": {},
+            }
+            for label, oid in targets.items():
+                r = _rank_from_oid_list(topk, oid)
+                method_out["targets"][label] = (
+                    int(r) if r is not None else int(top_k_files + 1)
+                )
+            if include_topk:
+                method_out["top_k_oids"] = topk
+            if include_debug and isinstance(q0, dict):
+                debug_keys = (
+                    "func_backfilled_count",
+                    "func_scored_file_count",
+                    "func_candidate_count",
+                    "func_gold_num_functions",
+                    "func_gold_num_indexed",
+                    "func_gold_scored",
+                )
+                dbg = {k: q0.get(k) for k in debug_keys if k in q0}
+                if dbg:
+                    method_out["debug"] = dbg
+            row[method] = method_out
+        rows.append(row)
+
+    payload: Dict[str, Any] = {
+        "analysis": "alt_impl_ranks",
+        "cid": cid,
+        "collection": colname,
+        "component": component,
+        "prompt_variants_path": variants_path,
+        "targets": targets,
+        "methods": methods,
+        "top_k_files": top_k_files,
+        "rows": rows,
+    }
+    outdir = str(opts.get("outdir", "") or "").strip()
+    artifact = _write_artifact(outdir, "alt_impl_ranks.json", payload)
+    if artifact:
+        payload["artifact"] = artifact
+    return payload
+
+
 # Public plugin entrypoints (legacy paper_* orchestration intentionally omitted).
 exports = [
+    component_analysis,
+    effort_analysis,
+    alt_impl_ranks,
     agent_eval_e1,
     agent_eval_e2,
     agent_eval_e3,

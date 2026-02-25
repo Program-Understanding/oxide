@@ -1,4 +1,4 @@
-DESC = "Strings-only file retrieval using auto-calibrated IDF evidence packing (+ optional BM25-confidence gate)"
+DESC = "Strings-only file retrieval using auto-calibrated IDF evidence packing with dense ranking"
 NAME = "fuse"
 
 import hashlib
@@ -19,15 +19,10 @@ logger = logging.getLogger(NAME)
 opts_doc = {
     "prompt": {"type": str, "mangle": False, "default": ""},
     "prompt_path": {"type": str, "mangle": False, "default": ""},
-    "top_k": {"type": int, "mangle": False, "default": 50},
+    "top_k": {"type": int, "mangle": False, "default": 0},
     "string_emb_batch_size": {"type": int, "mangle": False, "default": 128},
     "debug_select": {"type": bool, "mangle": False, "default": False},
     "pack_budget_tokens": {"type": int, "mangle": False, "default": 0},
-    # Canonical FUSE behavior includes a BM25 confidence gate.
-    # These options are for ablation experiments only.
-    "ablate_no_gate": {"type": bool, "mangle": False, "default": False},
-    "ablate_bm25_only": {"type": bool, "mangle": False, "default": False},
-    "ablate_debug": {"type": bool, "mangle": False, "default": False},
 }
 
 # -------------------------------------------------------------
@@ -102,26 +97,10 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         except OSError as e:
             return {"error": f"Failed to read prompt_path: {e}"}
 
-    top_k = int(opts.get("top_k", 50))
+    top_k = int(opts.get("top_k", 0))
     string_emb_batch_size = int(opts.get("string_emb_batch_size", 128) or 128)
     debug_select = bool(opts.get("debug_select", False))
     pack_budget_tokens = int(opts.get("pack_budget_tokens", 0) or 0)
-
-    # Canonical behavior: confidence-gated BM25 override is ON by default.
-    # Ablations:
-    # - ablate_no_gate: keep dense ranking (no BM25 override)
-    # - ablate_bm25_only: ignore dense ranking and return BM25 ranking
-    # Backward compat:
-    # - hybrid_enable=False means ablate_no_gate=True
-    # - hybrid_debug maps to ablate_debug
-    ablate_no_gate = bool(opts.get("ablate_no_gate", False))
-    ablate_bm25_only = bool(opts.get("ablate_bm25_only", False))
-    ablate_debug = bool(opts.get("ablate_debug", False))
-
-    if "hybrid_enable" in opts and "ablate_no_gate" not in opts:
-        ablate_no_gate = not bool(opts.get("hybrid_enable", True))
-    if "hybrid_debug" in opts and "ablate_debug" not in opts:
-        ablate_debug = bool(opts.get("hybrid_debug", False))
 
     return search_prompt(
         oid_list,
@@ -130,9 +109,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
         string_emb_batch_size=string_emb_batch_size,
         debug_select=debug_select,
         pack_budget_tokens=pack_budget_tokens,
-        ablate_no_gate=ablate_no_gate,
-        ablate_bm25_only=ablate_bm25_only,
-        ablate_debug=ablate_debug,
     )
 
 
@@ -166,7 +142,7 @@ def build_embedding_matrix(
     pack_budget_tokens: int = 0,
 ) -> Tuple[np.ndarray, List[str]]:
     """
-    Generate fused embedding matrix for the provided OIDs.
+    Generate packed-document embedding matrix for the provided OIDs.
     Returns (matrix, ordered_oids).
     """
     model, tokenizer, max_tokens = _get_model()
@@ -247,17 +223,14 @@ def build_embedding_matrix(
 def search_prompt(
     oids: List[str],
     prompt: str,
-    top_k: int = 50,
+    top_k: int = 0,
     string_emb_batch_size: int = 128,
     debug_select: bool = False,
     pack_budget_tokens: int = 0,
-    ablate_no_gate: bool = False,
-    ablate_bm25_only: bool = False,
-    ablate_debug: bool = False,
 ) -> Dict[str, Any]:
-    """Search prompt over candidate OIDs; return ranked results."""
+    """Search prompt over candidate OIDs; return dense-ranked results."""
     model, _, _ = _get_model()
-    debug_needed = bool(debug_select or ablate_debug)
+    debug_needed = bool(debug_select)
 
     exes = filter_executables(oids)
     if not exes:
@@ -296,368 +269,14 @@ def search_prompt(
         return {"oid": oid, "names": get_names(oid), "score": float(sims[i])}
 
     ranked = [fmt(i) for i in idxs]
-    bm25_top_oid: Optional[str] = None
-    override_applied = False
-    gate_stats: Dict[str, Any] = {}
-
-    # Canonical FUSE behavior uses a BM25 confidence gate to optionally override dense top-1.
-    # Ablations can disable the gate or return BM25-only results.
-    gate_enabled = not bool(ablate_no_gate) and not bool(ablate_bm25_only)
-    if gate_enabled or ablate_bm25_only or debug_needed:
-        raw_docs = _build_raw_string_docs(exes)
-        query_terms = _query_terms_for_lexical(prompt)
-        bm25_ranked, bm25_scores, bm25_meta = _bm25_rank_with_scores(raw_docs, query_terms)
-        bm25_top_oid = bm25_ranked[0] if bm25_ranked else None
-
-        docs_term_sets: Dict[str, set] = {}
-        for oid, doc_text in raw_docs.items():
-            terms = [t for t in doc_text.split() if TERM.fullmatch(t)]
-            docs_term_sets[oid] = set(terms)
-        term_idf = _term_idf_for_terms(set(query_terms), docs_term_sets)
-
-        bm25_score_sorted = [float(bm25_scores.get(oid, 0.0)) for oid in bm25_ranked]
-        bm25_top_terms = docs_term_sets.get(str(bm25_top_oid), set()) if bm25_top_oid else set()
-        bm25_conf = _bm25_confidence(
-            bm25_score_sorted,
-            query_terms=query_terms,
-            top_doc_terms=bm25_top_terms,
-            term_idf=term_idf,
-        )
-        dense_sorted = [float(sims[i]) for i in idxs_all]
-        fuse_conf = _dense_confidence(dense_sorted)
-        should_override = _should_override_with_bm25(
-            bm25_stats=bm25_conf,
-            fuse_stats=fuse_conf,
-        )
-
-        if gate_enabled and should_override and bm25_top_oid:
-            # Preserve FUSE ordering except for promoting BM25's top candidate.
-            promoted = _apply_top1_override(ranked, bm25_top_oid)
-            if promoted and promoted[0].get("oid") == bm25_top_oid:
-                ranked = promoted
-                override_applied = True
-            else:
-                oid_to_idx = {oid: i for i, oid in enumerate(exes)}
-                top_idx = oid_to_idx.get(bm25_top_oid)
-                if top_idx is not None:
-                    bm25_top_item = fmt(top_idx)
-                    keep = [r for r in ranked if r.get("oid") != bm25_top_oid]
-                    ranked = [bm25_top_item] + keep
-                    if top_k > 0:
-                        ranked = ranked[:top_k]
-                    override_applied = True
-
-        try:
-            from rank_bm25 import BM25Okapi as _BM25Okapi  # type: ignore
-
-            bm25_supported = True
-        except Exception:
-            bm25_supported = False
-
-        gate_stats = {
-            "enabled": bool(gate_enabled),
-            "bm25_backend": str(bm25_meta.get("backend", "unknown")),
-            "query_term_count": len(query_terms),
-            "bm25_top_oid": bm25_top_oid,
-            "fuse_top_oid": ranked[0].get("oid") if ranked else None,
-            "bm25_confidence": bm25_conf,
-            "fuse_confidence": fuse_conf,
-            "decision_rule": "bm25_conf > fuse_conf",
-            "override_applied": bool(override_applied),
-            "bm25_supported": bool(bm25_supported),
-            "ablate_no_gate": bool(ablate_no_gate),
-            "ablate_bm25_only": bool(ablate_bm25_only),
-        }
-        if "fallback_reason" in bm25_meta:
-            gate_stats["fallback_reason"] = str(bm25_meta["fallback_reason"])
-
-        if ablate_bm25_only:
-            oid_to_idx = {oid: i for i, oid in enumerate(exes)}
-
-            def fmt_bm25(oid: str) -> Dict[str, Any]:
-                dense_i = oid_to_idx.get(oid)
-                dense_score = float(sims[dense_i]) if dense_i is not None else None
-                return {
-                    "oid": oid,
-                    "names": get_names(oid),
-                    "score": float(bm25_scores.get(oid, 0.0)),
-                    "bm25_score": float(bm25_scores.get(oid, 0.0)),
-                    "dense_score": dense_score,
-                }
-
-            ranked = [fmt_bm25(oid) for oid in bm25_ranked]
-            if top_k > 0:
-                ranked = ranked[:top_k]
-
     best = ranked[0] if ranked else None
 
     resp = {"prompt": prompt, "results": {"best_match": best, "candidates": ranked}}
     if debug_needed:
         if debug_out is None:
             debug_out = {}
-        if gate_enabled or ablate_debug or ablate_bm25_only:
-            # New name:
-            debug_out["confidence_gate"] = gate_stats or {
-                "enabled": bool(gate_enabled),
-                "override_applied": False,
-            }
-            # Backward-compat alias:
-            debug_out["hybrid"] = debug_out["confidence_gate"]
         resp["debug_select"] = debug_out or {}
     return resp
-
-
-def _clamp01(v: float) -> float:
-    return float(min(1.0, max(0.0, float(v))))
-
-
-def _query_terms_for_lexical(prompt: str) -> List[str]:
-    norm = normalize(prompt or "")
-    if not norm:
-        return []
-    return [t for t in norm.split() if TERM.fullmatch(t)]
-
-
-def _build_raw_string_docs(exes: List[str]) -> Dict[str, str]:
-    docs: Dict[str, str] = {}
-    for oid in exes:
-        raw_strs = api.get_field("strings", oid, oid) or {}
-        parts: List[str] = []
-        for s in raw_strs.values():
-            if not isinstance(s, str):
-                continue
-            if len(s) >= 200:
-                continue
-            ns = normalize(s)
-            if TERM.search(ns):
-                parts.append(ns)
-        docs[oid] = " ".join(parts).strip()
-    return docs
-
-
-def _bm25_lite_scores(
-    query_terms: List[str],
-    doc_terms_by_oid: Dict[str, List[str]],
-) -> Dict[str, float]:
-    N = max(1, len(doc_terms_by_oid))
-    avgdl = (
-        sum(len(terms) for terms in doc_terms_by_oid.values()) / float(N)
-        if doc_terms_by_oid
-        else 1.0
-    )
-    avgdl = max(avgdl, 1e-8)
-
-    df = Counter()
-    for terms in doc_terms_by_oid.values():
-        for t in set(terms):
-            df[t] += 1
-
-    q_tf = Counter(query_terms)
-    k1 = 1.2
-    b = 0.75
-    out: Dict[str, float] = {}
-    for oid, terms in doc_terms_by_oid.items():
-        tf = Counter(terms)
-        dl = max(len(terms), 1)
-        score = 0.0
-        for t, qcnt in q_tf.items():
-            f = float(tf.get(t, 0))
-            if f <= 0:
-                continue
-            term_df = float(df.get(t, 0))
-            idf = math.log((N - term_df + 0.5) / (term_df + 0.5) + 1.0)
-            denom = f + k1 * (1.0 - b + b * (float(dl) / avgdl))
-            score += float(qcnt) * idf * ((f * (k1 + 1.0)) / max(denom, 1e-8))
-        out[oid] = float(score)
-    return out
-
-
-def _bm25_rank_with_scores(
-    docs: Dict[str, str],
-    query_terms: List[str],
-) -> Tuple[List[str], Dict[str, float], Dict[str, Any]]:
-    try:
-        from rank_bm25 import BM25Okapi  # type: ignore
-    except Exception:
-        BM25Okapi = None
-
-    ordered_oids = list(docs.keys())
-    doc_terms_by_oid: Dict[str, List[str]] = {
-        oid: [t for t in str(docs.get(oid, "")).split() if TERM.fullmatch(t)]
-        for oid in ordered_oids
-    }
-
-    if not ordered_oids:
-        return [], {}, {"backend": "none"}
-
-    query_terms = [t for t in query_terms if TERM.fullmatch(t)]
-    if not query_terms:
-        scores = {oid: 0.0 for oid in ordered_oids}
-        ranked = sorted(ordered_oids)
-        return ranked, scores, {"backend": "no_query_terms"}
-
-    if BM25Okapi is not None:
-        try:
-            corpus = [doc_terms_by_oid[oid] for oid in ordered_oids]
-            bm25 = BM25Okapi(corpus)
-            raw_scores = bm25.get_scores(query_terms)
-            scores = {
-                oid: float(raw_scores[i]) for i, oid in enumerate(ordered_oids)
-            }
-            ranked = sorted(ordered_oids, key=lambda oid: (-scores[oid], oid))
-            return ranked, scores, {"backend": "rank_bm25"}
-        except Exception as e:
-            lite = _bm25_lite_scores(query_terms, doc_terms_by_oid)
-            ranked = sorted(ordered_oids, key=lambda oid: (-lite.get(oid, 0.0), oid))
-            return ranked, lite, {
-                "backend": "bm25_lite",
-                "fallback_reason": f"rank_bm25_failed:{e}",
-            }
-
-    lite = _bm25_lite_scores(query_terms, doc_terms_by_oid)
-    ranked = sorted(ordered_oids, key=lambda oid: (-lite.get(oid, 0.0), oid))
-    return ranked, lite, {"backend": "bm25_lite"}
-
-
-def _term_idf_for_terms(
-    query_terms: set,
-    docs_term_sets: Dict[str, set],
-) -> Dict[str, float]:
-    if not query_terms:
-        return {}
-    N = max(1, len(docs_term_sets))
-    out: Dict[str, float] = {}
-    for t in query_terms:
-        df = sum(1 for s in docs_term_sets.values() if t in s)
-        out[t] = math.log((N + 1.0) / (float(df) + 1.0)) + 1.0
-    return out
-
-
-def _plain_coverage(query_terms: List[str], top_doc_terms: set) -> float:
-    q = set(query_terms)
-    if not q:
-        return 0.0
-    return _clamp01(float(sum(1 for t in q if t in top_doc_terms)) / float(len(q)))
-
-
-def _idf_coverage(
-    query_terms: List[str],
-    top_doc_terms: set,
-    term_idf: Dict[str, float],
-) -> float:
-    q = set(query_terms)
-    if not q:
-        return 0.0
-    den = float(sum(float(term_idf.get(t, 1.0)) for t in q))
-    if den <= 0.0:
-        return 0.0
-    num = float(sum(float(term_idf.get(t, 1.0)) for t in q if t in top_doc_terms))
-    return _clamp01(num / den)
-
-
-def _normalized_margin(s1: float, s2: float) -> float:
-    gap = max(float(s1) - float(s2), 0.0)
-    denom = abs(float(s1)) + abs(float(s2)) + 1e-8
-    return _clamp01(gap / denom)
-
-
-def _robust_spread(vals: List[float]) -> float:
-    if not vals:
-        return 0.0
-    arr = np.asarray(vals, dtype=np.float32)
-    if arr.size == 0:
-        return 0.0
-    med = float(np.median(arr))
-    mad = float(np.median(np.abs(arr - med)))
-    if mad > 1e-8:
-        return float(1.4826 * mad)
-    q75 = float(np.quantile(arr, 0.75))
-    q25 = float(np.quantile(arr, 0.25))
-    iqr = q75 - q25
-    if iqr > 1e-8:
-        return float(iqr / 1.349)
-    std = float(np.std(arr))
-    return std if std > 0.0 else 0.0
-
-
-def _distribution_confidence(sorted_scores: List[float]) -> Dict[str, float]:
-    if not sorted_scores:
-        return {"top1": 0.0, "top2": 0.0, "gap": 0.0, "spread": 0.0, "conf": 0.0}
-    s1 = float(sorted_scores[0])
-    s2 = float(sorted_scores[1]) if len(sorted_scores) > 1 else s1
-    gap = max(s1 - s2, 0.0)
-
-    window = [float(x) for x in sorted_scores[: min(len(sorted_scores), 20)]]
-    spread_input = window[1:] if len(window) > 1 else window
-    spread = max(_robust_spread(spread_input), 1e-8)
-    conf = _clamp01(gap / (gap + spread))
-    return {
-        "top1": s1,
-        "top2": s2,
-        "gap": float(gap),
-        "spread": float(spread),
-        "conf": float(conf),
-    }
-
-
-def _dense_confidence(sorted_sims: List[float]) -> Dict[str, float]:
-    dist = _distribution_confidence(sorted_sims)
-    return {
-        "fuse_top1": float(dist["top1"]),
-        "fuse_top2": float(dist["top2"]),
-        "fuse_gap": float(dist["gap"]),
-        "fuse_spread": float(dist["spread"]),
-        "fuse_conf": float(dist["conf"]),
-    }
-
-
-def _bm25_confidence(
-    scores_sorted: List[float],
-    *,
-    query_terms: List[str],
-    top_doc_terms: set,
-    term_idf: Dict[str, float],
-) -> Dict[str, float]:
-    dist = _distribution_confidence(scores_sorted)
-    coverage = _plain_coverage(query_terms, top_doc_terms)
-    idf_coverage = _idf_coverage(query_terms, top_doc_terms, term_idf)
-    return {
-        "bm25_top1": float(dist["top1"]),
-        "bm25_top2": float(dist["top2"]),
-        "bm25_gap": float(dist["gap"]),
-        "bm25_spread": float(dist["spread"]),
-        "bm25_coverage": float(coverage),
-        "bm25_idf_coverage": float(idf_coverage),
-        "bm25_conf": float(dist["conf"]),
-    }
-
-
-def _should_override_with_bm25(
-    bm25_stats: Dict[str, float],
-    fuse_stats: Dict[str, float],
-) -> bool:
-    bm25_conf = float(bm25_stats.get("bm25_conf", 0.0))
-    fuse_conf = float(fuse_stats.get("fuse_conf", 0.0))
-    return bm25_conf > fuse_conf
-
-
-def _apply_top1_override(
-    fuse_ranked: List[Dict[str, Any]],
-    bm25_top_oid: Optional[str],
-) -> List[Dict[str, Any]]:
-    if not fuse_ranked or not bm25_top_oid:
-        return list(fuse_ranked)
-    if str(fuse_ranked[0].get("oid", "")) == str(bm25_top_oid):
-        return list(fuse_ranked)
-
-    idx = next(
-        (i for i, row in enumerate(fuse_ranked) if str(row.get("oid", "")) == str(bm25_top_oid)),
-        None,
-    )
-    if idx is None:
-        return list(fuse_ranked)
-    top = fuse_ranked[idx]
-    return [top] + [row for i, row in enumerate(fuse_ranked) if i != idx]
 
 
 # -------------------------------------------------------------
