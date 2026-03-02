@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { apiClient } from "@/lib/api/client";
 import type { CollectionFile, ModuleCapability } from "@/lib/api/types";
+import { DepthJsonView } from "@/components/depth-json-view";
 
 const ChartRenderer = dynamic(
   () => import("@/components/charts/chart-renderers").then((mod) => mod.ChartRenderer),
@@ -280,9 +281,7 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
             <ChartRenderer moduleName={selectedChartModule} oid={selectedOid} result={runState.result} />
           </div>
         ) : null}
-        <pre className="max-h-[34rem] overflow-auto text-xs text-zinc-300">
-          {JSON.stringify(runState.result, null, 2)}
-        </pre>
+        <DepthJsonView data={runState.result} />
       </div>
     </section>
   );

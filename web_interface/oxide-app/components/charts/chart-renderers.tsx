@@ -8,6 +8,7 @@ import { ControlFlowRenderer } from "./renderers/control-flow-renderer";
 import { BinaryVisualizerRenderer } from "./renderers/binary-visualizer-renderer";
 import type { ModuleRendererProps } from "./renderers/types";
 import { getModuleResult, toEntries } from "./renderers/utils";
+import { DepthJsonView } from "@/components/depth-json-view";
 
 export function ChartRenderer({ moduleName, oid, result }: ModuleRendererProps) {
   const moduleData = getModuleResult(result, oid);
@@ -57,9 +58,5 @@ export function ChartRenderer({ moduleName, oid, result }: ModuleRendererProps) 
   if (moduleName === "control_flow_graph") return <ControlFlowRenderer data={moduleData} />;
   if (moduleName === "binary_visualizer") return <BinaryVisualizerRenderer data={moduleData} />;
 
-  return (
-    <pre className="max-h-[34rem] overflow-auto text-xs text-zinc-300">
-      {JSON.stringify(moduleData, null, 2)}
-    </pre>
-  );
+  return <DepthJsonView data={moduleData} />;
 }

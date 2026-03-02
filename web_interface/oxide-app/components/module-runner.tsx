@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiClient } from "@/lib/api/client";
 import type { CollectionFile } from "@/lib/api/types";
+import { DepthJsonView } from "@/components/depth-json-view";
 
 type RunState = {
   loading: boolean;
@@ -229,9 +230,7 @@ export function ModuleRunner() {
 
       <div className="rounded border border-zinc-800 p-4">
         <h2 className="mb-2 font-medium">Result</h2>
-        <pre className="max-h-[34rem] overflow-auto text-xs text-zinc-300">
-          {JSON.stringify(hasFreshResult ? runState.result : null, null, 2)}
-        </pre>
+        <DepthJsonView data={hasFreshResult ? runState.result : null} />
       </div>
     </section>
   );
