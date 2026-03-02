@@ -1,0 +1,63 @@
+# these files are ignored by git
+
+src/oxide.egg-info/
+src/oxide_re.egg-info/
+env/
+.venv/
+uv.lock
+api_server/config.ini
+node_modules/
+.zed/
+
+# Next.js / React
+.next/
+out/
+.turbo/
+.vercel/
+coverage/
+*.tsbuildinfo
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# residual oxide directories and files
+!datastore/sample_datasets
+__pycache__/
+scratch
+datasets/*
+db/*
+localstore/*
+.config.txt
+.log.txt
+.history.txt
+.context.save
+
+# Ignore these file extentions
+*.o
+*.obj
+*.a
+# *.so
+*.pyc
+*.pyo
+*~
+*.swp
+.DS_Store
+.blot
+.replay.sh
+*.tmp
+
+# override these in the sample_dataset directory
+*.exe
+*.dll
+*.sys
+
+# editor files:
+.idea
+.vscode
+
+# pytorch saves
+*.pt
+
+/src/oxide/modules/extractors_dev/path_complexity/src
+profile.html
