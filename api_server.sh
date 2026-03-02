@@ -1,13 +1,12 @@
 #!/bin/bash
 
-# Set the current directory as the working directory
-# Ensures this works regardless of where script is executed from
-cd "$(dirname "$0")/api_server"
+set -euo pipefail
 
-# Add the src directory to PYTHONPATH
-echo $pwd
-export PYTHONPATH=$PYTHONPATH:$(pwd)/src
-echo $PYTHONPATH
+# Run from this directory
+cd "$(dirname "$0")"
 
-# Execute your Python script
-python3 main.py
+PY_BIN="${PYTHON_BIN:-python3}"
+
+echo "Starting Oxide-Formula backend with ${PY_BIN}"
+cd web_interface/Oxide-Formula/
+"${PY_BIN}" main.py

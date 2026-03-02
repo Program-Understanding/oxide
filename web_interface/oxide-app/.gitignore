@@ -7,7 +7,6 @@ env/
 uv.lock
 api_server/config.ini
 node_modules/
-web_app/client/.nuxt/
 .zed/
 
 # Next.js / React
