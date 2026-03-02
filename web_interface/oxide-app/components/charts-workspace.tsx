@@ -182,26 +182,6 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
 
   return (
     <section className="space-y-4">
-      <div className="rounded border border-zinc-800 p-4">
-        <h2 className="mb-2 font-medium">Chart Module Availability</h2>
-        <ul className="space-y-1 text-sm text-zinc-300">
-          {capabilities.map((capability) => (
-            <li key={capability.module} className="flex items-center justify-between">
-              <span>{chartLabel(capability.module)}</span>
-              <span
-                className={
-                  capability.available
-                    ? "rounded bg-emerald-900/40 px-2 py-0.5 text-emerald-300"
-                    : "rounded bg-red-900/40 px-2 py-0.5 text-red-300"
-                }
-              >
-                {capability.available ? "available" : "missing"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <label className="flex flex-col gap-2 text-sm">
           <span className="text-zinc-300">Collection</span>
