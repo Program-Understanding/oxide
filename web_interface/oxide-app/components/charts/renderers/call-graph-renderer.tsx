@@ -142,7 +142,7 @@ export function CallGraphRenderer({ data }: RendererDataProps) {
           <div className="border-b border-zinc-800 px-3 py-2 text-xs font-medium text-zinc-300">
             Functions ({functionList.length})
           </div>
-          <ul className="max-h-[34rem] overflow-y-auto px-2 py-2 text-sm">
+          <ul className="max-h-[70vh] min-h-[20rem] overflow-y-auto px-2 py-2 text-sm">
             {functionList.map((node) => (
               <li key={node.id}>
                 <button
@@ -161,7 +161,7 @@ export function CallGraphRenderer({ data }: RendererDataProps) {
             ))}
           </ul>
         </div>
-        <div ref={containerRef} className="h-[34rem] w-full rounded border border-zinc-800 bg-zinc-900" />
+        <div ref={containerRef} className="h-[70vh] min-h-[26rem] w-full rounded border border-zinc-800 bg-zinc-900" />
       </div>
       <p className="text-xs text-zinc-400">Nodes: {graph.nodes.length} · Edges: {graph.edges.length}</p>
       {selectedNode ? (

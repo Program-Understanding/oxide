@@ -85,7 +85,7 @@ export function BinaryVisualizerRenderer({ data }: RendererDataProps) {
           Export PNG
         </button>
       </div>
-      <div className="max-h-[34rem] overflow-auto rounded border border-zinc-800 bg-zinc-900 p-1">
+      <div className="max-h-[70vh] overflow-auto rounded border border-zinc-800 bg-zinc-900 p-1">
         <canvas ref={canvasRef} />
       </div>
       <p className="text-xs text-zinc-400">{hoverInfo}</p>

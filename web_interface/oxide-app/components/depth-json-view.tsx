@@ -103,7 +103,7 @@ function renderJson(value: unknown, depth: number): ReactNode {
 
 export function DepthJsonView({ data, className }: DepthJsonViewProps) {
   return (
-    <pre className={`max-h-[34rem] overflow-auto whitespace-pre text-xs text-zinc-300 ${className ?? ""}`}>
+    <pre className={`max-h-[70vh] overflow-auto whitespace-pre text-xs text-zinc-300 ${className ?? ""}`}>
       {renderJson(data, 0)}
     </pre>
   );

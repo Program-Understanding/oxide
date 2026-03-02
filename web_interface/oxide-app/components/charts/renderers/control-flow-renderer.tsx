@@ -300,7 +300,7 @@ export function ControlFlowRenderer({ data }: RendererDataProps) {
           Export PNG
         </button>
       </div>
-      <div ref={containerRef} className="h-[34rem] w-full rounded border border-zinc-800 bg-zinc-900" />
+      <div ref={containerRef} className="h-[70vh] min-h-[26rem] w-full rounded border border-zinc-800 bg-zinc-900" />
       <div className="rounded border border-zinc-800 p-3">
         <h3 className="mb-2 text-sm font-medium text-zinc-200">
           {selectedBlockId ? `Instructions for Block ${selectedBlockId}` : "Instructions"}
