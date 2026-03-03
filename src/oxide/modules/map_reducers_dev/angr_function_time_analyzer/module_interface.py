@@ -170,6 +170,7 @@ def mapper(oid:str, opts: dict[str,Any], jobid=False):
         logger.error(f"couldn't get time result for {oid}")
         return False
     for fun in results["time_result"]:
+        if "summary" not in results["time_result"][fun]: continue
         if results["time_result"][fun]["summary"]["complexity_desc"] is None:
             logger.error(f"complexity description for {fun} in {oid} is none")
             return False
@@ -296,6 +297,7 @@ def reducer(intermediate_output : list[str], opts : Opts, jobid):
                 oids_w_angr_errors += 1
                 continue
             for fun in time_result:
+                if fun == "skipped functions": continue
                 total_functions += 1
                 f_dict : F_Dict = time_result[fun]
                 if "error" in f_dict["angr seconds"]:

@@ -27,6 +27,7 @@ from pathlib import Path
 import networkx as nx
 from lifelines.utils import concordance_index
 from lifelines import CoxPHFitter
+from pyvis.network import Network
 Opts = TypedDict(
     "Opts",
     {
@@ -78,15 +79,6 @@ Outlier_opts = TypedDict(
         "delete-cached": bool
     }
 )
-
-class GhidraDisasmFunctions(TypedDict):
-    blocks : list[int]
-    name: str
-    vaddr: str
-    params: list[tuple[int,str]]
-    retType: str
-    signature: str
-    returning: str
 
 def clear_data(data_name:str = "default") -> bool:
     return api.local_delete_data("angr_function_time_model",data_name)
@@ -399,7 +391,7 @@ def get_accuracy(args : list[str], opts : dict[Literal["tests"],bool]):
     c_index = concordance_index(time_test, -scores, event_observed=event_test)
     return {"concordance index" : c_index}
 
-def evaluate(args : list[str], opts : Opts):
+def evaluate_xgboost(args : list[str], opts : Opts):
     """
     Evaluate the angr function time analyzer model against a differnet collection that wasn't use to train the model.
     Not recommended to use against data used to train the model as this can result in training data being used in testing.
@@ -453,7 +445,71 @@ def evaluate(args : list[str], opts : Opts):
                 print(f"Keyerror on db. tried to check {oid+row_name} for time and found nothing.. df = {df}")
         results[oid]["OID stats"] = {"total predictions": total, "predictions where risk score was > 0.3 and seconds taken was > 1 or vice versa": good_ones}
     return results
-    
+
+def evaluate_lifelines(args : list[str], opts : Opts):
+    """
+    Evaluate the angr function time analyzer model against a differnet collection that wasn't use to train the model.
+    Not recommended to use against data used to train the model as this can result in training data being used in testing.
+
+    Usage: evaluate [--timeout=<int>] [--bins=<number of bins>] &<collection>
+    """
+    res = api.local_retrieve("angr_function_time_model","lifelines_model")
+    if res is None:
+        logger.error("No existing trained model!")
+        return False
+    model = res
+    if not "timeout" in opts: opts["timeout"] = 10
+    opts["skip-main"] = False
+    results = {}
+    if not "data-path" in opts:
+        logger.error("missing data path")
+        return False
+    valid, invalid = api.valid_oids(args)
+    for oid in api.expand_oids(valid):
+        datastore_filesystem.delete_oid_data("angr_function_time_analyzer",oid)
+        df : pd.DataFrame | None = api.get_field("angr_function_time_analyzer", oid, "dataframe", opts)
+        if df is None:
+            logger.error(f"Couldn't get dataframe for oid {oid}")
+            return False
+        g_d : dict[int,GhidraDisasmFunctions] | None = api.get_field("ghidra_disasm",oid,"functions")
+        if not g_d:
+            logger.error(f"Error with ghidra disassembly for {oid}!")
+            continue
+        #reorder the dataframe to match what the model expects
+        data : tuple[pd.DataFrame, pd.DataFrame] | None = api.local_retrieve("angr_function_time_model","lifelines_data")
+        if data is None:
+            logger.error("Couldn't load training or testing data")
+            return False
+        train_df, test_df = data
+        expected_features = [col for col in train_df.columns if col != "event"]
+        df = df[expected_features]
+        #idp = df[[column for column in df.columns if column != "time" and column != "bin int" and column != "chat gpt generated function's estimated seconds"]]
+        idp = df[[column for column in df.columns if column != "bin int" and column != "chat gpt generated function's estimated seconds" and column != "num states"]]
+        #have model predict the function risk per function
+        #dmatrix = xgboost.DMatrix(idp)
+        #oid_scores = model.predict(dmatrix)
+        oid_scores = model.predict_partial_hazard(idp)
+        if not len(oid_scores):
+            logger.warning(f"Didn't get any risk scores for oid {oid}")
+            continue
+        oid_scores.index = oid_scores.index.str.slice(start=len(oid))
+        #now we can evaluate per oid how well our prediction did against the reality
+        results[oid] = {}
+        good_ones = 0
+        total = 0
+        for row_name, risk_score in oid_scores.items():
+            try:
+                time_taken = float(df.loc[oid+row_name,"time"])
+                results[oid][row_name] = {"seconds taken": time_taken, "predicted risk score": risk_score}
+                #not sure if using a threshold of 0.3 for a risk score is signficant or not but its something
+                if (time_taken <= 1.0 and risk_score <= 0.3) or (time_taken > 1.0 and risk_score > 0.3):
+                    good_ones += 1
+                total+=1
+            except KeyError:
+                print(f"row name is {row_name}")
+                print(f"Keyerror on db. tried to check {oid+row_name} for time and found nothing.. df = {df}")
+        results[oid]["OID stats"] = {"total predictions": total, "predictions where risk score was > 0.3 and seconds taken was > 1 or vice versa": good_ones}
+    return results
 
 def identify_outliers2(args: list[str], opts: Outlier_opts):
     if "timeout" in opts:
@@ -589,19 +645,21 @@ def get_detailed_call_graph(args:list[str],opts:Opts):
         #have model predict the function risk per function
         #dmatrix = xgboost.DMatrix(idp)
         #oid_scores = model.predict(dmatrix)
+        logger.info(f"idp is {idp}")
         oid_scores = model.predict_partial_hazard(idp)
         if not len(oid_scores):
             logger.warning(f"Didn't get any risk scores for oid {oid}")
             continue
-        scores_with_function_names = pd.Series(oid_scores, index=df.index.str.slice(start=len(oid)), name="predicted_risk")
+        #scores_with_function_names = pd.Series(oid_scores, index=df.index.str.slice(start=len(oid)), name="predicted_risk")
         #logger.info(f"scores with function names = {scores_with_function_names}")
         #need to map function names back to their offsets and add their information to the call graph
-        cols = list(scores_with_function_names.index)
+        oid_scores.index = oid_scores.index.str.slice(start=len(oid))
+        cols = list(oid_scores.index)
         f_names : list[str] = []
         labels = {}
         for fun in g_d:
             f_name = g_d[fun]["name"]
-            if g_d[fun]["blocks"] == [] or f_name in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0", "__libc_start_main", "malloc", "puts",
+            if g_d[fun]["blocks"] == [] or f_name in ["_start","__stack_chk_fail","_init","_fini","_INIT_0","_FINI_0", "__libc_start_main", "malloc",
                       #functions excluded by x86 sok
                       "__x86.get_pc_thunk.bx", # glibc in i386 function
                "__libc_csu_init",
@@ -626,7 +684,7 @@ def get_detailed_call_graph(args:list[str],opts:Opts):
             labels[fun] = f"{fun}: {f_name}"
             f_names.append(f_name)
             if f_name in cols:
-                risk_score = float(scores_with_function_names[f_name])
+                risk_score = float(oid_scores[f_name])
                 call_graph.nodes[fun]["risk score"] = risk_score
                 #logger.info(f"node found for {f_name}")
         #logger.info(f"all cols: {cols}")
@@ -634,6 +692,9 @@ def get_detailed_call_graph(args:list[str],opts:Opts):
         
         #now we can display the new call graph with the updated information
         risk_scores = np.array([call_graph.nodes[n]["risk score"] for n in call_graph.nodes if "risk score" in call_graph.nodes[n]])
+        if len(risk_scores) == 0:
+            logger.error(f"Risk scores is empty! skipping OID {oid}")
+            continue
         #logger.info(f"Risk scores: {risk_scores}")
         norm = mcolors.Normalize(vmin=risk_scores.min(), vmax=risk_scores.max())
         cmap = cm.get_cmap("RdYlGn_r")
@@ -646,18 +707,33 @@ def get_detailed_call_graph(args:list[str],opts:Opts):
                 node_colors.append(cmap(norm(risk_score)))
             else:
                 node_colors.append(default_color)
-        plt.figure(figsize=(7,7))
-        pos = nx.spring_layout(call_graph,seed=42,iterations=3*len(g_d),k=0.7)
-        nx.draw(call_graph,pos,with_labels=True,labels=labels,node_color=node_colors,edge_color="gray",node_size=2000,font_weight="bold")
-        sm = plt.cm.ScalarMappable(cmap=cmap,norm=norm)
-        sm.set_array([])
-        ax = plt.gca()
-        plt.colorbar(sm,ax=ax,label="Predicted risk score")
-        plt.title(f"Call graph with predicted risk score for {oid}")
-        save_path = Path(opts["data-path"]) / Path(f"{oid}_call_graph.png")
-        plt.savefig(save_path,dpi=1200,bbox_inches="tight")
-        plt.clf()
-        plt.close("all")
+        #plt.figure(figsize=(7,7))
+        # pos = nx.spring_layout(call_graph,seed=42,iterations=3*len(g_d),k=0.7)
+        # nx.draw(call_graph,pos,with_labels=True,labels=labels,node_color=node_colors,edge_color="gray",node_size=2000,font_weight="bold")
+        # sm = plt.cm.ScalarMappable(cmap=cmap,norm=norm)
+        # sm.set_array([])
+        # ax = plt.gca()
+        # plt.colorbar(sm,ax=ax,label="Predicted risk score")
+        # plt.title(f"Call graph with predicted risk score for {oid}")
+        save_path = Path(opts["data-path"]) / Path(f"{oid}_call_graph.html")
+        # plt.savefig(save_path,dpi=1200,bbox_inches="tight")
+        # plt.clf()
+        # plt.close("all")
+        net = Network(directed=True,height="1080px",font_color="black")
+        net.from_nx(call_graph)
+        for node in net.nodes:
+            n = node["id"]
+            node["label"] = labels[n]
+            if "risk score" in call_graph.nodes[n]:
+                risk_score = call_graph.nodes[n]["risk score"]
+                rgba = cmap(norm(risk_score))  # RGBA from matplotlib
+                hex_color = mcolors.to_hex(rgba)
+                node["color"] = hex_color
+                node["title"] = f"Risk Score: {risk_score:.4f}"
+            else:
+                node["color"] = "#CCCCCC"  # default gray
+                node["title"] = "No risk score"
+        net.save_graph(str(save_path))
         logger.info(f"Call graph for {oid} saved to {save_path}")
     return True
 
@@ -822,4 +898,4 @@ def identify_contender_for_case_study(args: list[str], opts: Opts):
         return {"candidate oid": oid , "candidate function": candidate_function, "angr_function_time_results": functions, "candidate results": functions[candidate_function]}
 
 #plugin's exports to the shell (functions the shell can use)
-exports = [train_xgboost,train_dbscan_cluster, test_xgboost,evaluate,identify_outliers,identify_outliers2,get_accuracy,correlations,average_functions_per_oid,identify_contender_for_case_study,get_detailed_call_graph,count_binaries_that_have_functions,train_lifelines,test_lifelines]
+exports = [train_xgboost,train_dbscan_cluster, test_xgboost,evaluate_xgboost,identify_outliers,identify_outliers2,get_accuracy,correlations,average_functions_per_oid,identify_contender_for_case_study,get_detailed_call_graph,count_binaries_that_have_functions,train_lifelines,test_lifelines,evaluate_lifelines]
