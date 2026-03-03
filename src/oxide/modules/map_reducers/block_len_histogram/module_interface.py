@@ -46,12 +46,39 @@ def mapper(oid, opts, jobid=False):
 
     if api.exists(NAME, oid, opts):
         return oid
-    bbs = api.get_field("basic_blocks", oid, "basic_blocks")
+
+    # Originally assumed basic_blocks data was always under a "basic_blocks" field
+    # Analyzer output may be direct block maps or oid-wrapped maps
+    bbs = api.retrieve("basic_blocks", oid, opts)
+    if isinstance(bbs, dict) and "basic_blocks" in bbs:
+        bbs = bbs["basic_blocks"]
+    elif isinstance(bbs, dict) and oid in bbs and isinstance(bbs[oid], dict):
+        bbs = bbs[oid]
+
     if not bbs:
         return None
+
     out_histo = defaultdict(int)
     for bb in bbs:
-        out_histo[bbs[bb]["num_insns"]] += 1
+        block = bbs[bb]
+        if not isinstance(block, dict):
+            continue
+
+        # num_insns is sometimes omitted so get it from members when possible
+        num_insns = block.get("num_insns")
+        if num_insns is None:
+            members = block.get("members")
+            if members is not None:
+                num_insns = len(members)
+
+        if num_insns is None:
+            continue
+
+        out_histo[num_insns] += 1
+
+    if not out_histo:
+        return None
+
     api.store(NAME, oid, out_histo, opts)
     return oid
 
