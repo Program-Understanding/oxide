@@ -39,6 +39,14 @@ logger = logging.getLogger(NAME)
 # ------------------------------- Tool 2: Radare -------------------------------------
 
 
+def _get_record_offset(record: dict):
+    # radare JSON can differ across versions (offset vs addr)
+    for key in ("offset", "addr", "vaddr"):
+        if key in record and record[key] is not None:
+            return record[key]
+    return None
+
+
 def extract(file_test: str, header) -> Optional[dict]:
     """processes an exectuable with radare2/r2pipe, and disassembles code
         input -
@@ -76,10 +84,20 @@ def extract(file_test: str, header) -> Optional[dict]:
 
     for insn in output:
         # No need to bound check as pD prints bytes, and uses start of section with entry point
-        if 'disasm' not in insn:
-            logger.debug("No assembly found in insn at %s, type: %s", insn['offset'], insn['type'])
+        insn_offset = _get_record_offset(insn)
+        if insn_offset is None:
+            logger.debug("Skipping linear insn without offset fields")
             continue
-        output_map['instructions'][header.get_offset(insn['offset'])] = insn['disasm']
+
+        if 'disasm' not in insn:
+            logger.debug("No assembly found in insn at %s, type: %s", insn_offset, insn.get('type'))
+            continue
+
+        norm_offset = header.get_offset(insn_offset)
+        if norm_offset is None:
+            continue
+
+        output_map['instructions'][norm_offset] = insn['disasm']
 
     end = time.time()
     output_map["meta"]["time"] = end - start
