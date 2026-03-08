@@ -36,6 +36,15 @@ NAME = "radare_disasm"
 logger = logging.getLogger(NAME)
 
 
+def _get_function_offset(fun: dict):
+    # radare function JSON changed across versions (offset -> addr)
+    # Use the legacy key first, then fall back to newer address keys
+    for key in ("offset", "addr", "vaddr"):
+        if key in fun and fun[key] is not None:
+            return fun[key]
+    return None
+
+
 def _canonize_blocks(output_map: dict) -> None:
     block_offsets = list(output_map["original_blocks"].keys())
 
@@ -95,18 +104,22 @@ def _add_block_to_save(bb_offset: int, bb: dict, header_interface, block_map: di
     block_map[bb_offset]["members"] = []
 
     # Populate member list for each basic block
-    if bb["size"] > 0:
-        for op in bb["ops"]:
-            if op["type"] == "invalid":
+    if bb.get("size", 0) > 0:
+        for op in bb.get("ops", []):
+            if op.get("type") == "invalid":
+                continue
+
+            # Some r2 builds give partial op entries so skip instead of failing
+            if "offset" not in op or "opcode" not in op:
                 continue
 
             block_map[bb_offset]["members"].append((header_interface.get_offset(int(op["offset"])), op["opcode"]))
 
     # Instruction sucessors, always jump target first (can we have fail without jump)
     basic_block_destinations = []
-    if "jump" in bb:
+    if "jump" in bb and bb["jump"] is not None:
         basic_block_destinations.append(header_interface.get_offset(int(bb["jump"])))
-    if "fail" in bb:
+    if "fail" in bb and bb["fail"] is not None:
         basic_block_destinations.append(header_interface.get_offset(int(bb["fail"])))
 
     logger.debug(basic_block_destinations)
@@ -120,23 +133,32 @@ def record_function(fun_map: dict, fun: dict, blocks: list, header_interface) ->
             fun_map (dict): mapping of function name to features
     """
     # populate function information
-    offset = header_interface.get_offset(fun["offset"])
+    fun_offset = _get_function_offset(fun)
+    # Skip unsupported/partial function records when no address key
+    if fun_offset is None:
+        return
+
+    offset = header_interface.get_offset(fun_offset)
+    if offset is None:
+        return
+
     fun_map[offset] = {}
-    fun_map[offset]["name"] = fun["name"]
-    fun_map[offset]["signature"] = fun["signature"]
+    fun_map[offset]["name"] = fun.get("name", str(fun_offset))
+    fun_map[offset]["signature"] = fun.get("signature", fun_map[offset]["name"])
 
     logger.debug(fun)
     if "nlocals" in fun:
         fun_map[offset]["num_locals"] = fun["nlocals"]
-    fun_map[offset]["returning"] = not fun["noreturn"]
-    fun_map[offset]["convention"] = fun["calltype"]
-    fun_map[offset]["num_args"] = fun["nargs"]
-    fun_map[offset]["cyclo_complexity"]  = fun["cc"]
+    fun_map[offset]["returning"] = not fun.get("noreturn", False)
+    fun_map[offset]["convention"] = fun.get("calltype", "")
+    fun_map[offset]["num_args"] = fun.get("nargs", 0)
+    fun_map[offset]["cyclo_complexity"]  = fun.get("cc", 0)
 
     fun_map[offset]["calls"] = []
     if "callrefs" in fun:
         for callref_dict in fun["callrefs"]:
-            fun_map[offset]["calls"].append(header_interface.get_offset(callref_dict["addr"]))
+            if "addr" in callref_dict:
+                fun_map[offset]["calls"].append(header_interface.get_offset(callref_dict["addr"]))
 
     fun_map[offset]["blocks"] = blocks
 
@@ -182,12 +204,18 @@ def extract(file_test, header):
 
     # switch_workinglist = []
     for fun in output:
+        fun_offset = _get_function_offset(fun)
+        if fun_offset is None:
+            # Keep processing remaining functions even if one record uses an unknown schema
+            logger.debug("Skipping function without offset fields: %s", fun)
+            continue
+
         # Navigate to function, analyze function, retrieve control flow graph
-        r2.cmd("s " + str(fun["offset"]))
-        logger.debug("analyzing %s" % fun["offset"])
+        r2.cmd("s " + str(fun_offset))
+        logger.debug("analyzing %s" % fun_offset)
 
         # Relocatables have offset 0. Skip these functions
-        if fun["offset"] == 0:
+        if fun_offset == 0:
             continue
 
         r2.cmd("af")
@@ -197,20 +225,29 @@ def extract(file_test, header):
         if len(local_cfg) == 0:
             continue
 
-        blocks = local_cfg[0]["blocks"]
+        blocks = local_cfg[0].get("blocks", [])
         block_offsets = []
         # Iterate Radare json control flow graph output, record offset, byte, mnemonics
         for bb in blocks:
+            if "offset" not in bb:
+                continue
+
             bb_offset = header.get_offset(bb["offset"])
+            if bb_offset is None:
+                continue
+
             block_offsets.append(bb_offset)
-            ops = bb["ops"]
+            ops = bb.get("ops", [])
 
             # switch_op = None
             # if "switchop" in bb:
             #    switch_op = bb["switchop"]
-            if bb["size"] > 0:
+            if bb.get("size", 0) > 0:
                 for op in ops:
-                    if op["type"] == "invalid":
+                    if op.get("type") == "invalid":
+                        continue
+
+                    if "offset" not in op or "opcode" not in op:
                         continue
 
                     inst_offset = header.get_offset(int(op["offset"]))
