@@ -219,7 +219,7 @@ def get_files_from_directory(directory: str) -> Optional[List[str]]:
     return fullpath_files
 
 
-def ensure_dir_exists(directory: str) -> str:
+def ensure_dir_exists(directory: str) -> bool:
     """ If directory does not exist create it.
     """
     if not directory:

@@ -44,18 +44,18 @@ from oxide.core.local_datastore import (
 
 if "filesystem" == config.datastore_datastore:
     from oxide.core import datastore_filesystem as datastore
-elif "sqlite" == config.datastore_defaults:
+elif "sqlite" == config.datastore_datastore:
     from oxide.core import datastore_sqlite as datastore
 else:
     raise ShellRuntimeError(
-        f"Invalid datastore option selected ({config.datastore_defaults})"
+        f"Invalid datastore option selected ({config.conf.datastore.datastore})"
     )
 
 from typing import List, Dict, Union, Any, Tuple, Optional, Set, Iterable
 
 # Prepend our dirs in the path
-sys.path.insert(0, config.dir_oxide)
-sys.path.insert(0, config.dir_libraries)
+sys.path.insert(0, str(config.dir_oxide))
+sys.path.insert(0, str(config.dir_libraries))
 
 
 # Initialize logger
@@ -68,8 +68,8 @@ logger.debug("Starting oxide (3.1)")
 try:
     import multiproc as mp
 except ImportError:
-    config.multiproc_on = False
-    config.multiproc_max = 1
+    config.conf.multiproc.on = False
+    config.conf.multiproc.max = 1
     logger.info("Not able to import multiproc, multiprocessing will be disabled")
 
 for d in list(config.get_section("dir").values()):
@@ -200,7 +200,7 @@ def process(
             mod_doc = documentation(mod_name)
             if (
                 (len(new_list) == 1)
-                or (not config.multiproc_on)
+                or (not config.conf.multiproc.on)
                 or (module_type in ["analyzers"])
                 or (mod_doc and ("multiproc" in mod_doc) and (not mod_doc["multiproc"]))
             ):
@@ -419,7 +419,7 @@ def get_field(
             restore_db_dir()
         return None
     if field not in ds:
-        logger.info("Invalid field:%s for module:%s", field, mod_name)
+        logger.info("Invalid field:%s for module:%s. Valid fields are %s", field, mod_name,ds.keys())
         if dir_override:
             restore_db_dir()
         return None

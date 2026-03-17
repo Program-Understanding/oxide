@@ -197,16 +197,16 @@ class OxideShell(Cmd):
         self.commands["drop"] = ("database", "scratch", "localstore", "orphans")
 
         self.logger.debug("Loading plugins noted in config")
-        for p in local_oxide.config.plugins:
+        for p in local_oxide.config.conf.plugins:
             self.do_plugin(p)
 
         self.logger.debug("Loading history file")
         if readline_enabled:
             try:
-                if not os.path.isfile(local_oxide.config.history_file):
-                    readline.write_history_file(local_oxide.config.history_file)
-                readline.read_history_file(local_oxide.config.history_file)
-                readline.set_history_length(local_oxide.config.history_max)
+                if not os.path.isfile(local_oxide.config.conf.history.file):
+                    readline.write_history_file(local_oxide.config.conf.history.file)
+                readline.read_history_file(local_oxide.config.conf.history.file)
+                readline.set_history_length(local_oxide.config.conf.history.max)
             except IOError:
                 #print " - History file %s seems to be corupted. Trying to remove." % (local_oxide.config.history_file)
                 #os.remove(local_oxide.config.history_file)
@@ -1522,9 +1522,9 @@ class OxideShell(Cmd):
                 if isinstance(v, dict_type) or isinstance(v, collection_type):
                     print((bullet + repr(k) + hex_str + ": "))
                     self.print_item(v, opts, bullet=TAB + bullet)
-
-                elif isinstance(k, str) and k.find("time") != -1 and isinstance(v, (int, float)):
-                    print(bullet + repr(k) + hex_str + ": " + time.ctime(v))
+                #this transforms any key w/ time in it to be unix time + the time.... not helpful
+                # elif isinstance(k, str) and k.find("time") != -1 and isinstance(v, (int, float)):
+                #     print(bullet + repr(k) + hex_str + ": " + time.ctime(v))
 
                 else:
                     try:
