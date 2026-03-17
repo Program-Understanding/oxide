@@ -738,12 +738,17 @@ def get_value(section: SectionName, option: str) -> str | int | bool | None:
 
 init()
 def __getattr__(attr:str)->str|int|bool:
-    section, option = attr.split("_",1)
-    if section in conf:
-        section = cast(SectionName,section)
-        if option in conf[section]:
-            return conf[section][option]
+    if "_" in attr:
+        section, option = attr.split("_",1)
+        if section in conf:
+            section = cast(SectionName,section)
+            if option in conf[section]:
+                return conf[section][option]
+            else:
+                raise AttributeError(f"{option} is not a valid config option for {section}. Valid options are {conf[section].keys()}")
         else:
-            raise AttributeError(f"{option} is not a valid config option for {section}. Valid options are {conf[section].keys()}")
+            raise AttributeError(f"{section} is not a part of config")
+    elif attr in globals():
+        return cast(str|int|bool,globals()[attr])
     else:
-        raise AttributeError(f"{section} is not a part of config")
+        raise AttributeError(f"{attr} is not a part of config")
