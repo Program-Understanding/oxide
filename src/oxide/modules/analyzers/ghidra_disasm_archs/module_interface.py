@@ -76,7 +76,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                 disasm["FAIL"].append("DEFAULT")
             else:
                 disasm["PASS"]["DEFAULT"] = {
-                    "FEATURES": api.get_field("tiknib_features", oid, oid),
                     "SOURCE": "DEFAULT"
                 }
                 disasm["RESULT"] = "PASS"
@@ -94,7 +93,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
                             disasm["FAIL"].append(ga)
                         else:
                             disasm["PASS"][ga] = {
-                                "FEATURES": api.get_field("tiknib_features", oid, oid, {"processor": ga}),
                                 "SOURCE": arch_family
                                 }
                             disasm["RESULT"] = "PASS"
