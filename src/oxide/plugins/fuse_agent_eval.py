@@ -18,7 +18,6 @@ import os
 import random
 import re
 import subprocess
-import sys
 import threading
 import time
 from collections import defaultdict
@@ -93,11 +92,11 @@ except Exception as e:  # pragma: no cover
 TRACE_LOCK = threading.Lock()
 CALL_GRAPH_CACHE: Dict[str, Dict[str, Any]] = {}
 FUNC_ID_RE = re.compile(r"(?:func_)?(?:0x)?([0-9a-fA-F]+)$")
-VALID_RETRIEVAL_TOOLS = {"search_binaries", "search_strings", "bm25", "fuse"}
+VALID_RETRIEVAL_TOOLS = {"search_binaries", "search_strings", "bm25", "emb"}
 AGENT_CONDITION_LABELS: Dict[str, str] = {
     "base": "BASE",
     "bm25": "BM25",
-    "fuse": "FUSE",
+    "emb": "EMB",
     "both": "BOTH",
     "oracle": "ORACLE",
 }
@@ -105,36 +104,42 @@ AGENT_CONDITION_LABELS: Dict[str, str] = {
 SEARCH_BINARIES_LEXICAL_DESCRIPTION = (
     "Query and return candidate binaries ranked by lexical overlap between "
     "the query and extracted strings, with optional per-binary string matches "
-    "and optional filtering."
+    "and optional filtering. Use offset to page through results."
 )
 SEARCH_BINARIES_SEMANTIC_DESCRIPTION = (
     "Query and return candidate binaries ranked by semantic similarity between the "
     "query and extracted string evidence, with optional per-binary string "
-    "matches and optional filtering."
+    "matches and optional filtering. Use offset to page through results."
 )
 SEARCH_FUNCTIONS_DESCRIPTION = (
-    "Search for functions semantically matching the query across all binaries in the "
-    "collection or within a specific binary. "
-    "Returns ranked functions with their parent binary in candidate_oids. "
+    "Search decompiled functions by query across all binaries or within a specific binary. "
+    "search_mode: 'semantic' (default), 'literal' (substring), or 'both'. "
+    "Always returns semantic_total and literal_total to help decide which mode to use. "
+    "similarity_threshold filters semantic results (0.0-1.0). "
+    "Use offset to page through results. "
+    "Returns ranked functions with score, preview, match_type, and candidate_oids."
 )
 GET_FUNCTION_LIST_DESCRIPTION = (
-    "Return function IDs, addresses, and names for an OID. "
+    "Return function IDs, addresses, and names for a binary. "
     "Use this to inspect the size and layout of a binary, not to select functions for decompilation."
 )
 GET_CALL_GRAPH_DESCRIPTION = (
-    "Return call graph nodes and edges for an OID, including function_name and "
+    "Return call graph nodes and edges for a binary, including function_name and "
     "function_addr on nodes. Optional function_name focuses "
     "output to one-hop callers and callees."
 )
 GREP_STRINGS_DESCRIPTION = (
-    "Run regex or exact matching over extracted strings for one OID, a list of "
-    "OIDs, or all OIDs."
+    "Run regex or exact matching over extracted strings for one binary, a list of "
+    "binaries, or all binaries."
+)
+GET_STRINGS_DESCRIPTION = (
+    "Return all extracted strings for a binary. "
+    "Use this to inspect a candidate binary's string content without needing a pattern. "
+    "Results are capped at max_strings (default 400) and filtered to min_len (default 4)."
 )
 GET_FUNC_DECOMP_DESCRIPTION = (
-    "Return decompiled code for a specific function in an OID. "
+    "Return decompiled code for a specific function in a binary. "
     "Pass function_name (required). "
-    "Only call this for functions returned by search_functions/get_function_list — "
-    "do not enumerate or scan functions sequentially."
 )
 
 
@@ -297,6 +302,8 @@ def _extract_qf_candidates(raw: Any, top_k: int) -> List[Dict[str, Any]]:
                 "function_addr": f"0x{addr_i:x}",
                 "function_name": str(cand.get("func_name") or cand.get("function_name") or ""),
                 "score": score,
+                "preview": str(cand.get("preview") or ""),
+                "match_type": str(cand.get("match_type") or "semantic"),
             }
         )
     out.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
@@ -326,8 +333,11 @@ def run_search_functions_query(
     query: str,
     *,
     top_k: int = 20,
+    offset: int = 0,
     oid: str = "",
     oids: Optional[Sequence[str]] = None,
+    search_mode: str = "semantic",
+    similarity_threshold: float = 0.0,
 ) -> Dict[str, Any]:
     """
     Function-level semantic search with optional file scope.
@@ -362,17 +372,24 @@ def run_search_functions_query(
         }
 
     k = _safe_int(top_k, 10, min_value=1)
+    off = max(0, _safe_int(offset, 0, min_value=0))
+    mode = str(search_mode or "semantic").strip().lower()
+    if mode not in ("semantic", "literal", "both"):
+        mode = "semantic"
+    # Request k+off so we have enough results to slice after applying offset.
     out = api.retrieve(
         "query_function",
         scope,
         {
             "query": q,
-            "top_k": k,
+            "top_k": k + off,
+            "search_mode": mode,
+            "similarity_threshold": float(similarity_threshold),
             "timing": False,
             "progress": False,
         },
     )
-    funcs = _extract_qf_candidates(out, k)
+    all_funcs = _extract_qf_candidates(out, k + off)
 
     # Ensure each candidate has a usable function_name key.
     name_cache: Dict[str, Dict[int, str]] = {}
@@ -398,7 +415,7 @@ def run_search_functions_query(
         name_cache[oid_s] = mapping
         return mapping
 
-    for row in funcs:
+    for row in all_funcs:
         name = str(row.get("function_name") or "").strip()
         addr_i = _int_addr(row.get("function_addr") or row.get("address"))
         oid_i = str(row.get("oid") or "")
@@ -408,8 +425,10 @@ def run_search_functions_query(
             name = f"FUN_{int(addr_i):x}"
         row["function_name"] = name
 
-    for idx, row in enumerate(funcs, start=1):
+    for idx, row in enumerate(all_funcs, start=1):
         row["rank"] = idx
+
+    funcs = all_funcs[off:off + k]
 
     file_best: Dict[str, float] = {}
     for row in funcs:
@@ -430,31 +449,14 @@ def run_search_functions_query(
         "candidates": funcs,
         "file_candidates": file_candidates,
         "candidate_oids": candidate_oids,
-        "total_candidates": len(funcs),
+        "total_candidates": len(all_funcs),
+        "returned_count": len(funcs),
+        "offset": off,
         "total_files": len(file_candidates),
         "scope_size": len(scope),
-    }
-
-
-def run_relevant_strings_query(api: Any, oid: str, query: str, *, top_k: int = 20) -> Dict[str, Any]:
-    from oxide.modules.analyzers.fuse.module_interface import _get_model, extract_tokens
-    import numpy as np
-
-    strings = extract_tokens(oid).get("str", [])
-    if not strings:
-        return {"oid": oid, "query": query, "results": []}
-
-    model, _, _ = _get_model()
-    q = model.encode(query, normalize_embeddings=True)
-    embs = model.encode(strings, batch_size=128, normalize_embeddings=True)
-    scores = (embs @ q).tolist()
-
-    ranked = sorted(zip(strings, scores), key=lambda x: x[1], reverse=True)
-    k = max(1, int(top_k))
-    return {
-        "oid": oid,
-        "query": query,
-        "results": [{"string": s, "score": round(sc, 4)} for s, sc in ranked[:k]],
+        "semantic_total": int((out or {}).get("semantic_total", 0) or 0),
+        "literal_total": int((out or {}).get("literal_total", 0) or 0),
+        "search_mode": mode,
     }
 
 
@@ -879,6 +881,7 @@ def run_retrieval_query(
     query: str,
     *,
     top_k: int = 10,
+    offset: int = 0,
     retrieval_tool: str = "search_binaries",
     oids: Optional[Sequence[str]] = None,
     include_string_rankings: bool = True,
@@ -893,17 +896,18 @@ def run_retrieval_query(
     if not cid_s:
         raise RuntimeError("OXIDE_FUSE_EVAL_CID is not set for this run.")
     k_raw = _safe_int(top_k, 10)
+    off = max(0, _safe_int(offset, 0, min_value=0))
     query_s = str(query or "")
     retrieval_backend = str(retrieval_tool or "").strip().lower()
     if retrieval_backend not in VALID_RETRIEVAL_TOOLS:
         retrieval_backend = "search_binaries"
     scope_oids = _normalize_oids_opt(oids or [])
 
-    if retrieval_backend == "fuse":
-        k_fuse = max(0, int(k_raw))
+    if retrieval_backend == "emb":
+        k_fuse = max(0, int(k_raw) + off)
         all_exes = _filter_executable_oids(api, list(api.expand_oids(cid_s) or []))
         if not all_exes:
-            return {"candidates": [], "total_candidates": 0}
+            return {"candidates": [], "total_candidates": 0, "offset": off}
 
         fuse_scope = list(all_exes)
         if scope_oids:
@@ -928,16 +932,19 @@ def run_retrieval_query(
         out = api.retrieve("fuse", fuse_scope, fuse_opts) or {}
         if isinstance(out, dict) and out.get("error"):
             raise RuntimeError(str(out.get("error")))
-        candidates = _extract_ranked_candidates(out)
+        all_candidates = _extract_ranked_candidates(out)
+        candidates = all_candidates[off:off + k_raw]
         return {
             "candidates": candidates,
-            "total_candidates": len(candidates),
+            "total_candidates": len(all_candidates),
+            "returned_count": len(candidates),
+            "offset": off,
         }
 
-    k_lexical = max(0, int(k_raw))
+    k_lexical = max(0, int(k_raw) + off)
     all_exes = _filter_executable_oids(api, list(api.expand_oids(cid_s) or []))
     if not all_exes:
-        return {"candidates": [], "total_candidates": 0}
+        return {"candidates": [], "total_candidates": 0, "offset": off}
 
     bm25_opts: Dict[str, Any] = {
         "prompt": query_s,
@@ -950,8 +957,14 @@ def run_retrieval_query(
     out = api.retrieve("bm25", all_exes, bm25_opts) or {}
     if isinstance(out, dict) and out.get("error"):
         raise RuntimeError(str(out.get("error")))
-    candidates = _extract_ranked_candidates(out)
-    return {"candidates": candidates, "total_candidates": len(candidates)}
+    all_candidates = _extract_ranked_candidates(out)
+    candidates = all_candidates[off:off + k_raw]
+    return {
+        "candidates": candidates,
+        "total_candidates": len(all_candidates),
+        "returned_count": len(candidates),
+        "offset": off,
+    }
 
 
 def run_function_list_query(api: Any, oid: str, *, max_functions: int = 50) -> List[Dict[str, str]]:
@@ -1595,16 +1608,22 @@ def _build_tools(
     @tool(description=SEARCH_FUNCTIONS_DESCRIPTION)
     def search_functions(
         query: str,
-        top_k: int = 20,
+        top_k: int = 10,
+        offset: int = 0,
         oid: str = "",
         oids: Optional[List[str]] = None,
+        search_mode: str = "semantic",
+        similarity_threshold: float = 0.0,
     ) -> Dict[str, Any]:
         """Return functions ranked by semantic similarity to the query."""
         params = {
             "query": str(query or ""),
             "top_k": int(top_k),
+            "offset": int(offset),
             "oid": str(oid or ""),
             "oids": list(oids or []),
+            "search_mode": str(search_mode or "semantic"),
+            "similarity_threshold": float(similarity_threshold),
         }
         started = _reserve_tool_budget(state, "search_functions", params)
         try:
@@ -1617,8 +1636,11 @@ def _build_tools(
                         cid,
                         str(query or ""),
                         top_k=top_k,
+                        offset=offset,
                         oid=str(oid or ""),
                         oids=list(oids or []),
+                        search_mode=str(search_mode or "semantic"),
+                        similarity_threshold=float(similarity_threshold),
                     ),
                 )
             candidate_oids = [str(x or "") for x in (result.get("candidate_oids") or [])]
@@ -1642,6 +1664,7 @@ def _build_tools(
     def _search_binaries_impl(
         query: str,
         top_k: int = 10,
+        offset: int = 0,
         *,
         tool_name: str = "search_binaries",
         backend_override: str = "",
@@ -1653,13 +1676,14 @@ def _build_tools(
         params = {
             "query": str(query or ""),
             "top_k": int(top_k),
+            "offset": int(offset),
             "oids": list(oids or []),
             "include_string_rankings": bool(include_string_rankings),
             "strings_for_top_n_oids": int(strings_for_top_n_oids),
             "top_k_strings_per_oid": int(top_k_strings_per_oid),
         }
         started = _reserve_tool_budget(state, tool_name, params)
-        retrieval_backend = backend_override or ("fuse" if profile == "fuse" else "bm25")
+        retrieval_backend = backend_override or ("emb" if profile == "emb" else "bm25")
         try:
             with OXIDE_API_LOCK:
                 result = _run_with_transient_retry(
@@ -1670,6 +1694,7 @@ def _build_tools(
                         cid,
                         str(query or ""),
                         top_k=top_k,
+                        offset=offset,
                         retrieval_tool=retrieval_backend,
                         oids=list(oids or []),
                         include_string_rankings=bool(include_string_rankings),
@@ -1696,12 +1721,13 @@ def _build_tools(
             _finish_tool_error(state, tool_name, started, e)
             raise
 
-    if profile == "fuse":
+    if profile == "emb":
 
         @tool(description=SEARCH_BINARIES_SEMANTIC_DESCRIPTION)
         def search_binaries(
             query: str,
             top_k: int = 10,
+            offset: int = 0,
             oids: Optional[List[str]] = None,
             include_string_rankings: bool = True,
             strings_for_top_n_oids: int = 0,
@@ -1711,6 +1737,7 @@ def _build_tools(
             return _search_binaries_impl(
                 query,
                 top_k,
+                offset,
                 oids=oids,
                 include_string_rankings=include_string_rankings,
                 strings_for_top_n_oids=strings_for_top_n_oids,
@@ -1723,6 +1750,7 @@ def _build_tools(
         def search_binaries(
             query: str,
             top_k: int = 10,
+            offset: int = 0,
             oids: Optional[List[str]] = None,
             include_string_rankings: bool = True,
             strings_for_top_n_oids: int = 0,
@@ -1732,6 +1760,7 @@ def _build_tools(
             return _search_binaries_impl(
                 query,
                 top_k,
+                offset,
                 oids=oids,
                 include_string_rankings=include_string_rankings,
                 strings_for_top_n_oids=strings_for_top_n_oids,
@@ -1743,6 +1772,7 @@ def _build_tools(
         def search_binaries_lexical(
             query: str,
             top_k: int = 10,
+            offset: int = 0,
             oids: Optional[List[str]] = None,
             include_string_rankings: bool = True,
             strings_for_top_n_oids: int = 0,
@@ -1752,6 +1782,7 @@ def _build_tools(
             return _search_binaries_impl(
                 query,
                 top_k,
+                offset,
                 tool_name="search_binaries_lexical",
                 backend_override="bm25",
                 oids=oids,
@@ -1764,6 +1795,7 @@ def _build_tools(
         def search_binaries_semantic(
             query: str,
             top_k: int = 10,
+            offset: int = 0,
             oids: Optional[List[str]] = None,
             include_string_rankings: bool = True,
             strings_for_top_n_oids: int = 0,
@@ -1773,8 +1805,9 @@ def _build_tools(
             return _search_binaries_impl(
                 query,
                 top_k,
+                offset,
                 tool_name="search_binaries_semantic",
-                backend_override="fuse",
+                backend_override="emb",
                 oids=oids,
                 include_string_rankings=include_string_rankings,
                 strings_for_top_n_oids=strings_for_top_n_oids,
@@ -1944,14 +1977,32 @@ def _build_tools(
             _finish_tool_error(state, "get_func_decomp", started, e)
             raise
 
+    @tool(description=GET_STRINGS_DESCRIPTION)
+    def get_strings(
+        oid: str,
+        max_strings: int = 400,
+        min_len: int = 4,
+    ) -> List[str]:
+        """Return all extracted strings for a binary OID."""
+        params = {"oid": str(oid or ""), "max_strings": int(max_strings), "min_len": int(min_len)}
+        started = _reserve_tool_budget(state, "get_strings", params)
+        try:
+            with OXIDE_API_LOCK:
+                result = _get_strings_for_oid(api, str(oid or ""), max_strings=max_strings, min_len=min_len)
+            _finish_tool_success(state, "get_strings", started, {"count": len(result)})
+            return _annotate_with_step(result, state.eval_tool_calls)
+        except Exception as e:
+            _finish_tool_error(state, "get_strings", started, e)
+            raise
+
     # Full function-level analysis toolkit — shared across all conditions
-    func_toolkit = [search_functions, get_function_list, get_call_graph, get_func_decomp, grep_strings]
+    func_toolkit = [search_functions, get_function_list, get_call_graph, get_func_decomp, grep_strings, get_strings]
 
     if profile == "both":
         tools = [search_binaries_lexical, search_binaries_semantic] + func_toolkit
     elif profile == "base":
         tools = list(func_toolkit)  # baseline: function-level only, no file-level retrieval
-    elif profile == "fuse":
+    elif profile == "emb":
         tools = [search_binaries] + func_toolkit
     else:  # bm25
         tools = [search_binaries] + func_toolkit
@@ -2023,7 +2074,9 @@ def run_deep_agent_task(
     condition_norm = str(condition or "bm25").strip().lower()
     if condition_norm in {"baseline"}:
         condition_norm = "bm25"
-    if condition_norm not in {"bm25", "fuse", "both", "base"}:
+    if condition_norm == "fuse":
+        condition_norm = "emb"
+    if condition_norm not in {"bm25", "emb", "both", "base"}:
         condition_norm = "bm25"
     state = RuntimeState(
         trace_path=trace_path,
@@ -2220,18 +2273,16 @@ def run_deep_agent_task(
 
 # ---- Eval orchestrator (unified) ----
 NAME = "fuse_agent_eval"
-DEFAULT_COMP_PATH = "fuse_data/openwrt-dataset/fuse_ground_truth.json"
-DEFAULT_PROMPT_PATH = "fuse_data/descriptions/component_descriptions.json"
 DEFAULT_OUTDIR = "out/agent_eval"
 DEFAULT_AGENTIC_CONDITIONS = [
     "base",
     "bm25",
-    "fuse",
+    "emb",
     "both",
 ]
 # Note: "none" (no retrieval at all) is intentionally excluded — it is not
 # part of the paper's evaluation design. base is the control baseline.
-DEFAULT_AGENTIC_MODEL = "qwen3-coder-next:latest"
+DEFAULT_AGENTIC_MODEL = "qwen3-coder-next:ca06e9e4087c"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_AGENTIC_TOP_K = 10
 DEFAULT_AGENTIC_EXPECTED_PAIRS = 225
@@ -2243,11 +2294,12 @@ FUNC_TOOLKIT_TOOL_NAMES = [
     "get_call_graph",
     "get_func_decomp",
     "grep_strings",
+    "get_strings",
 ]
 EVAL_TOOLS_BY_CONDITION = {
     "base": list(FUNC_TOOLKIT_TOOL_NAMES),
     "bm25":     ["search_binaries"] + list(FUNC_TOOLKIT_TOOL_NAMES),
-    "fuse":     ["search_binaries"] + list(FUNC_TOOLKIT_TOOL_NAMES),
+    "emb":      ["search_binaries"] + list(FUNC_TOOLKIT_TOOL_NAMES),
     "both":     ["search_binaries_lexical", "search_binaries_semantic"] + list(FUNC_TOOLKIT_TOOL_NAMES),
 }
 EVAL_TOOL_NAMES_LIST = sorted({x for vals in EVAL_TOOLS_BY_CONDITION.values() for x in vals})
@@ -2267,8 +2319,6 @@ LOGGER.propagate = False
 
 AGENTIC_RUN_DEFAULTS: Dict[str, Any] = {
     "outdir": DEFAULT_OUTDIR,
-    "comp_path": DEFAULT_COMP_PATH,
-    "prompt_path": DEFAULT_PROMPT_PATH,
     "conditions": ",".join(DEFAULT_AGENTIC_CONDITIONS),
     "agent_model": DEFAULT_AGENTIC_MODEL,
     "ollama_base_url": DEFAULT_OLLAMA_BASE_URL,
@@ -2283,16 +2333,57 @@ AGENTIC_RUN_DEFAULTS: Dict[str, Any] = {
     "task_ids": "",
     "max_tasks": 0,
     "fail_fast": False,
-    "run_preflight": True,
-    "preflight_required": True,
     "expected_pairs": DEFAULT_AGENTIC_EXPECTED_PAIRS,
-    "python_bin": "",
     "mcp_server_name_prefix": DEFAULT_AGENTIC_SERVER_PREFIX,
-    "oxidepath": os.getcwd(),
     "log_progress": True,
     "log_every_n": 10,
     "log_level": "INFO",
 }
+
+DEFAULT_MAIN_AGENT_EVAL_OUTDIR = "out/agent_eval/main_9col"
+DEFAULT_ROBUSTNESS_AGENT_EVAL_OUTDIR = "out/agent_eval/robustness_agent"
+DEFAULT_AGENT_FIGURE_OUTDIR = "out/agent_eval/figures"
+DEFAULT_ROBUSTNESS_AGENT_CONDITIONS = ["bm25", "emb", "both"]
+
+# Standalone retrieval P@1 references used by the paper's delta columns.
+# BOTH uses the better of BM25 and EMB, matching evaluation.tex.
+MAIN_AGENT_P1_REFERENCE: Dict[str, Optional[float]] = {
+    "base": float(56 / 225),
+    "bm25": float(118 / 225),
+    "emb": float(129 / 225),
+    "both": float(129 / 225),
+}
+
+ROBUSTNESS_AGENT_P1_REFERENCE: Dict[str, Dict[str, float]] = {
+    "dnsmasq": {
+        "bm25": float(79 / 99),
+        "emb": float(76 / 99),
+    },
+    "px5g-mbedtls": {
+        "bm25": float(38 / 66),
+        "emb": float(55 / 66),
+    },
+    "usign": {
+        "bm25": float(49 / 99),
+        "emb": float(92 / 99),
+    },
+    "dropbear": {
+        "bm25": float(56 / 99),
+        "emb": float(77 / 99),
+    },
+    "mtd": {
+        "bm25": float(18 / 99),
+        "emb": float(8 / 99),
+    },
+}
+
+ROBUSTNESS_AGENT_COMPONENT_ORDER = [
+    "dnsmasq",
+    "px5g-mbedtls",
+    "usign",
+    "dropbear",
+    "mtd",
+]
 
 
 
@@ -2418,14 +2509,25 @@ def _create_ground_truth(comp_path: str) -> Dict[str, Dict[str, List[str]]]:
     return ground_truth
 
 
+def _get_required_path(opts: Dict[str, Any], *keys: str) -> Tuple[Optional[str], Optional[str]]:
+    for key in keys:
+        path = str(opts.get(key) or "").strip()
+        if path:
+            return path, None
+    if not keys:
+        return None, "No path option keys provided."
+    if len(keys) == 1:
+        return None, f"Provide {keys[0]}."
+    return None, "Provide one of: " + ", ".join(keys) + "."
+
+
 def _load_inputs(opts: Dict[str, Any]) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
-    comp_path = str(opts.get("comp_path", DEFAULT_COMP_PATH) or DEFAULT_COMP_PATH).strip()
-    prompt_path = str(opts.get("prompt_path", DEFAULT_PROMPT_PATH) or DEFAULT_PROMPT_PATH).strip()
-    if not comp_path or not prompt_path:
-        return None, (
-            "Provide comp_path and prompt_path (or rely on defaults: "
-            f"{DEFAULT_COMP_PATH}, {DEFAULT_PROMPT_PATH})."
-        )
+    comp_path, comp_err = _get_required_path(opts, "comp_path")
+    if comp_err or comp_path is None:
+        return None, "Provide comp_path."
+    prompt_path, prompt_err = _get_required_path(opts, "prompt_path")
+    if prompt_err or prompt_path is None:
+        return None, "Provide prompt_path."
 
     try:
         gt = _create_ground_truth(comp_path)
@@ -2491,15 +2593,16 @@ def _normalize_conditions(opts: Dict[str, Any]) -> List[str]:
         return list(DEFAULT_AGENTIC_CONDITIONS)
     alias = {
         "baseline": "bm25",
+        "fuse": "emb",
     }
     items = [alias.get(x, x) for x in items]
-    allowed = {"bm25", "fuse", "both", "base"}
+    allowed = {"bm25", "emb", "both", "base"}
     invalid = [x for x in items if x not in allowed]
     if invalid:
         raise ValueError(
             "Invalid conditions: "
             + ",".join(sorted(set(invalid)))
-            + ". Valid conditions are base, bm25, fuse, both."
+            + ". Valid conditions are base, bm25, emb, both."
         )
     out: List[str] = []
     for x in items:
@@ -2570,7 +2673,6 @@ def _load_prompt_variants(
 
 
 _ROBUSTNESS_COMPONENTS = ["dnsmasq", "dropbear", "mtd", "px5g-mbedtls", "usign"]
-DEFAULT_VARIANTS_PATH = "fuse_data/descriptions/variant-descriptions.json"
 
 
 def _get_robustness_tasks(
@@ -2610,10 +2712,6 @@ def _get_robustness_tasks(
                     "task_set": "robustness",
                 })
     return tasks
-
-
-DEFAULT_CASE_STUDY_COMP_PATH = "fuse_data/descriptions/case_study_ground_truth.json"
-DEFAULT_CASE_STUDY_VARIANTS_PATH = "fuse_data/descriptions/case_study_variants.json"
 
 
 def _get_case_study_tasks(
@@ -2666,10 +2764,12 @@ def _load_inputs_for_mode(
     run_case_study = _as_bool(opts.get("case_study"), False)
 
     if run_robustness:
-        comp_path = str(opts.get("comp_path", DEFAULT_COMP_PATH) or DEFAULT_COMP_PATH).strip()
-        variants_path = str(
-            opts.get("prompt_variants_path") or opts.get("variants_path") or DEFAULT_VARIANTS_PATH
-        ).strip()
+        comp_path, comp_err = _get_required_path(opts, "comp_path")
+        if comp_err or comp_path is None:
+            return None, "Provide comp_path for robustness mode."
+        variants_path, variants_err = _get_required_path(opts, "prompt_variants_path", "variants_path")
+        if variants_err or variants_path is None:
+            return None, "Provide prompt_variants_path (or variants_path) for robustness mode."
         try:
             gt = _create_ground_truth(comp_path)
         except Exception as e:
@@ -2683,12 +2783,16 @@ def _load_inputs_for_mode(
         return tasks, None
 
     if run_case_study:
-        cs_comp_path = str(
-            opts.get("case_study_comp_path") or opts.get("comp_path") or DEFAULT_CASE_STUDY_COMP_PATH
-        ).strip()
-        cs_variants_path = str(
-            opts.get("case_study_variants_path") or opts.get("prompt_variants_path") or DEFAULT_CASE_STUDY_VARIANTS_PATH
-        ).strip()
+        cs_comp_path, cs_comp_err = _get_required_path(opts, "case_study_comp_path", "comp_path")
+        if cs_comp_err or cs_comp_path is None:
+            return None, "Provide case_study_comp_path (or comp_path) for case_study mode."
+        cs_variants_path, cs_variants_err = _get_required_path(
+            opts,
+            "case_study_variants_path",
+            "prompt_variants_path",
+        )
+        if cs_variants_err or cs_variants_path is None:
+            return None, "Provide case_study_variants_path (or prompt_variants_path) for case_study mode."
         try:
             gt = _create_ground_truth(cs_comp_path)
         except Exception as e:
@@ -2915,7 +3019,10 @@ def _summarize_agentic_rows(rows: List[Dict[str, Any]], conditions: Sequence[str
 
     by_condition: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        by_condition[str(row.get("condition") or "")].append(row)
+        _cond_key = str(row.get("condition") or "")
+        if _cond_key == "fuse":
+            _cond_key = "emb"
+        by_condition[_cond_key].append(row)
 
     summary_rows: List[Dict[str, Any]] = []
     oracle_mean_tokens_all = 0.0
@@ -2957,6 +3064,13 @@ def _summarize_agentic_rows(rows: List[Dict[str, Any]], conditions: Sequence[str
                     "mean_tool_calls": 0.0,
                     "mean_retrieve_calls": 0.0,
                     "mean_analysis_tool_calls": 0.0,
+                    "tc_p25": 0.0,
+                    "tc_median": 0.0,
+                    "tc_p75": 0.0,
+                    "tc_p95": 0.0,
+                    "stopped_recursion_limit": 0,
+                    "stopped_parse_error": 0,
+                    "stopped_runtime_error": 0,
                     "first_call_gold_hit_rate": 0.0,
                     "first_call_gold_mean_rank": None,
                     "first_call_gold_mean_rank_success": None,
@@ -3000,7 +3114,12 @@ def _summarize_agentic_rows(rows: List[Dict[str, Any]], conditions: Sequence[str
         token_p25 = _quantile(token_values, 0.25)
         token_p75 = _quantile(token_values, 0.75)
         token_p95 = _quantile(token_values, 0.95)
-        mean_tool_calls = _mean([float(r.get("total_tool_calls", 0) or 0) for r in cond_rows])
+        tc_values = [float(r.get("total_tool_calls", 0) or 0) for r in cond_rows]
+        mean_tool_calls = _mean(tc_values)
+        tc_p25 = _quantile(tc_values, 0.25)
+        tc_median = _quantile(tc_values, 0.5)
+        tc_p75 = _quantile(tc_values, 0.75)
+        tc_p95 = _quantile(tc_values, 0.95)
         mean_retrieve_calls = _mean([float(r.get("retrieve_calls", 0) or 0) for r in cond_rows])
         mean_confidence_all = _mean([float(r.get("confidence", 1) or 1) for r in cond_rows])
         mean_confidence_completed = _mean([float(r.get("confidence", 1) or 1) for r in completed_rows])
@@ -3030,7 +3149,7 @@ def _summarize_agentic_rows(rows: List[Dict[str, Any]], conditions: Sequence[str
         }
         if condition == "base":
             first_rank_stats = _rank_stats_for_field(cond_rows, "first_search_functions_gold_rank")
-        elif condition in {"bm25", "fuse"}:
+        elif condition in {"bm25", "emb"}:
             first_rank_stats = _rank_stats_for_field(cond_rows, "first_search_binaries_gold_rank")
         elif condition == "both":
             lexical_first_rank_stats = _rank_stats_for_field(cond_rows, "first_search_binaries_lexical_gold_rank")
@@ -3078,6 +3197,13 @@ def _summarize_agentic_rows(rows: List[Dict[str, Any]], conditions: Sequence[str
                 "mean_tool_calls": float(f"{mean_tool_calls:.6f}"),
                 "mean_retrieve_calls": float(f"{mean_retrieve_calls:.6f}"),
                 "mean_analysis_tool_calls": float(f"{mean_analysis_calls:.6f}"),
+                "tc_p25": float(f"{tc_p25:.6f}"),
+                "tc_median": float(f"{tc_median:.6f}"),
+                "tc_p75": float(f"{tc_p75:.6f}"),
+                "tc_p95": float(f"{tc_p95:.6f}"),
+                "stopped_recursion_limit": int(stopped_reason_counts.get("recursion_limit", 0)),
+                "stopped_parse_error": int(stopped_reason_counts.get("finalizer_parse_error", 0)),
+                "stopped_runtime_error": int(stopped_reason_counts.get("runtime_error", 0)),
                 "first_call_gold_hit_rate": first_hit_rate,
                 "first_call_gold_mean_rank": _fmt_opt(first_rank_stats.get("mean_rank")),
                 "first_call_gold_mean_rank_success": _fmt_opt(first_rank_stats.get("mean_rank_success")),
@@ -3111,7 +3237,10 @@ def _summarize_agentic_rows(rows: List[Dict[str, Any]], conditions: Sequence[str
     by_collection: List[Dict[str, Any]] = []
     coll_cond: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        key = (str(row.get("collection") or ""), str(row.get("condition") or ""))
+        _row_cond = str(row.get("condition") or "")
+        if _row_cond == "fuse":
+            _row_cond = "emb"
+        key = (str(row.get("collection") or ""), _row_cond)
         coll_cond[key].append(row)
     for (collection, condition), cell in sorted(coll_cond.items(), key=lambda kv: (kv[0][0], kv[0][1])):
         n = len(cell)
@@ -3152,7 +3281,7 @@ def _summarize_agentic_rows(rows: List[Dict[str, Any]], conditions: Sequence[str
         for r in summary_rows
         if isinstance(r, dict)
     }
-    ref_fuse = by_name.get("fuse")
+    ref_fuse = by_name.get("emb") or by_name.get("fuse")
     ref_oracle = by_name.get("oracle")
     for row in summary_rows:
         cond = str(row.get("condition") or "")
@@ -3160,7 +3289,7 @@ def _summarize_agentic_rows(rows: List[Dict[str, Any]], conditions: Sequence[str
             pairwise_vs_fuse.append(
                 {
                     "condition": cond,
-                    "reference": "fuse",
+                    "reference": "emb",
                     "delta_success": float(
                         f"{(float(row.get('success_rate', 0.0) or 0.0) - float(ref_fuse.get('success_rate', 0.0) or 0.0)):.6f}"
                     ),
@@ -3216,6 +3345,115 @@ def _summarize_agentic_rows(rows: List[Dict[str, Any]], conditions: Sequence[str
     }
 
 
+def _build_rank_divergence_analysis(rows: List[Dict[str, Any]], top_k: int = 10) -> Dict[str, Any]:
+    """Join bm25 and emb per-run rows by task_id and compute the rank divergence analysis.
+
+    Returns a dict with:
+      joined_rows       -- one dict per query with both conditions' data (for CSV)
+      excluded_count    -- queries missing one condition
+      primary_partition -- metrics table keyed by emb_wins/tied_at_1/tied/both_missed_topk/bm25_wins
+      bm25_wins_gap_split -- metrics for small (1-4) and large (5+) BM25 rank advantage
+      bm25_wins_component_freq -- {component: count} for bm25_wins subset
+    """
+    top_k_plus_one = top_k + 1
+
+    by_task: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        cond = str(row.get("condition") or "")
+        if cond not in ("bm25", "emb"):
+            continue
+        tid = str(row.get("task_id") or "")
+        if not tid:
+            continue
+        by_task.setdefault(tid, {})[cond] = row
+
+    joined: List[Dict[str, Any]] = []
+    excluded = 0
+    for tid, cond_map in sorted(by_task.items()):
+        if "bm25" not in cond_map or "emb" not in cond_map:
+            excluded += 1
+            continue
+        b = cond_map["bm25"]
+        e = cond_map["emb"]
+        bm25_rank = int(b.get("first_search_binaries_gold_rank") or top_k_plus_one)
+        emb_rank  = int(e.get("first_search_binaries_gold_rank") or top_k_plus_one)
+        rank_gap  = bm25_rank - emb_rank  # positive = EMB ranked better
+        bm25_in_top_k = bm25_rank <= top_k
+        emb_in_top_k = emb_rank <= top_k
+        if bm25_in_top_k and emb_in_top_k and bm25_rank == emb_rank:
+            rank_comparison = "tied_at_1" if bm25_rank == 1 else "tied"
+        elif not bm25_in_top_k and not emb_in_top_k:
+            rank_comparison = "both_missed_topk"
+        elif emb_rank < bm25_rank:
+            rank_comparison = "emb_wins"
+        elif bm25_rank < emb_rank:
+            rank_comparison = "bm25_wins"
+        else:
+            rank_comparison = "both_missed_topk"
+        joined.append({
+            "task_id":          tid,
+            "component":        str(b.get("component") or tid.split(":")[1] if ":" in tid else ""),
+            "collection":       str(b.get("collection") or ""),
+            "bm25_rank":        bm25_rank,
+            "emb_rank":         emb_rank,
+            "bm25_in_top_k":    bm25_in_top_k,
+            "emb_in_top_k":     emb_in_top_k,
+            "rank_gap":         rank_gap,
+            "rank_comparison":  rank_comparison,
+            "bm25_outcome":     _agent_run_outcome(b),
+            "emb_outcome":      _agent_run_outcome(e),
+            "bm25_tokens":      int(b.get("total_tokens") or 0),
+            "emb_tokens":       int(e.get("total_tokens") or 0),
+            "bm25_tool_calls":  int(b.get("total_tool_calls") or 0),
+            "emb_tool_calls":   int(e.get("total_tool_calls") or 0),
+        })
+
+    def _subset_metrics(subset: List[Dict[str, Any]]) -> Dict[str, Any]:
+        n = len(subset)
+        if n == 0:
+            return {"n": 0}
+        return {
+            "n":                    n,
+            "bm25_success_rate":    float(f"{sum(1 for r in subset if r['bm25_outcome'] == 'success') / n:.6f}"),
+            "emb_success_rate":     float(f"{sum(1 for r in subset if r['emb_outcome']  == 'success') / n:.6f}"),
+            "bm25_token_median":    _median([float(r["bm25_tokens"]) for r in subset]),
+            "emb_token_median":     _median([float(r["emb_tokens"])  for r in subset]),
+            "bm25_tool_call_median": _median([float(r["bm25_tool_calls"]) for r in subset]),
+            "emb_tool_call_median":  _median([float(r["emb_tool_calls"])  for r in subset]),
+        }
+
+    emb_wins  = [r for r in joined if r["rank_comparison"] == "emb_wins"]
+    tied_at_1 = [r for r in joined if r["rank_comparison"] == "tied_at_1"]
+    tied      = [r for r in joined if r["rank_comparison"] == "tied"]
+    both_missed_topk = [r for r in joined if r["rank_comparison"] == "both_missed_topk"]
+    bm25_wins = [r for r in joined if r["rank_comparison"] == "bm25_wins"]
+    bm25_small = [r for r in bm25_wins if -4 <= r["rank_gap"] <= -1]
+    bm25_large = [r for r in bm25_wins if r["rank_gap"] <= -5]
+
+    comp_freq: Dict[str, int] = {}
+    for r in bm25_wins:
+        comp = r["component"]
+        comp_freq[comp] = comp_freq.get(comp, 0) + 1
+
+    return {
+        "excluded_count": excluded,
+        "joined_rows": joined,
+        "primary_partition": {
+            "emb_wins":          _subset_metrics(emb_wins),
+            "tied_at_1":         _subset_metrics(tied_at_1),
+            "tied":              _subset_metrics(tied),
+            "both_missed_topk":  _subset_metrics(both_missed_topk),
+            "bm25_wins":         _subset_metrics(bm25_wins),
+            "all":               _subset_metrics(joined),
+        },
+        "bm25_wins_gap_split": {
+            "small_1_4": _subset_metrics(bm25_small),
+            "large_5plus": _subset_metrics(bm25_large),
+        },
+        "bm25_wins_component_freq": dict(sorted(comp_freq.items(), key=lambda kv: -kv[1])),
+    }
+
+
 def _write_csv(path: str, rows: Sequence[Dict[str, Any]]) -> Optional[str]:
     if not rows:
         return None
@@ -3241,7 +3479,7 @@ def agentic_eval_run_matrix(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
     """
     Run all-task agentic matrix across retrieval conditions using deep-agent runtime.
 
-    Main matrix: tasks x (bm25,fuse,none,both)
+    Main matrix: tasks x (base,bm25,emb,both)
     Optional sensitivity: rerun with top_k=5.
 
     Optional task filters:
@@ -3273,7 +3511,6 @@ def agentic_eval_run_matrix(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
         return {"error": str(e)}
     outdir = Path(_resolve_outdir(cfg)).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
-    oxidepath = str(cfg.get("oxidepath") or os.getcwd()).strip()
     model = str(cfg.get("agent_model", DEFAULT_AGENTIC_MODEL) or DEFAULT_AGENTIC_MODEL).strip()
     ollama_base_url = str(cfg.get("ollama_base_url", DEFAULT_OLLAMA_BASE_URL) or DEFAULT_OLLAMA_BASE_URL).strip()
     agent_recursion_limit = _safe_int(
@@ -3288,7 +3525,6 @@ def agentic_eval_run_matrix(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
     allow_nonlocal_backend = _as_bool(cfg.get("allow_nonlocal_backend"), False)
     max_tasks = _safe_int(cfg.get("max_tasks"), 0, min_value=0)
     fail_fast = _as_bool(cfg.get("fail_fast"), False)
-    run_preflight = _as_bool(cfg.get("run_preflight"), True)
     wall_start = time.perf_counter()
     filter_components = _parse_csv_values(
         cfg.get("components", cfg.get("include_components"))
@@ -3476,6 +3712,8 @@ def agentic_eval_run_matrix(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
             summary_pack.get("stopped_reason_counts_by_condition") if isinstance(summary_pack, dict) else {}
         )
 
+        rank_divergence = _build_rank_divergence_analysis(scenario_rows, top_k=top_k_value)
+
         summary_payload = {
             "analysis": "agentic_eval_run_matrix",
             "runtime": "deep_agent",
@@ -3492,6 +3730,7 @@ def agentic_eval_run_matrix(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
             "pairwise_vs_fuse": pairwise_vs_fuse,
             "pairwise_vs_oracle": pairwise_vs_oracle,
             "stopped_reason_counts_by_condition": stopped_reason_counts_by_condition,
+            "rank_divergence": {k: v for k, v in rank_divergence.items() if k != "joined_rows"},
             "runs_jsonl": str(runs_path),
             "mcp_configs": cfg_by_condition,
             "func_toolkit_tools": list(FUNC_TOOLKIT_TOOL_NAMES),
@@ -3530,6 +3769,12 @@ def agentic_eval_run_matrix(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
             str(outdir / f"agentic_pairwise_vs_oracle_{scenario}.csv"),
             pairwise_vs_oracle if isinstance(pairwise_vs_oracle, list) else [],
         )
+        rank_div_path = outdir / f"agentic_rank_divergence_{scenario}.json"
+        rank_div_path.write_text(json.dumps(rank_divergence, indent=2, default=str), encoding="utf-8")
+        rank_div_csv = _write_csv(
+            str(outdir / f"agentic_rank_divergence_{scenario}.csv"),
+            rank_divergence.get("joined_rows") or [],
+        )
         scenario_artifacts.append(
             {
                 "scenario": scenario,
@@ -3540,6 +3785,8 @@ def agentic_eval_run_matrix(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
                 "by_collection_csv": by_collection_csv,
                 "pairwise_vs_fuse_csv": pairwise_fuse_csv,
                 "pairwise_vs_oracle_csv": pairwise_oracle_csv,
+                "rank_divergence_json": str(rank_div_path),
+                "rank_divergence_csv": rank_div_csv,
             }
         )
         all_runs.extend(scenario_rows)
@@ -3585,8 +3832,6 @@ def agentic_eval_run_matrix(args: List[str], opts: Dict[str, Any]) -> Dict[str, 
         ],
         "defaults_used": {
             "outdir": DEFAULT_OUTDIR,
-            "comp_path": DEFAULT_COMP_PATH,
-            "prompt_path": DEFAULT_PROMPT_PATH,
             "conditions": ",".join(DEFAULT_AGENTIC_CONDITIONS),
             "agent_model": DEFAULT_AGENTIC_MODEL,
             "top_k": DEFAULT_AGENTIC_TOP_K,
@@ -3637,6 +3882,85 @@ def _load_agentic_rows_from_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def _load_agentic_summary_bundle(
+    outdir: Path,
+    scenario: str,
+    conditions: Sequence[str],
+) -> Tuple[Optional[Dict[str, Any]], Optional[List[Dict[str, Any]]], Optional[Path], Optional[str]]:
+    summary_path = outdir / f"agentic_summary_{scenario}.json"
+    runs_path = outdir / f"agentic_runs_{scenario}.jsonl"
+    summary_payload: Optional[Dict[str, Any]] = None
+    rows: Optional[List[Dict[str, Any]]] = None
+
+    if summary_path.exists():
+        try:
+            loaded = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            return None, None, None, f"Failed to read {summary_path}: {e}"
+        if not isinstance(loaded, dict):
+            return None, None, None, f"Expected JSON object in {summary_path}"
+        summary_payload = dict(loaded)
+
+    if runs_path.exists():
+        rows = _load_agentic_rows_from_jsonl(runs_path)
+        if not rows:
+            return None, None, None, f"No valid rows in {runs_path}"
+        summary_pack = _summarize_agentic_rows(rows, conditions)
+        if summary_payload is None:
+            summary_payload = {
+                "scenario": scenario,
+                "conditions": list(conditions),
+            }
+        summary_payload.update(summary_pack)
+        summary_payload["task_count"] = len({r.get("task_id") for r in rows})
+        summary_payload["run_count"] = len(rows)
+
+    if summary_payload is None:
+        return None, None, None, None
+    return summary_payload, rows, runs_path if runs_path.exists() else None, None
+
+
+def _main_agent_p1_reference(condition: str) -> Optional[float]:
+    return MAIN_AGENT_P1_REFERENCE.get(str(condition or "").strip().lower())
+
+
+def _robustness_agent_p1_reference(component: str, condition: str) -> Optional[float]:
+    comp_key = str(component or "").strip().lower()
+    cond_key = str(condition or "").strip().lower()
+    refs = ROBUSTNESS_AGENT_P1_REFERENCE.get(comp_key)
+    if not refs:
+        return None
+    if cond_key == "both":
+        values = [float(v) for v in refs.values()]
+        return max(values) if values else None
+    return refs.get(cond_key)
+
+
+def _per_component_agent_wide_table(
+    rows: List[Dict[str, Any]],
+    conditions: Sequence[str],
+) -> List[Dict[str, Any]]:
+    long_rows = _per_component_agent_summary(rows, list(conditions))
+    by_component: Dict[str, Dict[str, Any]] = {}
+    for row in long_rows:
+        comp = str(row.get("component") or "").strip()
+        cond = str(row.get("condition") or "").strip()
+        if not comp or not cond:
+            continue
+        entry = by_component.setdefault(
+            comp,
+            {
+                "component": comp,
+                "base_success_rate": None,
+                "bm25_success_rate": None,
+                "emb_success_rate": None,
+                "both_success_rate": None,
+            },
+        )
+        entry[f"{cond}_success_rate"] = row.get("success_rate")
+    return [by_component[comp] for comp in sorted(by_component)]
+
+
 def _paper_first_call_rank_row(condition: str, summary_row: Dict[str, Any]) -> Dict[str, Any]:
     row: Dict[str, Any] = {
         "condition": condition,
@@ -3674,7 +3998,7 @@ def _first_call_rank_field_for_condition(condition: str) -> str:
     """Return the JSONL field name for first-call gold rank for a given condition."""
     if condition == "base":
         return "first_search_functions_gold_rank"
-    if condition in ("bm25", "fuse"):
+    if condition in ("bm25", "emb"):
         return "first_search_binaries_gold_rank"
     # both: pick the best (minimum) of lexical and semantic
     return "_first_call_rank_both"
@@ -3715,6 +4039,8 @@ def _rank_bucket_success_table(
     groups: Dict[Tuple[str, str], List[bool]] = defaultdict(list)
     for row in rows:
         cond = str(row.get("condition") or "")
+        if cond == "fuse":
+            cond = "emb"
         if cond not in conditions:
             continue
         rank = _get_rank(row, cond)
@@ -3753,6 +4079,8 @@ def _per_component_agent_summary(
     for row in rows:
         comp = str(row.get("component") or "").strip()
         cond = str(row.get("condition") or "")
+        if cond == "fuse":
+            cond = "emb"
         if comp and cond in conditions:
             groups[(comp, cond)].append(row)
 
@@ -3801,9 +4129,12 @@ def _build_agent_figure_data(
     by_condition: Dict[str, Dict[str, List[Any]]] = {
         cond: {
             "success": [],
+            "wrong": [],
+            "stopped": [],
             "tokens_all": [],
+            "tokens_success": [],
             "tokens_completed": [],
-            "token_points": [],
+            "tokens_wrong": [],
             "retrieve_all": [],
             "analysis_all": [],
             "total_all": [],
@@ -3817,6 +4148,8 @@ def _build_agent_figure_data(
 
     for row in rows:
         cond = str(row.get("condition") or "").strip()
+        if cond == "fuse":
+            cond = "emb"
         if cond not in by_condition:
             continue
         saw_rows = True
@@ -3825,22 +4158,23 @@ def _build_agent_figure_data(
         analysis_calls = float(_analysis_tool_call_count(row))
         total_calls = float(max(0, int(row.get("total_tool_calls", 0) or 0)))
         outcome = _agent_run_outcome(row)
-        bucket["success"].append(float(bool(row.get("success"))))
-        bucket["tokens_all"].append(float(row.get("total_tokens", 0) or 0))
-        bucket["token_points"].append(
-            {
-                "value": float(row.get("total_tokens", 0) or 0),
-                "outcome": outcome,
-            }
-        )
+        bucket["success"].append(float(outcome == "success"))
+        bucket["wrong"].append(float(outcome == "wrong"))
+        bucket["stopped"].append(float(outcome == "stopped"))
+        total_tokens = float(row.get("total_tokens", 0) or 0)
+        bucket["tokens_all"].append(total_tokens)
+        if outcome == "success":
+            bucket["tokens_success"].append(total_tokens)
         bucket["retrieve_all"].append(retrieve_calls)
         bucket["analysis_all"].append(analysis_calls)
         bucket["total_all"].append(total_calls)
         if _is_agent_run_completed(row):
-            bucket["tokens_completed"].append(float(row.get("total_tokens", 0) or 0))
+            bucket["tokens_completed"].append(total_tokens)
             bucket["retrieve_completed"].append(retrieve_calls)
             bucket["analysis_completed"].append(analysis_calls)
             bucket["total_completed"].append(total_calls)
+        if outcome == "wrong":
+            bucket["tokens_wrong"].append(total_tokens)
 
     if not saw_rows:
         return None
@@ -3892,15 +4226,27 @@ def _build_agent_figure_data(
         },
         {
             "key": "total_tokens",
-            "label": "Total tokens",
+            "label": "Total Token Budget",
             "value_kind": "tokens",
-            "plot_style": "ecdf",
-            "values_by_condition": {
+            "plot_style": "budget_pair",
+            "success_values_by_condition": {
+                cond: [float(f"{v:.6f}") for v in by_condition[cond]["tokens_success"]]
+                for cond in order
+            },
+            "completion_values_by_condition": {
+                cond: [float(f"{v:.6f}") for v in by_condition[cond]["tokens_completed"]]
+                for cond in order
+            },
+            "wrong_values_by_condition": {
+                cond: [float(f"{v:.6f}") for v in by_condition[cond]["tokens_wrong"]]
+                for cond in order
+            },
+            "budget_values_by_condition": {
                 cond: [float(f"{v:.6f}") for v in by_condition[cond]["tokens_all"]]
                 for cond in order
             },
-            "points_by_condition": {
-                cond: list(by_condition[cond]["token_points"])
+            "denominator_by_condition": {
+                cond: len(by_condition[cond]["tokens_all"])
                 for cond in order
             },
         },
@@ -3929,21 +4275,13 @@ def _build_agentic_paper_report(
     rows: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build structured paper report from aggregated summary data."""
-    # E1 P@1 reference values from the non-agentic evaluation (hardcoded).
-    # base uses Func-Emb P@1 (the function-level primitive in search_functions).
-    E1_P1: Dict[str, Optional[float]] = {
-        "base": 0.2489,
-        "bm25": 0.5244,
-        "fuse": 0.5778,
-        "both": None,
-    }
-
     summary_by_cond: Dict[str, Dict[str, Any]] = {
         str(r.get("condition") or ""): r
         for r in (summary_payload.get("summary") or [])
         if isinstance(r, dict)
     }
 
+    agent_summary_table: List[Dict[str, Any]] = []
     outcomes_table: List[Dict[str, Any]] = []
     effort_table: List[Dict[str, Any]] = []
     first_call_rank_table: List[Dict[str, Any]] = []
@@ -3961,6 +4299,9 @@ def _build_agentic_paper_report(
             "miss_rate": miss,
             "stopped_rate": stopped,
             "runs": row.get("runs"),
+            "stopped_recursion_limit": row.get("stopped_recursion_limit"),
+            "stopped_parse_error": row.get("stopped_parse_error"),
+            "stopped_runtime_error": row.get("stopped_runtime_error"),
         })
 
         effort_table.append({
@@ -3968,6 +4309,10 @@ def _build_agentic_paper_report(
             "mean_retrieve_calls": row.get("mean_retrieve_calls"),
             "mean_analysis_tool_calls": row.get("mean_analysis_tool_calls"),
             "mean_tool_calls": row.get("mean_tool_calls"),
+            "tc_p25": row.get("tc_p25"),
+            "tc_median": row.get("tc_median"),
+            "tc_p75": row.get("tc_p75"),
+            "tc_p95": row.get("tc_p95"),
             "mean_total_tokens": row.get("mean_total_tokens"),
             "token_median": row.get("token_median"),
             "token_p25": row.get("token_p25"),
@@ -3977,13 +4322,34 @@ def _build_agentic_paper_report(
 
         first_call_rank_table.append(_paper_first_call_rank_row(cond, row))
 
-        e1_p1 = E1_P1.get(cond)
+        e1_p1 = _main_agent_p1_reference(cond)
         delta: Optional[float] = None
         if success is not None and e1_p1 is not None:
             try:
                 delta = float(success) - float(e1_p1)
             except (TypeError, ValueError):
                 delta = None
+
+        agent_summary_table.append({
+            "condition": cond,
+            "condition_label": _agent_condition_label(cond),
+            "success_rate": success,
+            "fail_rate": miss,
+            "miss_rate": miss,
+            "timeout_rate": stopped,
+            "stopped_rate": stopped,
+            "delta_vs_p1": delta,
+            "tc_p25": row.get("tc_p25"),
+            "tc_median": row.get("tc_median"),
+            "tc_p75": row.get("tc_p75"),
+            "tc_p95": row.get("tc_p95"),
+            "token_p25": row.get("token_p25"),
+            "token_median": row.get("token_median"),
+            "token_p75": row.get("token_p75"),
+            "token_p95": row.get("token_p95"),
+            "runs": row.get("runs"),
+        })
+
         delta_table.append({
             "condition": cond,
             "agentic_success_rate": success,
@@ -3995,10 +4361,12 @@ def _build_agentic_paper_report(
     # New tables requiring raw rows
     rank_bucket_table: List[Dict[str, Any]] = []
     per_component_table: List[Dict[str, Any]] = []
+    per_component_wide_table: List[Dict[str, Any]] = []
     figure_payloads: Dict[str, Any] = {}
     if rows is not None:
         rank_bucket_table = _rank_bucket_success_table(rows, conditions)
         per_component_table = _per_component_agent_summary(rows, conditions)
+        per_component_wide_table = _per_component_agent_wide_table(rows, conditions)
         figure_data = _build_agent_figure_data(rows, conditions)
         if figure_data is not None:
             figure_payloads["fig_agent_cost"] = figure_data.get("agent_cost")
@@ -4010,12 +4378,14 @@ def _build_agentic_paper_report(
         "task_count": summary_payload.get("task_count"),
         "run_count": summary_payload.get("run_count"),
         "tables": {
+            "tab_agent_summary": agent_summary_table,
             "tab_agent_outcomes": outcomes_table,
             "tab_agent_effort": effort_table,
             "tab_first_call_gold_rank": first_call_rank_table,
             "tab_agent_delta": delta_table,
             "tab_rank_bucket_success": rank_bucket_table,
             "tab_per_component_agent": per_component_table,
+            "tab_per_component_agent_wide": per_component_wide_table,
         },
         "figures": figure_payloads,
     }
@@ -4052,32 +4422,43 @@ def _print_agentic_paper_report(report: Dict[str, Any]) -> None:
     header = f"{'Outcome':<14}" + "".join(f"  {c:>{col_w}}" for c in conditions)
     print(header)
     outcomes = {r["condition"]: r for r in tables.get("tab_agent_outcomes", [])}
+    int_metrics = {"stopped_recursion_limit", "stopped_parse_error", "stopped_runtime_error"}
     for metric, label in [
         ("success_rate", "Success"),
         ("miss_rate", "Wrong"),
         ("stopped_rate", "Stopped"),
+        ("stopped_recursion_limit", "  Recursion limit"),
+        ("stopped_parse_error", "  Parse error"),
+        ("stopped_runtime_error", "  Runtime error"),
     ]:
+        decimals = 0 if metric in int_metrics else 4
         print(
-            f"{label:<14}"
-            + "".join(f"  {_f(outcomes.get(c, {}).get(metric)):>{col_w}}" for c in conditions)
+            f"{label:<22}"
+            + "".join(f"  {_f(outcomes.get(c, {}).get(metric), decimals=decimals):>{col_w}}" for c in conditions)
         )
 
     # tab:agent_effort
     print("\n--- tab:agent_effort ---")
     effort = {r["condition"]: r for r in tables.get("tab_agent_effort", [])}
+    int_effort_metrics = {"tc_p25", "tc_median", "tc_p75", "tc_p95"}
     for metric, label in [
         ("mean_retrieve_calls", "Mean retrieve calls"),
         ("mean_analysis_tool_calls", "Mean analysis calls"),
         ("mean_tool_calls", "Mean total calls"),
+        ("tc_p25", "Q1 total calls"),
+        ("tc_median", "Median total calls"),
+        ("tc_p75", "Q3 total calls"),
+        ("tc_p95", "P95 total calls"),
         ("mean_total_tokens", "Mean total tokens"),
         ("token_median", "Median total tokens"),
-        ("token_p25", "P25 total tokens"),
-        ("token_p75", "P75 total tokens"),
+        ("token_p25", "Q1 total tokens"),
+        ("token_p75", "Q3 total tokens"),
         ("token_p95", "P95 total tokens"),
     ]:
+        decimals = 0 if metric in int_effort_metrics else 4
         print(
             f"{label:<24}"
-            + "".join(f"  {_f(effort.get(c, {}).get(metric)):>{col_w}}" for c in conditions)
+            + "".join(f"  {_f(effort.get(c, {}).get(metric), decimals=decimals):>{col_w}}" for c in conditions)
         )
 
     # tab:first_call_gold_rank
@@ -4145,6 +4526,111 @@ def _print_agentic_paper_report(report: Dict[str, Any]) -> None:
     print(f"\n{sep}\n")
 
 
+def _build_agentic_robustness_report(
+    summary_payload: Dict[str, Any],
+    conditions: List[str],
+    *,
+    rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        comp = str(row.get("component") or "").strip()
+        cond = str(row.get("condition") or "").strip().lower()
+        if cond == "fuse":
+            cond = "emb"
+        if comp and cond in conditions:
+            groups[(comp, cond)].append(row)
+
+    seen_components = {comp for (comp, _cond) in groups}
+    ordered_components = [
+        comp for comp in ROBUSTNESS_AGENT_COMPONENT_ORDER if comp in seen_components
+    ] + sorted(seen_components - set(ROBUSTNESS_AGENT_COMPONENT_ORDER))
+
+    robustness_table: List[Dict[str, Any]] = []
+    for component in ordered_components:
+        for condition in conditions:
+            group = groups.get((component, condition), [])
+            n = len(group)
+            if n <= 0:
+                robustness_table.append({
+                    "component": component,
+                    "condition": condition,
+                    "condition_label": _agent_condition_label(condition),
+                    "runs": 0,
+                    "success_rate": None,
+                    "fail_rate": None,
+                    "miss_rate": None,
+                    "timeout_rate": None,
+                    "stopped_rate": None,
+                    "reference_p1": _robustness_agent_p1_reference(component, condition),
+                    "delta_vs_p1": None,
+                    "tc_p25": None,
+                    "tc_median": None,
+                    "tc_p75": None,
+                    "tc_p95": None,
+                    "token_p25": None,
+                    "token_median": None,
+                    "token_p75": None,
+                    "token_p95": None,
+                })
+                continue
+
+            success_count = sum(1 for row in group if bool(row.get("success")) and _is_agent_run_completed(row))
+            stopped_count = sum(1 for row in group if not _is_agent_run_completed(row))
+            fail_count = max(0, n - success_count - stopped_count)
+            tc_values = [float(row.get("total_tool_calls", 0) or 0) for row in group]
+            token_values = [float(row.get("total_tokens", 0) or 0) for row in group]
+            success_rate = float(success_count / n)
+            reference_p1 = _robustness_agent_p1_reference(component, condition)
+            delta_vs_p1 = (
+                float(success_rate - float(reference_p1))
+                if reference_p1 is not None
+                else None
+            )
+
+            robustness_table.append({
+                "component": component,
+                "condition": condition,
+                "condition_label": _agent_condition_label(condition),
+                "runs": n,
+                "success_rate": float(f"{success_rate:.6f}"),
+                "fail_rate": float(f"{(fail_count / n):.6f}"),
+                "miss_rate": float(f"{(fail_count / n):.6f}"),
+                "timeout_rate": float(f"{(stopped_count / n):.6f}"),
+                "stopped_rate": float(f"{(stopped_count / n):.6f}"),
+                "reference_p1": (
+                    float(f"{float(reference_p1):.6f}")
+                    if reference_p1 is not None
+                    else None
+                ),
+                "delta_vs_p1": (
+                    float(f"{float(delta_vs_p1):.6f}")
+                    if delta_vs_p1 is not None
+                    else None
+                ),
+                "tc_p25": float(f"{_quantile(tc_values, 0.25):.6f}"),
+                "tc_median": float(f"{_quantile(tc_values, 0.5):.6f}"),
+                "tc_p75": float(f"{_quantile(tc_values, 0.75):.6f}"),
+                "tc_p95": float(f"{_quantile(tc_values, 0.95):.6f}"),
+                "token_p25": float(f"{_quantile(token_values, 0.25):.6f}"),
+                "token_median": float(f"{_quantile(token_values, 0.5):.6f}"),
+                "token_p75": float(f"{_quantile(token_values, 0.75):.6f}"),
+                "token_p95": float(f"{_quantile(token_values, 0.95):.6f}"),
+            })
+
+    return {
+        "report_type": "agentic_robustness_report",
+        "scenario": summary_payload.get("scenario"),
+        "conditions": conditions,
+        "task_count": summary_payload.get("task_count"),
+        "run_count": summary_payload.get("run_count"),
+        "tables": {
+            "tab_robustness_agent": robustness_table,
+            "tab_robustness_condition_summary": list(summary_payload.get("summary") or []),
+        },
+    }
+
+
 def agentic_eval_paper_report(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
     Generate paper-ready numbers for all agentic evaluation tables.
@@ -4160,7 +4646,7 @@ def agentic_eval_paper_report(args: List[str], opts: Dict[str, Any]) -> Dict[str
                     re-summarises from the raw rows.  If neither exists, runs
                     agentic_eval_run_matrix and then loads the result.
       scenario   -- scenario name to load (default: topk10)
-      conditions -- comma-separated condition names (default: base,bm25,fuse,both)
+      conditions -- comma-separated condition names (default: base,bm25,emb,both)
     """
     scenario = str(opts.get("scenario", "topk10") or "topk10").strip()
     cfg = _with_defaults(opts, AGENTIC_RUN_DEFAULTS)
@@ -4178,35 +4664,18 @@ def agentic_eval_paper_report(args: List[str], opts: Dict[str, Any]) -> Dict[str
 
     # --- Try to load from existing files ---
     if outdir is not None:
-        summary_path = outdir / f"agentic_summary_{scenario}.json"
-        runs_path = outdir / f"agentic_runs_{scenario}.jsonl"
-
-        if summary_path.exists():
-            try:
-                summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
-                LOGGER.info("Loaded summary from %s", summary_path)
-                if runs_path.exists():
-                    cached_rows = _load_agentic_rows_from_jsonl(runs_path)
-                    if cached_rows:
-                        summary_pack = _summarize_agentic_rows(cached_rows, conditions)
-                        summary_payload.update(summary_pack)
-                        summary_payload["task_count"] = len({r.get("task_id") for r in cached_rows})
-                        summary_payload["run_count"] = len(cached_rows)
-            except Exception as e:
-                return {"error": f"Failed to read {summary_path}: {e}"}
-        elif runs_path.exists():
-            LOGGER.info("Re-summarising from %s", runs_path)
-            cached_rows = _load_agentic_rows_from_jsonl(runs_path)
-            if not cached_rows:
-                return {"error": f"No valid rows in {runs_path}"}
-            summary_pack = _summarize_agentic_rows(cached_rows, conditions)
-            summary_payload = {
-                "scenario": scenario,
-                "conditions": conditions,
-                "task_count": len({r.get("task_id") for r in cached_rows}),
-                "run_count": len(cached_rows),
-                **summary_pack,
-            }
+        summary_payload, cached_rows, runs_path, load_err = _load_agentic_summary_bundle(
+            outdir,
+            scenario,
+            conditions,
+        )
+        if load_err:
+            return {"error": load_err}
+        if summary_payload is not None:
+            LOGGER.info(
+                "Loaded cached agentic report inputs from %s",
+                outdir,
+            )
 
     # --- Fall back to generating new results ---
     if summary_payload is None:
@@ -4219,13 +4688,10 @@ def agentic_eval_paper_report(args: List[str], opts: Dict[str, Any]) -> Dict[str
             if not isinstance(artifact_info, dict):
                 continue
             sj = artifact_info.get("summary_json")
-            rj = artifact_info.get("runs_jsonl")
             if sj and Path(sj).exists():
                 try:
                     summary_payload = json.loads(Path(sj).read_text(encoding="utf-8"))
                     outdir = Path(sj).parent
-                    if rj:
-                        runs_path = Path(rj)
                 except Exception as e:
                     return {"error": f"Failed to read generated summary {sj}: {e}"}
                 break
@@ -4254,23 +4720,23 @@ def agentic_eval_paper_report(args: List[str], opts: Dict[str, Any]) -> Dict[str
 _TRADEOFF_DATA = [
     {"condition": "base",  "success": 0.3778, "tokens": 469099},
     {"condition": "bm25",  "success": 0.5067, "tokens": 575042},
-    {"condition": "fuse",  "success": 0.6000, "tokens": 314072},
+    {"condition": "emb",   "success": 0.6000, "tokens": 314072},
     {"condition": "both",  "success": 0.6044, "tokens": 453466},
 ]
 
 _TOOL_USAGE_DATA = [
     {"condition": "base", "retrieve": 5.2711,  "analysis": 30.4622},
     {"condition": "bm25", "retrieve": 31.4756, "analysis": 28.8578},
-    {"condition": "fuse", "retrieve": 14.0711, "analysis": 15.7200},
+    {"condition": "emb",  "retrieve": 14.0711, "analysis": 15.7200},
     {"condition": "both", "retrieve": 21.7911, "analysis": 23.7956},
 ]
 
 
-_AGENT_FIGURE_CONDITION_ORDER = ("base", "bm25", "fuse", "both")
+_AGENT_FIGURE_CONDITION_ORDER = ("base", "bm25", "emb", "both")
 _AGENT_FIGURE_COLORS: Dict[str, str] = {
     "base": "#9a9a9a",
     "bm25": "#4C78A8",
-    "fuse": "#2A9D8F",
+    "emb": "#2A9D8F",
     "both": "#E76F51",
     "oracle": "#6F4E7C",
 }
@@ -4582,6 +5048,127 @@ def _plot_agent_cost(
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
+    def _render_cumulative_budget_curve(
+        ax: Any,
+        condition_order: List[str],
+        condition_labels: Dict[str, str],
+        run_counts_by_condition: Dict[str, int],
+        *,
+        value_lists_by_condition: Dict[str, Any],
+        budget_values_by_condition: Dict[str, Any],
+        denominator_by_condition: Dict[str, Any],
+        ylabel: str,
+        xlabel: str,
+    ) -> None:
+        raw_flat_values = [
+            float(value)
+            for cond in condition_order
+            for value in (
+                budget_values_by_condition.get(cond)
+                or value_lists_by_condition.get(cond)
+                or []
+            )
+        ]
+        _apply_ecdf_x_axis_scale(ax, raw_flat_values or [1.0])
+        left, right = ax.get_xlim()
+
+        for cond in condition_order:
+            values = sorted(float(v) for v in (value_lists_by_condition.get(cond) or []))
+            denom = int(
+                denominator_by_condition.get(cond)
+                or run_counts_by_condition.get(cond)
+                or len(budget_values_by_condition.get(cond) or [])
+                or 0
+            )
+            if denom <= 0:
+                continue
+
+            plotted_values = [value if value > 0 else left for value in values]
+            final_rate = len(plotted_values) / float(denom)
+            xs = [left]
+            ys = [0.0]
+            for idx, value in enumerate(plotted_values, start=1):
+                xs.append(value)
+                ys.append(idx / float(denom))
+            xs.append(right)
+            ys.append(final_rate)
+
+            ax.step(
+                xs,
+                ys,
+                where="post",
+                linewidth=2.0,
+                color=_AGENT_FIGURE_COLORS.get(cond, "#444444"),
+                label=condition_labels.get(cond, _agent_condition_label(cond)),
+            )
+
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_ylim(0.0, 1.0)
+        ax.yaxis.set_major_locator(mticker.FixedLocator([0.0, 0.25, 0.5, 0.75, 1.0]))
+        ax.yaxis.set_minor_locator(mticker.NullLocator())
+        ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=0))
+        ax.grid(color="#d8d8d8", linewidth=0.6, alpha=0.7, linestyle=":")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    def _render_cumulative_success(
+        ax: Any,
+        metric: Dict[str, Any],
+        condition_order: List[str],
+        condition_labels: Dict[str, str],
+        run_counts_by_condition: Dict[str, int],
+    ) -> None:
+        _render_cumulative_budget_curve(
+            ax,
+            condition_order,
+            condition_labels,
+            run_counts_by_condition,
+            value_lists_by_condition=dict(metric.get("success_values_by_condition") or {}),
+            budget_values_by_condition=dict(metric.get("budget_values_by_condition") or {}),
+            denominator_by_condition=dict(metric.get("denominator_by_condition") or {}),
+            ylabel="Success Rate Within Budget",
+            xlabel=str(metric.get("label") or "Token Budget"),
+        )
+
+    def _render_cumulative_completion(
+        ax: Any,
+        metric: Dict[str, Any],
+        condition_order: List[str],
+        condition_labels: Dict[str, str],
+        run_counts_by_condition: Dict[str, int],
+    ) -> None:
+        _render_cumulative_budget_curve(
+            ax,
+            condition_order,
+            condition_labels,
+            run_counts_by_condition,
+            value_lists_by_condition=dict(metric.get("completion_values_by_condition") or {}),
+            budget_values_by_condition=dict(metric.get("budget_values_by_condition") or {}),
+            denominator_by_condition=dict(metric.get("denominator_by_condition") or {}),
+            ylabel="Completion Rate Within Budget",
+            xlabel=str(metric.get("label") or "Token Budget"),
+        )
+
+    def _render_cumulative_failure(
+        ax: Any,
+        metric: Dict[str, Any],
+        condition_order: List[str],
+        condition_labels: Dict[str, str],
+        run_counts_by_condition: Dict[str, int],
+    ) -> None:
+        _render_cumulative_budget_curve(
+            ax,
+            condition_order,
+            condition_labels,
+            run_counts_by_condition,
+            value_lists_by_condition=dict(metric.get("wrong_values_by_condition") or {}),
+            budget_values_by_condition=dict(metric.get("budget_values_by_condition") or {}),
+            denominator_by_condition=dict(metric.get("denominator_by_condition") or {}),
+            ylabel="Failure Rate Within Budget",
+            xlabel=str(metric.get("label") or "Token Budget"),
+        )
+
     def _figure_level_legend(fig: Any, handles: List[Any], labels: List[str]) -> None:
         deduped: Dict[str, Any] = {}
         for handle, label in zip(handles, labels):
@@ -4607,6 +5194,10 @@ def _plot_agent_cost(
             return "All runs; colors denote outcome; log y-axis"
         if plot_style == "ecdf":
             return "All runs; log x-axis"
+        if plot_style == "cumulative_success":
+            return "Correct runs in numerator; all tasks in denominator; log x-axis"
+        if plot_style == "budget_pair":
+            return ""
         return "All runs; log y-axis"
 
     def _render_metric_axis(
@@ -4621,6 +5212,12 @@ def _plot_agent_cost(
         plot_style = str(metric.get("plot_style") or "").strip().lower()
         if plot_style == "ecdf":
             _render_ecdf(ax, metric, condition_order, condition_labels)
+            return
+        if plot_style == "cumulative_success":
+            _render_cumulative_success(ax, metric, condition_order, condition_labels, run_counts_by_condition)
+            return
+        if plot_style == "budget_pair":
+            _render_cumulative_success(ax, metric, condition_order, condition_labels, run_counts_by_condition)
             return
         values_by_condition = dict(metric.get("values_by_condition") or {})
         positions: List[int] = []
@@ -4713,18 +5310,18 @@ def _plot_agent_cost(
         for ax in axes_flat[len(metrics):]:
             ax.set_visible(False)
 
-        has_ecdf_metric = any(
-            str(metric.get("plot_style") or "").strip().lower() == "ecdf"
+        has_curve_metric = any(
+            str(metric.get("plot_style") or "").strip().lower() in {"ecdf", "cumulative_success", "budget_pair"}
             for metric in metrics
         )
-        if has_ecdf_metric:
+        if has_curve_metric:
             for ax, metric in zip(axes_flat, metrics):
-                if str(metric.get("plot_style") or "").strip().lower() == "ecdf":
+                if str(metric.get("plot_style") or "").strip().lower() in {"ecdf", "cumulative_success", "budget_pair"}:
                     handles, labels = ax.get_legend_handles_labels()
                     _figure_level_legend(fig, list(handles), list(labels))
                     break
         fig.text(0.5, 0.02, "All runs", ha="center", va="bottom")
-        fig.tight_layout(rect=(0.0, 0.04, 1.0, 0.90 if has_ecdf_metric else 1.0))
+        fig.tight_layout(rect=(0.0, 0.04, 1.0, 0.90 if has_curve_metric else 1.0))
         fig.savefig(str(outpath))
         plt.close(fig)
 
@@ -4734,6 +5331,50 @@ def _plot_agent_cost(
                 continue
             metric_slug = key.replace("_", "-")
             metric_path = outpath.parent / f"agent-cost-{metric_slug}.pdf"
+            plot_style = str(metric.get("plot_style") or "").strip().lower()
+            footer_text = _metric_footer_text(metric)
+            if plot_style == "budget_pair":
+                fig_single, axes_triple = plt.subplots(1, 3, figsize=(10.2, 2.8))
+                _render_cumulative_completion(
+                    axes_triple[0],
+                    metric,
+                    condition_order,
+                    condition_labels,
+                    run_counts_by_condition,
+                )
+                axes_triple[0].set_title("Completion")
+                _render_cumulative_success(
+                    axes_triple[1],
+                    metric,
+                    condition_order,
+                    condition_labels,
+                    run_counts_by_condition,
+                )
+                axes_triple[1].set_title("Success")
+                _render_cumulative_failure(
+                    axes_triple[2],
+                    metric,
+                    condition_order,
+                    condition_labels,
+                    run_counts_by_condition,
+                )
+                axes_triple[2].set_title("Failure")
+                handles, labels = axes_triple[0].get_legend_handles_labels()
+                _figure_level_legend(fig_single, list(handles), list(labels))
+                if footer_text:
+                    fig_single.text(
+                        0.5,
+                        0.02,
+                        footer_text,
+                        ha="center",
+                        va="bottom",
+                    )
+                bottom_rect = 0.05 if footer_text else 0.0
+                fig_single.tight_layout(rect=(0.0, bottom_rect, 1.0, 0.88))
+                fig_single.savefig(str(metric_path))
+                plt.close(fig_single)
+                continue
+
             fig_single, ax_single = plt.subplots(figsize=(3.4, 2.8))
             _render_metric_axis(
                 ax_single,
@@ -4742,18 +5383,20 @@ def _plot_agent_cost(
                 condition_labels,
                 run_counts_by_condition,
             )
-            if str(metric.get("plot_style") or "").strip().lower() == "ecdf":
+            if plot_style in {"ecdf", "cumulative_success"}:
                 handles, labels = ax_single.get_legend_handles_labels()
                 _figure_level_legend(fig_single, list(handles), list(labels))
-            fig_single.text(
-                0.5,
-                0.02,
-                _metric_footer_text(metric),
-                ha="center",
-                va="bottom",
-            )
-            top_rect = 0.88 if str(metric.get("plot_style") or "").strip().lower() == "ecdf" else 1.0
-            fig_single.tight_layout(rect=(0.0, 0.05, 1.0, top_rect))
+            if footer_text:
+                fig_single.text(
+                    0.5,
+                    0.02,
+                    footer_text,
+                    ha="center",
+                    va="bottom",
+                )
+            top_rect = 0.88 if plot_style in {"ecdf", "cumulative_success"} else 1.0
+            bottom_rect = 0.05 if footer_text else 0.0
+            fig_single.tight_layout(rect=(0.0, bottom_rect, 1.0, top_rect))
             fig_single.savefig(str(metric_path))
             plt.close(fig_single)
 
@@ -4814,11 +5457,12 @@ def _plot_agent_tool_usage(
         plt.close(fig)
 
 
+
 def generate_agent_figures(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """Generate paper figures from agentic evaluation artifacts.
 
     Options:
-      outdir      -- output directory (default: fuse_paper/images)
+      outdir      -- output directory (default: out/agent_eval/figures)
       report_path -- optional path to agentic_paper_report.json
       jsonl_path  -- optional path to agentic_runs_*.jsonl
       conditions  -- optional comma-separated condition order for live JSONL
@@ -4835,7 +5479,7 @@ def generate_agent_figures(args: List[str], opts: Dict[str, Any]) -> Dict[str, A
         return {"error": f"matplotlib not available: {e}"}
 
     outdir_opt = str(opts.get("outdir", "") or "").strip()
-    outdir = Path(outdir_opt) if outdir_opt else Path("fuse_paper/images")
+    outdir = Path(outdir_opt) if outdir_opt else Path(DEFAULT_AGENT_FIGURE_OUTDIR)
     outdir = outdir.expanduser().resolve()
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -4912,6 +5556,7 @@ def generate_agent_figures(args: List[str], opts: Dict[str, Any]) -> Dict[str, A
             print(f"{metric_path.name:<20} -> {metric_path}")
             outputs[f"agent_cost_{key}"] = str(metric_path)
 
+
     if "tradeoff" in requested:
         tradeoff_data = _TRADEOFF_DATA
         if figure_data_bundle is not None and figure_data_bundle.get("tradeoff") is not None:
@@ -4935,4 +5580,258 @@ def generate_agent_figures(args: List[str], opts: Dict[str, Any]) -> Dict[str, A
     return outputs
 
 
-exports = [agentic_eval_run_matrix, agentic_eval_paper_report, generate_agent_figures]
+def _resolve_figure_outdir(opts: Dict[str, Any], run_outdir: str) -> str:
+    raw = str(opts.get("figure_outdir") or opts.get("figures_outdir") or "").strip()
+    if raw:
+        return str(Path(raw).expanduser().resolve())
+    return str((Path(run_outdir).expanduser().resolve() / "figures"))
+
+
+def _generate_robustness_cost_figures(
+    runs_jsonl: Path,
+    outdir: Path,
+    *,
+    fmt: str = "pdf",
+) -> Dict[str, str]:
+    try:
+        from oxide.plugins import fuse as fuse_plugin
+    except Exception as e:
+        return {"error": f"Could not import oxide.plugins.fuse: {e}"}
+
+    result = fuse_plugin.plot_robustness_cost(
+        [],
+        {
+            "runs_jsonl": str(runs_jsonl),
+            "outdir": str(outdir),
+            "fmt": str(fmt or "pdf"),
+        },
+    )
+    if "error" in result:
+        return result
+
+    outputs: Dict[str, str] = {}
+    hyphen_aliases = {
+        "robustness_tokens": "robustness-tokens",
+        "robustness_tool_calls": "robustness-tool-calls",
+    }
+    for saved_path in (result.get("saved") or []):
+        saved = Path(str(saved_path)).expanduser().resolve()
+        outputs[saved.name] = str(saved)
+        alias_stem = hyphen_aliases.get(saved.stem)
+        if not alias_stem:
+            continue
+        alias_path = saved.with_name(f"{alias_stem}{saved.suffix}")
+        try:
+            if alias_path != saved:
+                alias_path.write_bytes(saved.read_bytes())
+            outputs[alias_path.name] = str(alias_path)
+        except Exception:
+            outputs[alias_path.name] = str(saved)
+    return outputs
+
+
+def agentic_eval_main(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the main agent benchmark experiment and build its paper report."""
+    cfg = dict(opts or {})
+    outdir = str(cfg.get("outdir") or DEFAULT_MAIN_AGENT_EVAL_OUTDIR).strip()
+    scenario = str(cfg.get("scenario") or "topk10").strip() or "topk10"
+    figure_outdir = _resolve_figure_outdir(cfg, outdir)
+    rerun = _as_bool(cfg.get("rerun"), False)
+
+    run_cfg = dict(cfg)
+    run_cfg["outdir"] = outdir
+    run_cfg.setdefault("conditions", ",".join(DEFAULT_AGENTIC_CONDITIONS))
+
+    run_result: Optional[Dict[str, Any]] = None
+    if rerun:
+        run_result = agentic_eval_run_matrix(args, run_cfg)
+        if "error" in run_result:
+            return run_result
+
+    report = agentic_eval_paper_report(args, run_cfg)
+    if "error" in report:
+        return report
+
+    outdir_path = Path(outdir).expanduser().resolve()
+    runs_path = outdir_path / f"agentic_runs_{scenario}.jsonl"
+    summary_path = outdir_path / f"agentic_summary_{scenario}.json"
+    manifest_path = outdir_path / "agentic_eval_matrix_manifest.json"
+    report_path = Path(str(report.get("artifact") or outdir_path / "agentic_paper_report.json")).expanduser().resolve()
+
+    figures: Dict[str, str] = {}
+    warnings: List[str] = []
+    if _as_bool(cfg.get("generate_figures"), True):
+        figure_opts = {
+            "outdir": figure_outdir,
+            "report_path": str(report_path),
+            "jsonl_path": str(runs_path),
+            "conditions": ",".join(report.get("conditions") or DEFAULT_AGENTIC_CONDITIONS),
+            "which": str(cfg.get("which") or "agent_cost"),
+        }
+        figure_result = generate_agent_figures([], figure_opts)
+        if "error" in figure_result:
+            warnings.append(str(figure_result.get("error")))
+        else:
+            figures = {str(k): str(v) for k, v in figure_result.items()}
+
+    payload: Dict[str, Any] = {
+        "experiment": "agentic_eval_main",
+        "scenario": scenario,
+        "outdir": str(outdir_path),
+        "conditions": list(report.get("conditions") or []),
+        "tables": dict(report.get("tables") or {}),
+        "artifacts": {
+            "manifest_json": str(manifest_path) if manifest_path.exists() else None,
+            "summary_json": str(summary_path) if summary_path.exists() else None,
+            "runs_jsonl": str(runs_path) if runs_path.exists() else None,
+            "report_json": str(report_path) if report_path.exists() else None,
+            "figure_outdir": figure_outdir,
+            "figures": figures,
+        },
+    }
+    if run_result is not None:
+        payload["run_result"] = {
+            "artifact": run_result.get("artifact"),
+            "run_count": run_result.get("run_count"),
+        }
+    if warnings:
+        payload["warnings"] = warnings
+    return payload
+
+
+def agentic_eval_robustness(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the robustness agent benchmark and build its paper-facing table."""
+    cfg = dict(opts or {})
+    outdir = str(cfg.get("outdir") or DEFAULT_ROBUSTNESS_AGENT_EVAL_OUTDIR).strip()
+    scenario = str(cfg.get("scenario") or "topk10").strip() or "topk10"
+    figure_outdir = _resolve_figure_outdir(cfg, outdir)
+    rerun = _as_bool(cfg.get("rerun"), False)
+
+    run_cfg = dict(cfg)
+    run_cfg["outdir"] = outdir
+    run_cfg["robustness"] = True
+    run_cfg.setdefault("conditions", ",".join(DEFAULT_ROBUSTNESS_AGENT_CONDITIONS))
+    try:
+        conditions = _normalize_conditions(run_cfg)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    run_result: Optional[Dict[str, Any]] = None
+    outdir_path = Path(outdir).expanduser().resolve()
+    if rerun:
+        run_result = agentic_eval_run_matrix(args, run_cfg)
+        if "error" in run_result:
+            return run_result
+
+    summary_payload, rows, runs_path, load_err = _load_agentic_summary_bundle(
+        outdir_path,
+        scenario,
+        conditions,
+    )
+    if load_err:
+        return {"error": load_err}
+    if summary_payload is None or rows is None or runs_path is None:
+        run_result = agentic_eval_run_matrix(args, run_cfg)
+        if "error" in run_result:
+            return run_result
+        summary_payload, rows, runs_path, load_err = _load_agentic_summary_bundle(
+            outdir_path,
+            scenario,
+            conditions,
+        )
+        if load_err:
+            return {"error": load_err}
+    if summary_payload is None or rows is None or runs_path is None:
+        return {"error": "Could not load robustness run artifacts after execution."}
+
+    report = _build_agentic_robustness_report(summary_payload, conditions, rows=rows)
+    report_path = outdir_path / "agentic_robustness_report.json"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report["artifact"] = str(report_path)
+
+    robustness_csv = _write_csv(
+        str(outdir_path / "agentic_robustness_table.csv"),
+        list((report.get("tables") or {}).get("tab_robustness_agent") or []),
+    )
+    summary_path = outdir_path / f"agentic_summary_{scenario}.json"
+    manifest_path = outdir_path / "agentic_eval_matrix_manifest.json"
+
+    figures: Dict[str, str] = {}
+    warnings: List[str] = []
+    if _as_bool(cfg.get("generate_figures"), True):
+        figure_result = _generate_robustness_cost_figures(
+            runs_path,
+            Path(figure_outdir).expanduser().resolve(),
+            fmt=str(cfg.get("fmt") or "pdf"),
+        )
+        if "error" in figure_result:
+            warnings.append(str(figure_result.get("error")))
+        else:
+            figures = {str(k): str(v) for k, v in figure_result.items()}
+
+    payload: Dict[str, Any] = {
+        "experiment": "agentic_eval_robustness",
+        "scenario": scenario,
+        "outdir": str(outdir_path),
+        "conditions": conditions,
+        "tables": dict(report.get("tables") or {}),
+        "artifacts": {
+            "manifest_json": str(manifest_path) if manifest_path.exists() else None,
+            "summary_json": str(summary_path) if summary_path.exists() else None,
+            "runs_jsonl": str(runs_path) if runs_path.exists() else None,
+            "report_json": str(report_path),
+            "table_csv": robustness_csv,
+            "figure_outdir": figure_outdir,
+            "figures": figures,
+        },
+    }
+    if run_result is not None:
+        payload["run_result"] = {
+            "artifact": run_result.get("artifact"),
+            "run_count": run_result.get("run_count"),
+        }
+    if warnings:
+        payload["warnings"] = warnings
+    return payload
+
+
+def agentic_eval_all(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """Run all agent-evaluation experiments used by the paper."""
+    cfg = dict(opts or {})
+    root_outdir = str(cfg.get("outdir") or "").strip()
+    if root_outdir:
+        root_path = Path(root_outdir).expanduser().resolve()
+        main_outdir = str(Path(cfg.get("main_outdir") or root_path / "main"))
+        robustness_outdir = str(Path(cfg.get("robustness_outdir") or root_path / "robustness"))
+    else:
+        root_path = None
+        main_outdir = str(cfg.get("main_outdir") or DEFAULT_MAIN_AGENT_EVAL_OUTDIR)
+        robustness_outdir = str(cfg.get("robustness_outdir") or DEFAULT_ROBUSTNESS_AGENT_EVAL_OUTDIR)
+
+    main_opts = dict(cfg)
+    main_opts["outdir"] = main_outdir
+    robustness_opts = dict(cfg)
+    robustness_opts["outdir"] = robustness_outdir
+
+    main_result = agentic_eval_main(args, main_opts)
+    if "error" in main_result:
+        return {"error": f"agentic_eval_main failed: {main_result.get('error')}"}
+
+    robustness_result = agentic_eval_robustness(args, robustness_opts)
+    if "error" in robustness_result:
+        return {"error": f"agentic_eval_robustness failed: {robustness_result.get('error')}"}
+
+    payload: Dict[str, Any] = {
+        "experiment": "agentic_eval_all",
+        "outdir": str(root_path) if root_path is not None else None,
+        "artifacts": {
+            "main_outdir": main_result.get("outdir"),
+            "robustness_outdir": robustness_result.get("outdir"),
+        },
+        "main": main_result,
+        "robustness": robustness_result,
+    }
+    return payload
+
+
+exports = [agentic_eval_all, agentic_eval_main, agentic_eval_robustness]

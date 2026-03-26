@@ -4,7 +4,7 @@ from __future__ import annotations
 Primary experiment plugin for the FUSE paper.
 
 Covers all retrieval and agent experiments referenced in evaluation.tex:
-- §5.1 Standalone retrieval: BM25 / Dense (no packing) / Func-Emb / FUSE via tool_eval_main()
+- §5.1 Standalone retrieval: BM25 / EMB-Dense / Func-Emb / EMB via tool_eval_main()
 - §5.3 Per-component retrieval MRR: component_analysis()
 - §5.4 Robustness: eval_robustness() with prompt variant JSON
 - §5.2 Agent benchmark tables: agent_eval_main() reading agentic_paper_report.json
@@ -47,14 +47,16 @@ DEFAULT_PROMPT_PATH = "fuse_data/descriptions/component_descriptions.json"
 DEFAULT_OUTDIR = "out/fuse"
 DEFAULT_TOP_K_FILES = 1_000_000
 DEFAULT_METHODS = ["bm25_tool", "dense_tool", "func_emb_tool", "fuse_tool"]
-DEFAULT_CONDITIONS = ["base", "bm25", "fuse", "both"]
+DEFAULT_CONDITIONS = ["base", "bm25", "emb", "both"]
 DEFAULT_AGENT_REPORT_PATH = "out/agent_eval/20260317_131650/agentic_paper_report.json"
 DEFAULT_AGENT_FIRST_JSONL = "out/agent_eval/20260311_183155/agentic_runs_topk10.jsonl"
 DEFAULT_DENSE_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_DENSE_MODEL_REVISION = "c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
 DEFAULT_PACK_BUDGET_TOKENS = 512
 DEFAULT_LOCAL_FILES_ONLY = True
 
-# dense_tool = same encoder as FUSE but on raw string concat (no packing) — §5.1 ablation.
+# dense_tool = same encoder as the packed semantic condition but on raw string
+# concatenation without evidence packing — §5.1 ablation.
 METHOD_IDS = ["bm25_tool", "dense_tool", "func_emb_tool", "fuse_tool"]
 METHOD_ALIASES = {
     "bm25": "bm25_tool",
@@ -64,11 +66,21 @@ METHOD_ALIASES = {
     "function": "func_emb_tool",
     "fuse": "fuse_tool",
 }
-METHOD_DISPLAY = {
+METHOD_DISPLAY_MAIN = {
     "bm25_tool": "BM25",
-    "dense_tool": "Dense (no packing)",
+    "dense_tool": "EMB-Dense",
     "func_emb_tool": "Func-Emb",
-    "fuse_tool": "FUSE",
+    "fuse_tool": "EMB",
+}
+METHOD_DISPLAY_ABLATION = {
+    "dense_tool": "EMB-Dense",
+    "fuse_tool": "EMB-Packed",
+}
+CONDITION_DISPLAY = {
+    "base": "BASE",
+    "bm25": "BM25",
+    "emb": "EMB",
+    "both": "BOTH",
 }
 _FIGURE_RC: Dict[str, Any] = {
     "font.size": 8,
@@ -151,6 +163,24 @@ def _parse_csv_set(value: Any) -> List[str]:
     return list(dict.fromkeys(items))
 
 
+def _display_method(method_id: str, *, context: str = "main") -> str:
+    if context == "ablation":
+        return METHOD_DISPLAY_ABLATION.get(method_id, METHOD_DISPLAY_MAIN.get(method_id, method_id))
+    return METHOD_DISPLAY_MAIN.get(method_id, method_id)
+
+
+def _display_condition(condition: str) -> str:
+    return CONDITION_DISPLAY.get(str(condition).strip().lower(), condition)
+
+
+def _add_condition_display(row: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(row)
+    cond = str(out.get("condition") or "").strip().lower()
+    if cond:
+        out["condition_display"] = _display_condition(cond)
+    return out
+
+
 def _normalize_methods(opts: Dict[str, Any]) -> Tuple[Optional[List[str]], Optional[str]]:
     raw = str(opts.get("methods", "") or "").strip().lower()
     if not raw:
@@ -179,7 +209,7 @@ def _normalize_conditions(opts: Dict[str, Any]) -> Tuple[Optional[List[str]], Op
         items = [str(x).strip().lower() for x in (raw or []) if str(x).strip()]
     if not items:
         return list(DEFAULT_CONDITIONS), None
-    alias = {"baseline": "bm25"}
+    alias = {"baseline": "bm25", "fuse": "emb"}
     items = [alias.get(x, x) for x in items]
     allowed = set(DEFAULT_CONDITIONS)
     bad = [x for x in items if x not in allowed]
@@ -259,35 +289,44 @@ def create_ground_truth(comp_path: str) -> Dict[str, Dict[str, str]]:
     return out
 
 
-def load_prompt_map(prompt_path: str) -> Dict[str, str]:
+def load_prompt_map(prompt_path: str) -> Dict[str, Any]:
     raw = json.loads(Path(prompt_path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         return {}
-    out: Dict[str, str] = {}
+    out: Dict[str, Any] = {}
     for k, v in raw.items():
-        if isinstance(k, str) and isinstance(v, str) and v.strip():
+        if not isinstance(k, str):
+            continue
+        if isinstance(v, str) and v.strip():
             out[k] = v.strip()
+        elif isinstance(v, list):
+            prompts = [str(p).strip() for p in v if isinstance(p, str) and str(p).strip()]
+            if prompts:
+                out[k] = prompts
     return out
 
 
-def build_eval_tasks(ground_truth: Dict[str, Dict[str, str]], prompt_map: Dict[str, str]) -> List[Dict[str, Any]]:
+def build_eval_tasks(ground_truth: Dict[str, Dict[str, str]], prompt_map: Dict[str, Any]) -> List[Dict[str, Any]]:
     tasks: List[Dict[str, Any]] = []
     for cid in sorted(ground_truth.keys(), key=lambda c: str(api.get_colname_from_oid(c) or c)):
         colname = api.get_colname_from_oid(cid)
         for component, gold_oid in sorted(ground_truth[cid].items(), key=lambda kv: kv[0]):
-            prompt = str(prompt_map.get(component, "") or "").strip()
-            if not prompt:
+            prompt_val = prompt_map.get(component)
+            if not prompt_val:
                 continue
-            tasks.append(
-                {
-                    "task_id": f"{cid}:{component}",
-                    "cid": str(cid),
-                    "collection": str(colname or cid),
-                    "component": component,
-                    "prompt": prompt,
-                    "gold_oid": str(gold_oid),
-                }
-            )
+            prompts: List[str] = prompt_val if isinstance(prompt_val, list) else [str(prompt_val)]
+            for idx, prompt in enumerate(prompts):
+                variant_suffix = f":v{idx}" if isinstance(prompt_val, list) else ""
+                tasks.append(
+                    {
+                        "task_id": f"{cid}:{component}{variant_suffix}",
+                        "cid": str(cid),
+                        "collection": str(colname or cid),
+                        "component": component,
+                        "prompt": prompt,
+                        "gold_oid": str(gold_oid),
+                    }
+                )
     return tasks
 
 
@@ -512,14 +551,14 @@ def _strings_for_oid(oid: str) -> str:
     return " ".join(parts)
 
 
-def _get_sentence_model(model_id: str, local_files_only: bool) -> Any:
-    key = (model_id, bool(local_files_only))
+def _get_sentence_model(model_id: str, local_files_only: bool, revision: Optional[str] = None) -> Any:
+    key = (model_id, bool(local_files_only), revision)
     if key in _SENTENCE_MODEL_CACHE:
         return _SENTENCE_MODEL_CACHE[key]
     if SentenceTransformer is None:
         raise RuntimeError("sentence_transformers is not available")
     try:
-        model = SentenceTransformer(model_id, local_files_only=bool(local_files_only))
+        model = SentenceTransformer(model_id, local_files_only=bool(local_files_only), revision=revision)
     except TypeError:
         model = SentenceTransformer(model_id)
     _SENTENCE_MODEL_CACHE[key] = model
@@ -534,17 +573,18 @@ def _prepare_fuse_handle(cid: str, exes: List[str], opts: Dict[str, Any]) -> Dic
         opts.get("pack_budget_tokens"), DEFAULT_PACK_BUDGET_TOKENS, min_value=32
     )
     model_id = str(opts.get("dense_model_id", DEFAULT_DENSE_MODEL_ID) or DEFAULT_DENSE_MODEL_ID).strip()
-    local_files_only = _as_bool(opts.get("local_files_only"), DEFAULT_LOCAL_FILES_ONLY)
-
-    key = (str(cid), int(pack_budget_tokens), model_id, bool(local_files_only))
-    cached = _FUSE_HANDLE_CACHE.get(key)
-    if cached is not None:
-        return cached
+    model_revision: Optional[str] = str(opts.get("dense_model_revision", DEFAULT_DENSE_MODEL_REVISION) or DEFAULT_DENSE_MODEL_REVISION).strip() or None
 
     try:
         from oxide.modules.analyzers.fuse import module_interface as fuse_module
     except Exception as e:
         return {"error": f"failed to import fuse analyzer module_interface: {e}"}
+    local_files_only = _as_bool(opts.get("local_files_only"), DEFAULT_LOCAL_FILES_ONLY)
+
+    key = (str(cid), int(pack_budget_tokens), model_id, model_revision, bool(local_files_only))
+    cached = _FUSE_HANDLE_CACHE.get(key)
+    if cached is not None:
+        return cached
 
     try:
         packed_docs = fuse_module.build_packed_docs_for_oids(
@@ -560,7 +600,7 @@ def _prepare_fuse_handle(cid: str, exes: List[str], opts: Dict[str, Any]) -> Dic
         return {"error": "packed docs are all empty"}
 
     try:
-        model = _get_sentence_model(model_id, local_files_only)
+        model = _get_sentence_model(model_id, local_files_only, revision=model_revision)
     except Exception as e:
         return {"error": f"failed loading sentence model: {e}"}
 
@@ -636,7 +676,7 @@ def _run_fuse_method(tasks: List[Dict[str, Any]], opts: Dict[str, Any]) -> Dict[
                     normalize_embeddings=True,
                 )
             except Exception as e:
-                return {"method": "fuse_tool", "error": f"fuse analyzer query failed: {e}"}
+                return {"method": "fuse_tool", "error": f"packed semantic query failed: {e}"}
 
             q_vec = np.asarray(q_emb, dtype=np.float32)
             if q_vec.ndim == 2:
@@ -648,7 +688,7 @@ def _run_fuse_method(tasks: List[Dict[str, Any]], opts: Dict[str, Any]) -> Dict[
 
             scores = emb_mat @ q_vec
             if scores.ndim != 1 or scores.shape[0] != len(oids):
-                return {"method": "fuse_tool", "error": "invalid FUSE score vector shape"}
+                return {"method": "fuse_tool", "error": "invalid EMB score vector shape"}
 
             order = np.argsort(scores)[::-1]
             ranked = [str(oids[i]) for i in order if bool(nonempty[i])]
@@ -685,16 +725,22 @@ def _prepare_dense_handle(cid: str, exes: List[str], opts: Dict[str, Any]) -> Di
     if np is None:
         return {"error": "numpy is not available"}
 
+    try:
+        from oxide.modules.analyzers.fuse import module_interface as fuse_module
+    except Exception as e:
+        return {"error": f"failed to import fuse analyzer module_interface: {e}"}
+
     model_id = str(opts.get("dense_model_id", DEFAULT_DENSE_MODEL_ID) or DEFAULT_DENSE_MODEL_ID).strip()
+    model_revision: Optional[str] = str(opts.get("dense_model_revision", DEFAULT_DENSE_MODEL_REVISION) or DEFAULT_DENSE_MODEL_REVISION).strip() or None
     local_files_only = _as_bool(opts.get("local_files_only"), DEFAULT_LOCAL_FILES_ONLY)
 
-    key = (str(cid), model_id, bool(local_files_only))
+    key = (str(cid), model_id, model_revision, bool(local_files_only))
     cached = _DENSE_HANDLE_CACHE.get(key)
     if cached is not None:
         return cached
 
     try:
-        model = _get_sentence_model(model_id, local_files_only)
+        model = _get_sentence_model(model_id, local_files_only, revision=model_revision)
     except Exception as e:
         return {"error": f"failed loading sentence model: {e}"}
 
@@ -726,7 +772,7 @@ def _prepare_dense_handle(cid: str, exes: List[str], opts: Dict[str, Any]) -> Di
 
 
 def _run_dense_method(tasks: List[Dict[str, Any]], opts: Dict[str, Any]) -> Dict[str, Any]:
-    """Dense file retrieval over raw string concatenations — the no-packing ablation baseline."""
+    """EMB-Dense retrieval over raw string concatenations for the packing ablation."""
     if np is None:
         return {"method": "dense_tool", "error": "numpy is not available"}
 
@@ -864,7 +910,7 @@ def _per_component_from_per_method(
 
 def tool_eval_main(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Run the §5.1 retrieval benchmark (BM25 / Dense / Func-Emb / FUSE).
+    Run the §5.1 retrieval benchmark (BM25 / EMB-Dense / Func-Emb / EMB).
 
     Options:
       comp_path   -- ground-truth JSON (default: fuse_data/openwrt-dataset/fuse_ground_truth.json)
@@ -915,14 +961,14 @@ def tool_eval_main(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
                 "partial": per_method,
             }
 
-    # §5.1 main table: BM25 / Func-Emb / FUSE
+    # §5.1 main table: BM25 / Func-Emb / EMB
     main_order = ["bm25_tool", "func_emb_tool", "fuse_tool"]
     tab_e1_main: List[Dict[str, Any]] = []
     for mid in [m for m in main_order if m in per_method]:
         gm = (per_method[mid] or {}).get("global_metrics") or {}
         tab_e1_main.append(
             {
-                "method": METHOD_DISPLAY.get(mid, mid),
+                "method": _display_method(mid, context="main"),
                 "MRR": gm.get("MRR"),
                 "Hit@2": gm.get("Hit@2"),
                 "Hit@5": gm.get("Hit@5"),
@@ -930,14 +976,14 @@ def tool_eval_main(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    # §5.1 packing ablation table: Dense / FUSE
+    # §5.1 packing ablation table: EMB-Dense / EMB-Packed
     ablation_order = ["dense_tool", "fuse_tool"]
     tab_ablation: List[Dict[str, Any]] = []
     for mid in [m for m in ablation_order if m in per_method]:
         gm = (per_method[mid] or {}).get("global_metrics") or {}
         tab_ablation.append(
             {
-                "method": METHOD_DISPLAY.get(mid, mid),
+                "method": _display_method(mid, context="ablation"),
                 "MRR": gm.get("MRR"),
                 "Hit@2": gm.get("Hit@2"),
                 "Hit@5": gm.get("Hit@5"),
@@ -1003,7 +1049,7 @@ def _select_condition_rows(rows: Sequence[Dict[str, Any]], conditions: Sequence[
     for cond in conditions:
         row = by_cond.get(str(cond).strip().lower())
         if row is not None:
-            out.append(row)
+            out.append(_add_condition_display(row))
     return out
 
 
@@ -1035,6 +1081,7 @@ def _summarize_agent_rows(rows: List[Dict[str, Any]], conditions: Sequence[str])
             out.append(
                 {
                     "condition": cond,
+                    "condition_display": _display_condition(cond),
                     "runs": 0,
                     "success_rate": 0.0,
                     "miss_rate": 0.0,
@@ -1072,6 +1119,7 @@ def _summarize_agent_rows(rows: List[Dict[str, Any]], conditions: Sequence[str])
         out.append(
             {
                 "condition": cond,
+                "condition_display": _display_condition(cond),
                 "runs": int(n),
                 "success_rate": float(f"{(success_count / n):.6f}"),
                 "miss_rate": float(f"{(miss_count / n):.6f}"),
@@ -1091,7 +1139,7 @@ def agent_eval_first(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
     Options:
       jsonl_path   -- default: out/agent_eval/20260311_183155/agentic_runs_topk10.jsonl
-      conditions   -- comma list (default: base,bm25,fuse,both)
+      conditions   -- comma list of raw IDs (default: base,bm25,emb,both)
       collections  -- optional collection filter (comma list)
       outdir       -- write artifact directory (optional)
     """
@@ -1126,6 +1174,7 @@ def agent_eval_first(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         outcomes.append(
             {
                 "condition": cond,
+                "condition_display": _display_condition(cond),
                 "success_rate": r.get("success_rate"),
                 "miss_rate": r.get("miss_rate"),
                 "stopped_rate": r.get("stopped_rate"),
@@ -1135,6 +1184,7 @@ def agent_eval_first(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         effort.append(
             {
                 "condition": cond,
+                "condition_display": _display_condition(cond),
                 "mean_retrieve_calls": r.get("mean_retrieve_calls"),
                 "mean_analysis_tool_calls": r.get("mean_analysis_tool_calls"),
                 "mean_tool_calls": r.get("mean_tool_calls"),
@@ -1169,7 +1219,7 @@ def agent_eval_main(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
       agent_report_path -- preferred source: fuse_agent_eval paper report JSON
                            (default: out/agent_eval/main_9col/agentic_paper_report.json)
       jsonl_path        -- legacy fallback source: run-level JSONL
-      conditions        -- comma list (default: base,bm25,fuse,both)
+      conditions        -- comma list of raw IDs (default: base,bm25,emb,both)
       outdir            -- write artifact directory (optional)
     """
     conditions, c_err = _normalize_conditions(opts)
@@ -1234,7 +1284,8 @@ def component_analysis(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
     Per-component retrieval MRR/P@1/Hit@5 for §5.3 tab_per_component retrieval columns.
 
-    Runs BM25 and FUSE by default (the two columns in tab_per_component).
+    Runs BM25 and EMB by default (the two paper-facing columns in
+    tab_per_component).
 
     Options:
       comp_path   -- ground-truth JSON
@@ -1288,7 +1339,7 @@ def component_analysis(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
     tab_per_component = _per_component_from_per_method(per_method, top_k_files)
 
-    # Sort by FUSE MRR descending for the paper table.
+    # Sort by EMB MRR descending for the paper table.
     fuse_key = next((m for m in methods if "fuse" in m), None)
     if fuse_key:
         tab_per_component.sort(
@@ -1483,14 +1534,14 @@ def eval_robustness(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             "per_component": per_component_stats,
         }
 
-    # Build tab_robustness_retrieval in paper order: BM25, Func-Emb, FUSE
+    # Build tab_robustness_retrieval in paper order: BM25, Func-Emb, EMB
     paper_order = ["bm25_tool", "func_emb_tool", "dense_tool", "fuse_tool"]
     tab_robustness: List[Dict[str, Any]] = []
     for mid in [m for m in paper_order if m in per_method_out]:
         pl = (per_method_out[mid] or {}).get("pair_level") or {}
         tab_robustness.append(
             {
-                "method": METHOD_DISPLAY.get(mid, mid),
+                "method": _display_method(mid, context="main"),
                 f"ge_80pct_variants@{stable_k}": pl.get(f"ge_80pct_variants_at_{stable_k}"),
                 f"ge_50pct_variants@{stable_k}": pl.get(f"ge_50pct_variants_at_{stable_k}"),
                 "mean_median_rank_per_pair": pl.get("mean_median_rank_per_pair"),
@@ -1498,7 +1549,8 @@ def eval_robustness(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    # Build tab_robustness_per_component: rows are components, columns are BM25/FUSE median+worst
+    # Build tab_robustness_per_component with BM25/EMB paper-facing semantics.
+    # Raw field names remain unchanged for compatibility.
     bm25_pc = (per_method_out.get("bm25_tool") or {}).get("per_component") or {}
     fuse_pc = (per_method_out.get("fuse_tool") or {}).get("per_component") or {}
     all_comps = sorted(set(bm25_pc) | set(fuse_pc))
@@ -1542,7 +1594,7 @@ def eval_paper_report(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
       §5.1  tab_e1_main, tab_ablation_packing
       §5.2  tab_agent_summary, tab_first_call_gold_rank, tab_rank_bucket_success
-      §5.3  tab_per_component_retrieval (from tool_eval_main with bm25+fuse)
+      §5.3  tab_per_component_retrieval (from tool_eval_main with bm25+EMB)
             tab_per_component_agent     (from agentic_paper_report.json)
       §5.4  tab_robustness_retrieval    (from eval_robustness if variants path given)
 
@@ -1623,7 +1675,7 @@ def eval_paper_report(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 
 def plot_robustness(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Generate a box plot figure showing per-component rank distributions for FUSE vs BM25
+    Generate a box plot figure showing per-component rank distributions for EMB vs BM25
     across all query variants, for inclusion in §5.4 of the paper.
 
     Options:
@@ -1656,7 +1708,7 @@ def plot_robustness(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     if not fuse_pc or not bm25_pc:
         return {"error": "per_component rank data missing — re-run eval_robustness first"}
 
-    # Component display order: ascending FUSE difficulty (matches §5.3 sort order)
+    # Component display order: ascending EMB difficulty (matches §5.3 sort order)
     component_order = ["dnsmasq", "px5g-mbedtls", "usign", "dropbear", "mtd"]
     component_labels = ["dnsmasq", "px5g-\nmbedtls", "usign", "dropbear", "mtd"]
     missing = [c for c in component_order if c not in fuse_pc or c not in bm25_pc]
@@ -1720,7 +1772,7 @@ def plot_robustness(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         ax.set_xlim(positions_fuse[0] - box_w, positions_bm25[-1] + box_w)
         ax.legend(
             handles=[
-                _Patch(facecolor=fuse_color, edgecolor=fuse_color, alpha=0.85, label="FUSE"),
+                _Patch(facecolor=fuse_color, edgecolor=fuse_color, alpha=0.85, label="EMB"),
                 _Patch(facecolor=bm25_color, edgecolor=bm25_color, alpha=0.85, label="BM25"),
             ],
             fontsize=7, loc="upper left", framealpha=0.9,
@@ -1744,7 +1796,7 @@ def plot_robustness(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
 def plot_robustness_cost(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """
     Generate boxplot figures showing per-component token usage and tool call
-    distributions for FUSE vs BM25 across robustness query variants.
+    distributions for EMB vs BM25 across robustness query variants.
 
     Options:
       runs_jsonl -- path to agentic runs JSONL
@@ -1769,7 +1821,7 @@ def plot_robustness_cost(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any
 
     component_order = ["dnsmasq", "px5g-mbedtls", "usign", "dropbear", "mtd"]
     component_labels = ["dnsmasq", "px5g-\nmbedtls", "usign", "dropbear", "mtd"]
-    conditions = ["fuse", "bm25"]
+    conditions = ["emb", "bm25"]
 
     per: Dict[str, Dict[str, Dict[str, List]]] = {
         c: {comp: {"tokens": [], "tool_calls": []} for comp in component_order}
@@ -1784,6 +1836,8 @@ def plot_robustness_cost(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any
                     continue
                 run = json.loads(line)
                 cond = str(run.get("condition", "")).strip().lower()
+                if cond == "fuse":
+                    cond = "emb"
                 comp = str(run.get("component", "")).strip()
                 if cond not in conditions or comp not in component_order:
                     continue
@@ -1812,7 +1866,7 @@ def plot_robustness_cost(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any
     def _make_plot(metric: str, ylabel: str, logscale: bool, filename: str,
                    floor: float = 0.0) -> None:
         fuse_vals = [
-            [max(v, floor) if floor > 0 else v for v in per["fuse"][comp][metric]]
+            [max(v, floor) if floor > 0 else v for v in per["emb"][comp][metric]]
             for comp in component_order
         ]
         bm25_vals = [
@@ -1856,7 +1910,7 @@ def plot_robustness_cost(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any
             ax.set_axisbelow(True)
             ax.legend(
                 handles=[
-                    _Patch(facecolor=fuse_color, edgecolor=fuse_color, alpha=0.85, label="FUSE"),
+                    _Patch(facecolor=fuse_color, edgecolor=fuse_color, alpha=0.85, label="EMB"),
                     _Patch(facecolor=bm25_color, edgecolor=bm25_color, alpha=0.85, label="BM25"),
                 ],
                 fontsize=7, loc="upper left", framealpha=0.9,
