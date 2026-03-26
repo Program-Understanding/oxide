@@ -40,6 +40,9 @@ opts_doc = {
     "return_file_embeddings": {"type": bool, "mangle": False, "default": False},
     "file_agg": {"type": str, "mangle": False, "default": "attn"},
     "attn_tau": {"type": float, "mangle": False, "default": 0.07},
+    # search mode: "semantic" (default), "literal" (substring), or "both"
+    "search_mode": {"type": str, "mangle": False, "default": "semantic"},
+    "similarity_threshold": {"type": float, "mangle": False, "default": 0.0},
 }
 
 
@@ -86,6 +89,10 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     attn_tau = _as_float(opts.get("attn_tau", 0.07), 0.07)
     if attn_tau <= 0:
         attn_tau = 0.07
+    search_mode = (opts.get("search_mode") or "semantic").strip().lower()
+    if search_mode not in ("semantic", "literal", "both"):
+        search_mode = "semantic"
+    similarity_threshold = _as_float(opts.get("similarity_threshold", 0.0), 0.0)
 
     t0 = time.perf_counter()
     model = _get_model(model_id)
@@ -107,9 +114,12 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
 
     counts: Dict[str, Dict[str, Any]] = {}
     candidates: List[Dict[str, Any]] = []
+    literal_candidates: List[Dict[str, Any]] = []
     oid_times: List[Dict[str, Any]] = []
     file_embeddings: Dict[str, List[float]] = {}
     file_scores: Dict[str, float] = {}
+    total_semantic: int = 0
+    total_literal: int = 0
 
     for idx_oid, oid in enumerate(oids, start=1):
         t_oid0 = time.perf_counter()
@@ -133,9 +143,11 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
 
         t_search0 = time.perf_counter()
         if idx and idx.get("emb") is not None and idx["emb"].size > 0:
+            # Always run semantic search for file embeddings and counts
             loc, loc_sims = _topk_indices_and_sims(idx["emb"], qvec, top_k)
+            sem_cands: List[Dict[str, Any]] = []
             _append_topk_candidates(
-                candidates=candidates,
+                candidates=sem_cands,
                 oid=oid,
                 idx=idx,
                 qvec=qvec,
@@ -143,6 +155,13 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
                 loc=loc,
                 loc_sims=loc_sims,
             )
+            # Apply similarity threshold and tag match type
+            for c in sem_cands:
+                c["match_type"] = "semantic"
+                if c["score"] >= similarity_threshold:
+                    candidates.append(c)
+                    total_semantic += 1
+
             if return_file_embeddings:
                 file_emb = _aggregate_file_embedding(
                     idx["emb"], loc, loc_sims, file_agg, attn_tau
@@ -150,6 +169,13 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
                 if file_emb is not None:
                     file_embeddings[oid] = file_emb.astype(np.float32).tolist()
                     file_scores[oid] = float(file_emb.dot(qvec))
+
+        # Always run literal search for count reporting
+        lit_cands = _literal_matches(oid, idx, query, top_k)
+        total_literal += len(lit_cands)
+        for c in lit_cands:
+            literal_candidates.append(c)
+
         t_search = time.perf_counter() - t_search0
 
         t_oid_total = time.perf_counter() - t_oid0
@@ -177,50 +203,47 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
                 (counts.get(oid) or {}).get("num_indexed"),
             )
 
-    if not candidates:
-        out = {
-            "query": query,
-            "counts": counts,
-            "results": {"best_match": None, "candidates": []},
-            "warning": "No indexed functions available (no decomp output or no functions found).",
-        }
-        if return_file_embeddings:
-            out["file_embeddings"] = file_embeddings
-            out["file_scores"] = file_scores
-            out["notes"] = {
-                "file_agg": file_agg,
-                "attn_tau": attn_tau,
-                "file_top_k": top_k,
-            }
-        if timing:
-            out["timing"] = _timing_summary(
-                total_s=time.perf_counter() - t_total0,
-                model_load_s=t_model,
-                query_embed_s=t_qemb,
-                oid_times=oid_times,
-                topn=topn,
-            )
-        return out
+    # Select final candidates based on search_mode
+    if search_mode == "literal":
+        final_candidates = sorted(literal_candidates, key=lambda x: x["score"], reverse=True)
+    elif search_mode == "both":
+        # Merge: literal matches first, then semantic results not already matched literally
+        lit_keys = {(c["oid"], c["func_addr"]) for c in literal_candidates}
+        sem_only = [c for c in candidates if (c["oid"], c["func_addr"]) not in lit_keys]
+        final_candidates = literal_candidates + sorted(sem_only, key=lambda x: x["score"], reverse=True)
+    else:
+        final_candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
 
-    candidates.sort(key=lambda x: x["score"], reverse=True)
     if top_k > 0:
-        candidates = candidates[:top_k]
+        final_candidates = final_candidates[:top_k]
 
+    no_results = not final_candidates
     out = {
         "query": query,
         "counts": counts,
-        "results": {"best_match": candidates[0], "candidates": candidates},
-        "notes": {
-            "model_id": model_id,
-            "similarity": "cosine (normalized dot product)",
-            "file_agg": file_agg,
-            "attn_tau": attn_tau,
-            "file_top_k": top_k,
+        "search_mode": search_mode,
+        "semantic_total": total_semantic,
+        "literal_total": total_literal,
+        "results": {
+            "best_match": final_candidates[0] if final_candidates else None,
+            "candidates": final_candidates,
         },
+    }
+
+    if no_results:
+        out["warning"] = "No indexed functions available (no decomp output or no functions found)."
+
+    out["notes"] = {
+        "model_id": model_id,
+        "similarity": "cosine (normalized dot product)",
+        "file_agg": file_agg,
+        "attn_tau": attn_tau,
+        "file_top_k": top_k,
     }
     if return_file_embeddings:
         out["file_embeddings"] = file_embeddings
         out["file_scores"] = file_scores
+        out["notes"].update({"file_agg": file_agg, "attn_tau": attn_tau})
 
     if timing:
         out["timing"] = _timing_summary(
@@ -232,10 +255,12 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
         )
         if progress:
             logger.info(
-                "query_function done total_s=%.3f oids=%d candidates=%d",
+                "query_function done total_s=%.3f oids=%d semantic=%d literal=%d mode=%s",
                 out["timing"]["total_s"],
                 len(oids),
-                len(candidates),
+                total_semantic,
+                total_literal,
+                search_mode,
             )
 
     return out
@@ -401,6 +426,7 @@ def _load_or_build_index(
         "addrs": addrs,
         "names": names,
         "previews": previews,
+        "texts": texts,
         "emb": emb,
     }
 
@@ -464,6 +490,36 @@ def _append_topk_candidates(
                 "preview": previews[i],
             }
         )
+
+
+def _literal_matches(
+    oid: str,
+    idx: Optional[Dict[str, Any]],
+    query: str,
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    """Return functions whose decompiled text contains query as a substring."""
+    if not idx:
+        return []
+    texts = idx.get("texts") or []
+    addrs = idx.get("addrs") or []
+    names = idx.get("names") or []
+    previews = idx.get("previews") or []
+    q_lower = query.lower()
+    matches: List[Dict[str, Any]] = []
+    for i, text in enumerate(texts):
+        if q_lower in (text or "").lower():
+            matches.append({
+                "oid": oid,
+                "func_addr": addrs[i] if i < len(addrs) else None,
+                "func_name": names[i] if i < len(names) else None,
+                "score": 1.0,
+                "preview": previews[i] if i < len(previews) else "",
+                "match_type": "literal",
+            })
+    if top_k > 0:
+        return matches[:top_k]
+    return matches
 
 
 def _topk_indices_and_sims(
