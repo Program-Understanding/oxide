@@ -6,11 +6,8 @@
 # @toolbar cache.png
 from __future__ import unicode_literals
 
-from ghidra.program.model.address import Address
 from ghidra.program.model.listing.CodeUnit import *
 from ghidra.program.model.listing.Listing import *
-from ghidra.framework.plugintool import PluginTool  # access plugin tool
-from ghidra.app.plugin.core.colorizer import ColorizingService
 from ghidra.app.decompiler import DecompInterface
 from ghidra.app.decompiler.component import DecompilerUtils
 
@@ -18,10 +15,13 @@ import sys
 import os
 import json
 import string
-import codecs
 import traceback
 
 printable = string.ascii_letters + string.digits + string.punctuation + " "
+
+
+def log(msg):
+    print("decompile_mapping.py: %s" % msg)
 
 
 def hex_escape(s):
@@ -47,17 +47,24 @@ sys.path.insert(0, jython_dir)
 
 
 def build_mapping():
+    log("build_mapping() starting")
     decomp = DecompInterface()
     decomp.openProgram(currentProgram)
     functionManager = currentProgram.getFunctionManager()
+    function_count = functionManager.getFunctionCount()
+    log("opened program %r with %d functions" % (currentProgram.getName(), function_count))
 
     output_map = {
         "meta": {
             "load_addr": str(currentProgram.getImageBase()),
             # optional: per-function metadata (not used by extract(), but handy)
             "functions": {},
+            "function_count": function_count,
         }
     }
+
+    processed_count = 0
+    failed_count = 0
 
     for fun in functionManager.getFunctions(True):
         # Iterate in entry-point order
@@ -78,10 +85,12 @@ def build_mapping():
         try:
             results = decomp.decompileFunction(function, 120, monitor)
             if not results or not results.decompileCompleted():
+                log("decompilation did not complete for %s" % func_name)
                 # skip functions that failed to decompile
                 continue
             markup = results.getCCodeMarkup()
             if markup is None:
+                log("no C markup returned for %s" % func_name)
                 continue
 
             # Not strictly needed, but kept from original script
@@ -133,11 +142,13 @@ def build_mapping():
                     if tagged_line not in lines_list:
                         lines_list.append(tagged_line)
 
+            processed_count += 1
 
         except Exception as e:
             # Log which function blew up, but keep going
-            print("decompile_mapping.py: ERROR in function %s: %s" % (func_name, e))
+            log("ERROR in function %s: %s" % (func_name, e))
             traceback.print_exc()
+            failed_count += 1
 
             # Track failed functions in meta for debugging
             failed = output_map["meta"].get("failed_functions")
@@ -148,12 +159,16 @@ def build_mapping():
 
             continue
 
+    output_map["meta"]["processed_functions"] = processed_count
+    output_map["meta"]["failed_function_count"] = failed_count
+    log("build_mapping() finished: processed=%d failed=%d" % (processed_count, failed_count))
     return output_map
 
 
 def main():
+    log("script started")
     args = getScriptArgs()
-    print("decompile_mapping.py: args = %r" % (args,))
+    log("args = %r" % (args,))
 
     if not args:
         raise RuntimeError("No output path argument provided")
@@ -161,13 +176,14 @@ def main():
     out_path = args[0]
     out_dir = os.path.dirname(out_path)
     if out_dir and not os.path.isdir(out_dir):
+        log("creating output directory %s" % out_dir)
         os.makedirs(out_dir)
 
     try:
         mapping = build_mapping()
     except Exception as e:
         # If *something* unexpected happens at the top level, still emit a file
-        print("decompile_mapping.py: ERROR while building mapping: %s" % e)
+        log("ERROR while building mapping: %s" % e)
         traceback.print_exc()
         mapping = {
             "meta": {
@@ -176,14 +192,20 @@ def main():
             }
         }
 
-    print("decompile_mapping.py: writing JSON to %s" % out_path)
+    log("writing JSON to %s" % out_path)
     f = open(out_path, "w")
     try:
         # Some instructions do not map to anything, including anything in prologue of function
         json.dump(mapping, f)
     finally:
         f.close()
+    log("successfully wrote JSON output")
 
 
 # Run immediately when invoked by Ghidra/headless
-main()
+try:
+    main()
+except Exception as e:
+    log("FATAL top-level error: %s" % e)
+    traceback.print_exc()
+    raise

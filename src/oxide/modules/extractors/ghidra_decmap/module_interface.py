@@ -82,9 +82,16 @@ def process(oid: str, opts: dict) -> bool:
     ghidra_decompiler_mapping.GHIDRA_Project_NAME = f"{project}_{multiprocessing.current_process().name}"
     ghidra_decompiler_mapping.GHIDRA_Project_PATH = api.scratch_dir
     ghidra_decompiler_mapping.SCRIPTS_PATH = api.scripts_dir
-    ghidra_decompiler_mapping.EXPORT_SCRIPT_PATH = "decompile_mapping.py"
+    ghidra_decompiler_mapping.PYTHON_EXPORT_SCRIPT_PATH = "decompile_mapping.py"
+    ghidra_decompiler_mapping.JAVA_EXPORT_SCRIPT_PATH = "decompile_mapping.java"
     ghidra_decompiler_mapping.GHIDRA_TMP_FILE = os.path.join(api.scratch_dir, f"DecompilerMapping-{multiprocessing.current_process().name}.json")
-    print(ghidra_decompiler_mapping.GHIDRA_TMP_FILE)
+    ghidra_decompiler_mapping.GHIDRA_SCRIPT_LOG_FILE = os.path.join(api.scratch_dir, f"DecompilerMappingScript-{multiprocessing.current_process().name}.log")
+    ghidra_decompiler_mapping.GHIDRA_LOG_FILE = os.path.join(api.scratch_dir, f"DecompilerMappingGhidra-{multiprocessing.current_process().name}.log")
+    ghidra_decompiler_mapping.GHIDRA_BACKEND_CACHE_FILE = os.path.join(api.scratch_dir, "ghidra_decmap_backend_cache.json")
+    logger.info("Configured Ghidra temp output file: %s", ghidra_decompiler_mapping.GHIDRA_TMP_FILE)
+    logger.info("Configured Ghidra script log file: %s", ghidra_decompiler_mapping.GHIDRA_SCRIPT_LOG_FILE)
+    logger.info("Configured Ghidra application log file: %s", ghidra_decompiler_mapping.GHIDRA_LOG_FILE)
+    logger.info("Configured Ghidra backend cache file: %s", ghidra_decompiler_mapping.GHIDRA_BACKEND_CACHE_FILE)
     # Toggles whether module returns vaddr or file offsets
     ghidra_decompiler_mapping.OFFSETS_OFF = opts['rebase-off']
 
