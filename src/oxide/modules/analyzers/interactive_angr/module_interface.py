@@ -1,8 +1,8 @@
 DESC = "Use this module to have an interactive exploration with Angr"
 NAME = "interactive_angr"
 
-from core import api
-from core.libraries.angr_utils import init_angr_project, process_cfg
+from oxide.core import api
+from oxide.core.libraries.angr_utils import init_angr_project, process_cfg
 import logging
 import angr
 import claripy
@@ -57,7 +57,7 @@ def results(oid_list: list, opts: dict):
         f_name = api.get_field("file_meta", oid, "names").pop()
         f_name = api.tmp_file(f_name, data) #make temp file for anger project
         angr_proj = init_angr_project(f_name, header) #angr project
-        
+
         #make sure the addr is within range
         max_addr = hex(angr_proj.loader.main_object.max_addr)
         min_addr = hex(angr_proj.loader.main_object.min_addr)

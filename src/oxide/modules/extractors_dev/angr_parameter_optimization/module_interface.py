@@ -15,7 +15,7 @@ faulthandler.enable()
 import traceback
 logger = logging.getLogger(NAME)
 
-from core import api, config
+from oxide.core import api, config
 
 #debugging in oxide run: random_sample --n=2 &core_utils | run angr_parameter_optimization --timeout=1500 --z3_timeout=120 --tactics=qfufbv_ackr,qfnra,qfidl,qflra,qfauflia,qfbv
 #random_sample --n=1 &small_bins | run angr_parameter_optimization --timeout=1500 --z3_timeout=120 --tactics=qfufbv_ackr,qfnra,qfidl,qflra,qfauflia,qfbv

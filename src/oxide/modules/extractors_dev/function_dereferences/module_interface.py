@@ -5,7 +5,7 @@ USG = "Run this module over an OID to get details about dereferences occurring p
 
 import logging
 from typing import Literal, TypedDict
-from core import api
+from oxide.core import api
 import re
 logger = logging.getLogger(NAME)
 

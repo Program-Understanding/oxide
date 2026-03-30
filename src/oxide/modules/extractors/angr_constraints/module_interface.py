@@ -5,7 +5,7 @@ NAME="angr_constraints"
 class Timeout(Exception):
     pass
 
-from core import api
+from oxide.core import api
 from constraints_helper import count_classes
 import time
 import logging
@@ -118,7 +118,7 @@ def process(oid, opts):
                 m =solver.model()
                 if len(m)>0:
                     #z3d = {}
-                    #z3d["sexpr"] = m.sexpr() 
+                    #z3d["sexpr"] = m.sexpr()
                     #z3d["model"] = str(list(m)) #convert from ctype pointer
                     output_dict["deadend " + str(s)]["z3"] = m.sexpr() #used to be z3d
                     continue

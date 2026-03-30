@@ -1,5 +1,5 @@
 
-from core import api
+from oxide.core import api
 from typing import Dict, Any, List
 def function_description_occurances(args, opts):
 
@@ -30,7 +30,7 @@ def function_description_occurances(args, opts):
                         else:
                             descriptions[eachDescription] = 1
                             totalNumberOfFunctions += 1
-                        
+
 
                 subgraphAppearancesFound = function_descriptions['Count of Subgraph Appearances']
                 for description, count in subgraphAppearancesFound.items():
@@ -38,7 +38,7 @@ def function_description_occurances(args, opts):
                     firstHalf = description.split('and')[0]
                     secondHalf = description.split('and')[1]
                     descriptionReversed = secondHalf.strip() + ' and ' + firstHalf.strip()
-                    
+
                     if description in subgraphAppearances:
                         subgraphAppearances[description] += count
 
@@ -48,7 +48,7 @@ def function_description_occurances(args, opts):
                     else:
                         subgraphAppearances[description] = count
 
-    
+
     for description in descriptions:
         descriptions[description] = [descriptions[description], round((descriptions[description]/totalNumberOfFunctions), 3)]
 
@@ -66,6 +66,6 @@ def function_description_occurances(args, opts):
         print(sorted_subgraphAppearances[description], " - ", description.strip())
     print("----------------------------------------")
 
-        
+
 
 exports = [function_description_occurances]

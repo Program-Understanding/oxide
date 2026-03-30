@@ -6,7 +6,7 @@ import logging
 
 from typing import Dict, Any, List
 
-from core import api
+from oxide.core import api
 
 from subgraph_rules import rule_groupings
 
@@ -15,7 +15,7 @@ logger.debug("init")
 
 from typing import Any
 from typing import *
-from core import api
+from oxide.core import api
 
 from pathlib import *
 
