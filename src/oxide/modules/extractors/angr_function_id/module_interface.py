@@ -61,8 +61,10 @@ def process(oid: str, opts: dict) -> bool:
 
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data)
+    
+    rebase_off = opts.get("rebase_off", False)
 
-    result = angr_function_identify.extract(f_name, header)
+    result = angr_function_identify.extract(f_name, header, rebase_off=rebase_off)
     if result is None: return False
     api.store(NAME, oid, result, opts)
     return True

@@ -34,7 +34,7 @@ from oxide.core.libraries.angr_utils import init_angr_project
 logger = logging.getLogger("angr_function_id")
 
 
-def extract(file_test, header):
+def extract(file_test, header, rebase_off=False):
     """ Traverse basic block graph from fst angr, and save basic block offsets as well
             as instruction metrics
         Input -
@@ -50,7 +50,7 @@ def extract(file_test, header):
         idfer = project.analyses.Identifier()
         end = time.time()
         for fun_info in idfer.func_info:
-            addr = header.get_offset(fun_info.addr) if not REBASE_OFF else fun_info.addr
+            addr = header.get_offset(fun_info.addr) if not rebase_off else fun_info.addr
             output_map["static_link_functions"][addr] = fun_info.name
         output_map["meta"]["time"] = end - start
     except AttributeError as err:
