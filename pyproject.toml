@@ -1,23 +1,11 @@
-[build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "oxide-re"
+name = "oxide"
 version = "4.0.0"
 description = "Oxide is a flexible, modular, distributed framework for performing analysis of data files, including executables."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = ["Programming Language :: Python :: 3"]
 dependencies = [
-
-]
-
-[project.optional-dependencies]
-ghidra = [
-    "pyghidra>=3.0.2",
-]
-full = [
     "pandas>=2.3.3",
     "colorama",
     "termcolor",
@@ -33,7 +21,6 @@ full = [
     "pyyaml>=6.0.3",
     "py-tlsh>=4.12.1",
     "pyahocorasick>=2.2.0",
-    "binwalk>=2.1.0",
     "opencv-python>=4.13.0.92",
     "python-bindiff>=0.3.4",
     "angr>=9.2.102",
@@ -44,28 +31,32 @@ full = [
     "scikit-learn>=1.6.1",
     "pyinstrument>=5.1.2",
     "statsmodels>=0.14.6",
+    "seaborn>=0.13.2",
+    "unblob>=26.3.30",
 ]
 
-
-[project.urls] # Optional
-# "Homepage" = "https://myhomepage.com"
-"HomePage" = "https://github.com/Program-Understanding/oxide"
-"Bug Reports" = "https://github.com/Program-Understanding/oxide/issues"
-"Source" = "https://github.com/Program-Understanding/oxide"
-
+[dependency-groups]
+dev = [
+    "pyinstrument>=5.1.2",
+    "pytest>=8.4.2",
+    "ruff>=0.15.8"
+]
 [project.scripts]
 oxide = "oxide.shell:main"
 oxide-remote = "oxide.rshell:main"
 oxide-server = "oxide.server:main"
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
+
+[project.urls]
+"HomePage" = "https://github.com/Program-Understanding/oxide"
+"Bug Reports" = "https://github.com/Program-Understanding/oxide/issues"
+"Source" = "https://github.com/Program-Understanding/oxide"
 
 [tool.ruff.lint]
 ignore = ["E402", "I001"]
 
 [tool.ruff.format]
 exclude = ["*"]
-
-[dependency-groups]
-dev = [
-    "ghidra-stubs>=12.0.2",
-    "ruff>=0.0.17",
-]
