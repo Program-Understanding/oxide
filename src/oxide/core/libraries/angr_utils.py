@@ -151,10 +151,13 @@ def process_functions(cfg, header_interface, output_map):
         cur_fun["name"] = fun.name
         cur_fun["demangled_name"] = fun.demangled_name
         cur_fun["blocks"] = [header_interface.get_offset(bb.addr) for bb in fun.blocks]
-        cur_fun["functions_called"] = [func.name for func in fun.functions_called() if func]
-        cur_fun["functions_called"] = list(set(cur_fun["functions_called"]))
+        cur_fun["functions_called"] = list(set(
+            getattr(cfg.kb.functions.get(node.addr), 'name', str(node.addr)) 
+            for node in fun.transition_graph.nodes 
+            for target in fun.transition_graph.successors(node) 
+            if hasattr(target, 'addr') and target.addr in cfg.kb.functions
+        ))
         cur_fun["arguments"] = fun.arguments
-
         """
         try:
             cur_fun["code_constants"] = fun.code_constants
