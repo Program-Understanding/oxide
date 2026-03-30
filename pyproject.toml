@@ -27,9 +27,8 @@ dependencies = [
     "cle>=9.2.102",
     "ollama>=0.6.1",
     "stopit>=1.1.2",
-    "sentence-transformers>=5.1.2",
-    "scikit-learn>=1.6.1",
-    "pyinstrument>=5.1.2",
+
+   
     "statsmodels>=0.14.6",
     "seaborn>=0.13.2",
     "unblob>=26.3.30",
@@ -40,6 +39,11 @@ dev = [
     "pyinstrument>=5.1.2",
     "pytest>=8.4.2",
     "ruff>=0.15.8"
+]
+
+ml = [
+    "sentence-transformers>=5.1.2",
+     "scikit-learn>=1.6.1",
 ]
 [project.scripts]
 oxide = "oxide.shell:main"
