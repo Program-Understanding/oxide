@@ -26,9 +26,6 @@ dependencies = [
     "angr>=9.2.102",
     "cle>=9.2.102",
     "ollama>=0.6.1",
-    "stopit>=1.1.2",
-
-   
     "statsmodels>=0.14.6",
     "seaborn>=0.13.2",
     "unblob>=26.3.30",
