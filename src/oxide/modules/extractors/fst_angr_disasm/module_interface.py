@@ -32,7 +32,7 @@ and a list of instructions and their addresses."
 import logging
 
 from oxide.core import api
-import fst_angr_extract
+from . import fst_angr_extract
 
 logger = logging.getLogger(NAME)
 logger.debug("init")

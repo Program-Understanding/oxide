@@ -33,7 +33,7 @@ import logging
 from typing import Dict, Any
 
 from oxide.core import api
-import angr_function_identify
+from . import angr_function_identify
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -61,7 +61,7 @@ def process(oid: str, opts: dict) -> bool:
 
     f_name = api.get_field("file_meta", oid, "names").pop()
     f_name = api.tmp_file(f_name, data)
-    
+
     rebase_off = opts.get("rebase_off", False)
 
     result = angr_function_identify.extract(f_name, header, rebase_off=rebase_off)

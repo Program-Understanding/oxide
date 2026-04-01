@@ -31,7 +31,7 @@ import logging
 import angr
 
 from typing import Dict, Any, List
-from core.libraries.angr_utils import init_angr_project
+from oxide.core.libraries.angr_utils import init_angr_project
 
 from function_lib import (
     sensitive_functions,
@@ -180,7 +180,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
 
 def backward_slicing(p, block, base_addr):
     cfg = p.analyses.CFGEmulated(keep_state=True,state_add_options=angr.sim_options.refs, context_sensitivity_level=2)
-    
+
     cdg = p.analyses.CDG(cfg)
     ddg = p.analyses.DDG(cfg)
     location = int(hex(base_addr + block), base=16)
