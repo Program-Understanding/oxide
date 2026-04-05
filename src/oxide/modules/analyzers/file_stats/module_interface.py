@@ -65,11 +65,11 @@ def results(oid_list: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         if bbs:
             res["Number of basic blocks"] = len(bbs)
 
-        insns = api.get_field("disassembly", oid, "instructions")
-        if insns:
-            res["Number of instructions"] = len(insns)
+        insns = api.get_field("disassembly", oid, oid)
+        if insns and "instructions" in insns:
+            insns = insns["instructions"]
 
-        funs = api.get_field("function_summary", oid, res["Names"])
+        funs = api.get_field("function_summary", oid, oid)
         if funs:
             res["Number of functions"] = len(funs)
             res["Function names"] = ",".join(funs.keys())
