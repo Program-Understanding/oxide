@@ -101,8 +101,8 @@ def _parse_debug_sections(dwarf_sections: dict) -> dict:
         # ".debug_abbrev" section, defines types of entries in "debug_info"
         dwarf_parsed[".debug_abbrev"] = _extract_debug_abbrev(dwarf_sections)
 
-    import pprint; pprint.pprint(dwarf_parsed[".debug_abbrev"])
-    import sys; sys.exit()
+    # import pprint; pprint.pprint(dwarf_parsed[".debug_abbrev"])
+    # import sys; sys.exit()
     if ".debug_info" in dwarf_sections:
         # ".debug_info" section, primary index into other sections to describe debug information
         dwarf_parsed[".debug_info"] = _extract_debug_info(dwarf_sections, dwarf_parsed[".debug_abbrev"])
