@@ -22,16 +22,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-DESC = " This module determines if a PE file is packed or not. Experimentally usable for ELF/MACHO."
-NAME = "packer_detect"
-USG = "The module checks if each binary file is likely packed or not and returns the analysis as a dictionary of OID to result pairs indicating \
-some information about the binary file including if it is likely packed or not, the number of bad sections, the number of executable \
-sections, the number of imports, the number of known bad section names, the number of  non-standard section names, the number of sections \
-with read, write and execute permissions and the number of standard section names all found in the binary."
+DESC = "This module extracts entropy values from binary files."
+NAME = "entropy"
+USG = "The module calculates the overall entropy of a file and stores it. Returns a dictionary with the entropy value which can be used by other modules. For visualization with chunks and graphs, use the entropy_graph analyzer."
 
 import logging
-
-from typing import Dict, Any, List
+from typing import Any, Dict
 
 from oxide.core import api
 from oxide.core.libraries import histogram
@@ -43,22 +39,21 @@ opts_doc = {}
 
 
 def documentation() -> Dict[str, Any]:
-    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "Usage": USG}
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True, "usage": USG}
 
-def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
-    logger.debug("process()")
 
-    oid_list = api.expand_oids(oid_list)
-    results = {}
-    for oid in oid_list:
-        data = api.get_field("files", oid, "data")
-        if not data:
-            logger.debug("no data for oid (%s)", oid)
-            results[oid] = None
+def process(oid: str, opts: dict):
+    logger.debug("process(%s)", oid)
 
-        result = histogram.calc_entropy(data)
-        if not result:
-            results[oid] = None
-        results[oid] = result
+    data = api.get_field("files", oid, "data")
+    if not data:
+        logger.debug("No data for oid (%s)", oid)
+        return False
 
-    return results
+    result = histogram.calc_entropy(data)
+    if not result:
+        logger.debug("Failed to calculate entropy for oid (%s)", oid)
+        return False
+
+    entropy_data = {"entropy": result}
+    return api.store(NAME, oid, entropy_data, opts)
