@@ -83,6 +83,12 @@ def get_or_create_binexport(oid: str) -> str:
 
     binary_path = write_temp_file_for_oid(oid)
     binexport_path = run_ghidra_binexport(ghidra_path, binary_path, api.scratch_dir, scripts_dir)
+    
+    # add error checking
+    if binexport_path is None:
+        logger.error(f"Failed to create BinExport file for OID {oid}. Make sure Ghidra BinExport plugin is installed.")
+        return None
+        
     cache_binexport(oid, binexport_path)
     return binexport_path
 
