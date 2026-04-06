@@ -3,6 +3,32 @@
 from enum import IntEnum
 
 
+class DwarfLanguage(IntEnum):
+    C89 = 0x01
+    C = 0x02
+    ADA83 = 0x03
+    CPP = 0x04
+    COBOL74 = 0x05
+    COBOL85 = 0x06
+    FORTRAN77 = 0x07
+    FORTRAN90 = 0x08
+    PASCAL83 = 0x09
+    MODULA2 = 0x0A
+    JAVA = 0x0B
+    C99 = 0x0C
+    ADA95 = 0x0D
+    FORTRAN95 = 0x0E
+    PLI = 0x0F
+    OBJC = 0x10
+    OBJCXX = 0x11
+    UPC = 0x12
+    D = 0x13
+    PYTHON = 0x14
+
+
+LANGUAGE_NAME = {int(v): v.name for v in DwarfLanguage}
+
+
 class DwarfUnitType(IntEnum):
     COMPILE = 0x01
     TYPE = 0x02
