@@ -3,7 +3,7 @@
 import logging
 import struct
 from addr import parse_debug_addr
-from constants import DwarfAttribute, DwarfTag
+from constants import DwarfAttribute, DwarfTag, LANGUAGE_NAME
 from info import parse_debug_info
 from loclists import parse_loclists
 from rnglists import parse_rnglists
@@ -19,6 +19,9 @@ for _t in DwarfTag:
 _ATTR_NAMES: dict[int, str] = {}
 for _a in DwarfAttribute:
     _ATTR_NAMES[int(_a)] = "DW_AT_" + _a.name.lower()
+
+# DW_AT_language attribute code
+_LANG_ATTR = int(DwarfAttribute.LANGUAGE)
 
 
 def _tag_name(code: int) -> str:
@@ -44,10 +47,14 @@ def _normalize_info(raw: dict) -> dict:
         cu_offset = hdr.unit_offset
         cu_dies: dict = {}
         for die in unit.get("dies", []):
-            attrs = [(
-                _attr_name(a["attr"]),
-                a["value"],
-            ) for a in die.get("attributes", [])]
+            attrs = []
+            for a in die.get("attributes", []):
+                attr_name = _attr_name(a["attr"])
+                value = a["value"]
+                # Resolve DW_AT_language to human-readable name (e.g., 12 → "C99")
+                if a["attr"] == _LANG_ATTR and isinstance(value, int):
+                    value = LANGUAGE_NAME.get(value, str(value))
+                attrs.append((attr_name, value))
             cu_dies[die["offset"]] = {
                 "Tag": _tag_name(die["tag"]),
                 "Attributes": attrs,
