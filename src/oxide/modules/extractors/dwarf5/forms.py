@@ -3,6 +3,9 @@
 import constants
 import stream
 
+# Lazy cache for .debug_str data (avoids repeated lookups)
+_debug_str_cache: dict = {}
+
 
 def _read_offset(reader, dwarf64):
     return reader.read_u64() if dwarf64 else reader.read_u32()
