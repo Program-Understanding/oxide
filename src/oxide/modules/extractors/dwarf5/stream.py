@@ -2,7 +2,7 @@
 
 import struct
 
-from . import leb128
+import leb128
 
 
 class BinaryReader:
