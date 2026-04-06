@@ -26,6 +26,7 @@ DESC = "Analyze high-level information from DWARF debug data (functions, inlined
 NAME = "high_dwarf"
 
 import logging
+
 from typing import Dict, Any
 
 from oxide.core import api
@@ -42,14 +43,15 @@ def documentation() -> Dict[str, Any]:
 
 def results(oid_list: list, opts: dict) -> Dict[str, Any]:
     logger.debug("results()")
-    res = {}
 
+    res = {}
     for oid in oid_list:
         header = api.get_field("object_header", oid, oid)
         if not header:
             logger.debug("No header found (%s)", oid)
             continue
 
+        # dwarf5 module stores DWARF info under the "dwarf5" module name
         debug_info = api.get_field("dwarf5", oid, ".debug_info")
         if debug_info is None:
             logger.debug("%s has no DWARF debug information.", oid)

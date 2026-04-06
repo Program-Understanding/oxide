@@ -4,19 +4,40 @@ import constants
 import stream
 
 
-def _read_offset(reader: stream.BinaryReader, dwarf64: bool) -> int:
+def _read_offset(reader, dwarf64):
     return reader.read_u64() if dwarf64 else reader.read_u32()
 
 
+def _resolve_strp(offset, debug_sections):
+    """Resolve a .debug_str offset to the actual string."""
+    # Try .debug_str first (DWARF4 and DWARF5 .debug_str section)
+    str_data = debug_sections.get(".debug_str", {}).get("data", b"")
+    if str_data and offset < len(str_data):
+        end = offset
+        while end < len(str_data) and str_data[end] != 0:
+            end += 1
+        return str_data[offset:end].decode("utf-8", errors="replace")
+
+    # Fallback: try .debug_line_str (DWARF5)
+    line_str_data = debug_sections.get(".debug_line_str", {}).get("data", b"")
+    if line_str_data and offset < len(line_str_data):
+        end = offset
+        while end < len(line_str_data) and line_str_data[end] != 0:
+            end += 1
+        return line_str_data[offset:end].decode("utf-8", errors="replace")
+
+    return f"<strp:{offset}>"
+
+
 def decode_form(
-    form: int,
-    reader: stream.BinaryReader,
+    form,
+    reader,
     *,
-    dwarf64: bool,
-    address_size: int,
-    debug_sections: dict,
-    unit_bases: dict,
-    implicit_const: int | None = None,
+    dwarf64,
+    address_size,
+    debug_sections,
+    unit_bases,
+    implicit_const=None,
 ):
     if form == int(constants.DwarfForm.IMPLICIT_CONST):
         return implicit_const
@@ -57,8 +78,13 @@ def decode_form(
     if form == int(constants.DwarfForm.STRING):
         return reader.read_cstring()
 
-    if form in (int(constants.DwarfForm.STRP), int(constants.DwarfForm.LINE_STRP), int(constants.DwarfForm.STRP_SUP)):
-        return _read_offset(reader, dwarf64)
+    # String pointer: offset into .debug_str → resolve to actual string
+    if form in (int(constants.DwarfForm.STRP), int(constants.DwarfForm.STRP_SUP)):
+        offset = _read_offset(reader, dwarf64)
+        return _resolve_strp(offset, debug_sections)
+    if form == int(constants.DwarfForm.LINE_STRP):
+        offset = _read_offset(reader, dwarf64)
+        return _resolve_strp(offset, debug_sections)
 
     if form == int(constants.DwarfForm.STRX):
         return reader.read_uleb128()
@@ -102,7 +128,7 @@ def decode_form(
         return reader.read_u16()
     if form == int(constants.DwarfForm.REF4):
         return reader.read_u32()
-    if form == int(constants.DwarfForm.REF8) or form == int(constants.DwarfForm.REF_SIG8):
+    if form in (int(constants.DwarfForm.REF8), int(constants.DwarfForm.REF_SIG8)):
         return reader.read_u64()
     if form == int(constants.DwarfForm.REF_UDATA):
         return reader.read_uleb128()
@@ -116,11 +142,11 @@ def decode_form(
     if form == int(constants.DwarfForm.BLOCK4):
         n = reader.read_u32()
         return reader.read_bytes(n)
-    if form == int(constants.DwarfForm.BLOCK) or form == int(constants.DwarfForm.EXPRLOC):
+    if form in (int(constants.DwarfForm.BLOCK), int(constants.DwarfForm.EXPRLOC)):
         n = reader.read_uleb128()
         return reader.read_bytes(n)
 
-    if form == int(constants.DwarfForm.LOCLISTX) or form == int(constants.DwarfForm.RNGLISTX):
+    if form in (int(constants.DwarfForm.LOCLISTX), int(constants.DwarfForm.RNGLISTX)):
         return reader.read_uleb128()
 
     return {"unsupported_form": form}
