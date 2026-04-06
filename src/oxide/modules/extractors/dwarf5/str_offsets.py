@@ -1,6 +1,6 @@
 """Parser for .debug_str_offsets (DWARF5)."""
 
-from . import stream
+import stream
 
 
 def parse_str_offsets(section_data: bytes, dwarf64: bool) -> list[int]:

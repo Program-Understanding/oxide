@@ -1,6 +1,7 @@
 """DWARF form decoding logic (v4 + v5 core forms)."""
 
-from . import constants, stream
+import constants
+import stream
 
 
 def _read_offset(reader: stream.BinaryReader, dwarf64: bool) -> int:

@@ -1,6 +1,6 @@
 """Parser for .debug_addr (DWARF5)."""
 
-from . import stream
+import stream
 
 
 def parse_debug_addr(section_data: bytes, address_size: int) -> list[int]:

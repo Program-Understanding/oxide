@@ -1,6 +1,9 @@
 """Parsers for .debug_info and CU headers (DWARF4/5)."""
 
-from . import abbrev, forms, models, stream
+import abbrev
+import forms
+import models
+import stream
 
 
 def _parse_unit_header(reader: stream.BinaryReader) -> models.UnitHeader:

@@ -32,8 +32,7 @@ import types
 from typing import Any, Dict
 
 from oxide.core import api
-from . import extract
-
+import extract
 logger = logging.getLogger(NAME)
 logger.debug("init")
 

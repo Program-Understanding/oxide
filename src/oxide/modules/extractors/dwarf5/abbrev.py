@@ -1,6 +1,8 @@
 """Parser for .debug_abbrev."""
 
-from . import constants, models, stream
+import constants
+import models
+import stream
 
 
 def parse_abbrev_table(abbrev_data: bytes, table_offset: int) -> dict[int, models.AbbrevEntry]:

@@ -1,18 +1,23 @@
-"""Top-level DWARF extraction orchestration."""
+"""Top-level DWARF extraction orchestration — all helpers inlined."""
 
 import logging
-
-from . import addr, constants, info, loclists, rnglists, str_offsets
+import struct
+from addr import parse_debug_addr
+from constants import DwarfAttribute, DwarfTag
+from info import parse_debug_info
+from loclists import parse_loclists
+from rnglists import parse_rnglists
+from str_offsets import parse_str_offsets
 
 logger = logging.getLogger("dwarf5.extract")
 
 # Maps integer tag codes → DW_TAG_xxx string (best-effort; unknown → hex string)
 _TAG_NAMES: dict[int, str] = {}
-for _t in constants.DwarfTag:
+for _t in DwarfTag:
     _TAG_NAMES[int(_t)] = "DW_TAG_" + _t.name.lower()
 
 _ATTR_NAMES: dict[int, str] = {}
-for _a in constants.DwarfAttribute:
+for _a in DwarfAttribute:
     _ATTR_NAMES[int(_a)] = "DW_AT_" + _a.name.lower()
 
 
@@ -73,38 +78,40 @@ def parse_dwarf(oid: str, data: bytes, header) -> dict | None:
     out: dict = {"sections": sorted(dwarf_sections.keys())}
 
     if ".debug_info" in dwarf_sections:
-        raw = info.parse_debug_info(dwarf_sections)
+        raw = parse_debug_info(dwarf_sections)
         out[".debug_info"] = _normalize_info(raw)
 
     if ".debug_addr" in dwarf_sections:
+        # address_size is taken from the first CU header if available
         addr_size = 8
         if ".debug_info" in dwarf_sections:
-            raw_info = info.parse_debug_info(dwarf_sections)
+            # peek at raw for address_size
+            raw_info = parse_debug_info(dwarf_sections)
             cus = raw_info.get("compile_units", [])
             if cus:
                 addr_size = cus[0]["header"].address_size
-        out[".debug_addr"] = addr.parse_debug_addr(
+        out[".debug_addr"] = parse_debug_addr(
             dwarf_sections[".debug_addr"].get("data", b""), address_size=addr_size
         )
 
     if ".debug_str_offsets" in dwarf_sections:
         dwarf64 = False
         if ".debug_info" in dwarf_sections:
-            raw_info = info.parse_debug_info(dwarf_sections)
+            raw_info = parse_debug_info(dwarf_sections)
             cus = raw_info.get("compile_units", [])
             if cus:
                 dwarf64 = cus[0]["header"].is_64bit
-        out[".debug_str_offsets"] = str_offsets.parse_str_offsets(
+        out[".debug_str_offsets"] = parse_str_offsets(
             dwarf_sections[".debug_str_offsets"].get("data", b""), dwarf64=dwarf64
         )
 
     if ".debug_rnglists" in dwarf_sections:
-        out[".debug_rnglists"] = rnglists.parse_rnglists(
+        out[".debug_rnglists"] = parse_rnglists(
             dwarf_sections[".debug_rnglists"].get("data", b"")
         )
 
     if ".debug_loclists" in dwarf_sections:
-        out[".debug_loclists"] = loclists.parse_loclists(
+        out[".debug_loclists"] = parse_loclists(
             dwarf_sections[".debug_loclists"].get("data", b"")
         )
 
