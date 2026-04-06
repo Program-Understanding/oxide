@@ -1,4 +1,4 @@
-"""Top-level DWARF extraction orchestration — all helpers inlined."""
+"""Top-level DWARF extraction orchestration."""
 
 import logging
 import struct
