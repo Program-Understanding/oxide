@@ -3,8 +3,10 @@
 import logging
 import struct
 from addr import parse_debug_addr
+from aranges import parse_aranges
 from constants import DwarfAttribute, DwarfTag, LANGUAGE_NAME
 from info import parse_debug_info
+from line import parse_line
 from loclists import parse_loclists
 from rnglists import parse_rnglists
 from str_offsets import parse_str_offsets
@@ -120,6 +122,16 @@ def parse_dwarf(oid: str, data: bytes, header) -> dict | None:
     if ".debug_loclists" in dwarf_sections:
         out[".debug_loclists"] = parse_loclists(
             dwarf_sections[".debug_loclists"].get("data", b"")
+        )
+
+    if ".debug_aranges" in dwarf_sections:
+        out[".debug_aranges"] = parse_aranges(
+            dwarf_sections[".debug_aranges"].get("data", b"")
+        )
+
+    if ".debug_line" in dwarf_sections:
+        out[".debug_line"] = parse_line(
+            dwarf_sections[".debug_line"].get("data", b"")
         )
 
     return out
