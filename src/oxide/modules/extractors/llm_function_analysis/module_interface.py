@@ -5,12 +5,8 @@ CATEGORY = ""  # used for filtering of modules e.g. disassemblers like ida
 import logging
 
 from typing import Dict, Any, List, Tuple
-import networkx as nx
-import textwrap
 from oxide.core import api
 import prompts
-import re
-import os
 
 import prompts.tag_context
 import prompts.tag

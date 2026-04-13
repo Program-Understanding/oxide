@@ -3,7 +3,7 @@ from typing import Dict, Any, List, Tuple
 import networkx as nx
 import textwrap
 from oxide.core import api
-import re
+import time
 import os
 import ollama
 
@@ -74,10 +74,10 @@ Why: <why>
 """).strip()
 
     t0 = time.time()
-    response = runner.generate(
-        user_input=prompt,
+    response = llm_generate(
+        prompt,
         temperature=temperature,
-        max_new_tokens=max_new_tokens
+        max_new_tokens=max_new_tokens,
     )
     t1 = time.time()
     gpu_time_sec = t1 - t0
@@ -86,11 +86,15 @@ Why: <why>
                 if isinstance(response, list)
                 else response.strip())
 
-    for line in raw_text.splitlines():
-        if line.lower().startswith("tag:"):
-            raw_tag = line.split(":", 1)[1].strip()
-        if line.lower().startswith("why:"): 
-            why = line.split(":", 1)[1].strip()
+    raw_tag = "unknown"
+    why = "function's behavior unclear from provided information"
+
+    if raw_text.strip().lower() != "unknown":
+        for line in raw_text.splitlines():
+            if line.lower().startswith("tag:"):
+                raw_tag = line.split(":", 1)[1].strip()
+            if line.lower().startswith("why:"):
+                why = line.split(":", 1)[1].strip()
 
     return raw_tag, why, gpu_time_sec
         
