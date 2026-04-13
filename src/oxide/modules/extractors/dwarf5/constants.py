@@ -4,26 +4,55 @@ from enum import IntEnum
 
 
 class DwarfLanguage(IntEnum):
-    C89 = 0x01
-    C = 0x02
-    ADA83 = 0x03
-    CPP = 0x04
-    COBOL74 = 0x05
-    COBOL85 = 0x06
-    FORTRAN77 = 0x07
-    FORTRAN90 = 0x08
-    PASCAL83 = 0x09
-    MODULA2 = 0x0A
-    JAVA = 0x0B
-    C99 = 0x0C
-    ADA95 = 0x0D
-    FORTRAN95 = 0x0E
-    PLI = 0x0F
-    OBJC = 0x10
-    OBJCXX = 0x11
-    UPC = 0x12
-    D = 0x13
-    PYTHON = 0x14
+    # DWARF4 / earlier languages
+    C89 = 0x0001
+    C = 0x0002
+    ADA83 = 0x0003
+    CPP = 0x0004
+    COBOL74 = 0x0005
+    COBOL85 = 0x0006
+    FORTRAN77 = 0x0007
+    FORTRAN90 = 0x0008
+    PASCAL83 = 0x0009
+    MODULA2 = 0x000A
+    JAVA = 0x000B
+    C99 = 0x000C
+    ADA95 = 0x000D
+    FORTRAN95 = 0x000E
+    PLI = 0x000F
+    OBJC = 0x0010
+    OBJCXX = 0x0011
+    UPC = 0x0012
+    D = 0x0013
+    PYTHON = 0x0014
+    OPENCL = 0x0015
+    GO = 0x0016
+    MODULA3 = 0x0017
+    HASKELL = 0x0018
+    CPP03 = 0x0019
+    CPP11 = 0x001A
+    OCAML = 0x001B
+    RUST = 0x001C
+    # DWARF5 languages
+    C11 = 0x001D
+    SWIFT = 0x001E
+    JULIA = 0x001F
+    DYLAN = 0x0020
+    CPP14 = 0x0021
+    FORTRAN03 = 0x0022
+    FORTRAN08 = 0x0023
+    RENDERSCRIPT = 0x0024
+    BLISS = 0x0025
+    KOTLIN = 0x0026
+    ZILOG_Z80 = 0x0027
+    BASIC = 0x0028
+    RUBY = 0x0029
+    CPP17 = 0x002A
+    CPP20 = 0x002B
+    C17 = 0x002C
+    FORTRAN18 = 0x002D
+    ADA2005 = 0x002E
+    ADA2012 = 0x002F
 
 
 LANGUAGE_NAME = {int(v): v.name for v in DwarfLanguage}
@@ -230,8 +259,12 @@ class DwarfAttribute(IntEnum):
     LOCLISTS_BASE = 0x8C
     # Additional DWARF4/v5 attributes
     LOCATION_LIST = 0x0A
+    PRODUCER = 0x25
+    PROTOTYPED = 0x27
+    UPPER_BOUND = 0x2F
     STR_OFFSETS = 0x76
     STR_OFFSETS_INDEX = 0x76
+    GNU_ALL_TAIL_CALL_SITES = 0x2116
 
 
 class DwarfForm(IntEnum):
