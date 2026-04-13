@@ -25,6 +25,7 @@ THE SOFTWARE.
 DESC = "Extracts DWARF4/5 debug information from ELF binaries."
 NAME = "dwarf5"
 
+import importlib
 import logging
 import os
 import sys
@@ -36,7 +37,23 @@ import extract
 logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc: Dict[str, Any] = {}
+# Submodule load order matters: leaf deps first.
+_SUBMODULES = (
+    "leb128", "stream", "models", "constants", "abbrev",
+    "addr", "forms", "str_offsets", "info",
+    "aranges", "line", "loclists", "rnglists", "extract",
+)
+
+opts_doc: Dict[str, Any] = {"reload": {"type": bool, "mangle": False, "default": False}}
+
+
+def _reload_submodules() -> None:
+    """Hot-reload every submodule from source — use when source was edited mid-session."""
+    for name in _SUBMODULES:
+        mod = sys.modules.get(name)
+        if mod is not None:
+            importlib.reload(mod)
+    logger.debug("Submodules reloaded.")
 
 
 def documentation() -> Dict[str, Any]:
@@ -45,6 +62,9 @@ def documentation() -> Dict[str, Any]:
 
 def process(oid: str, opts: dict) -> bool:
     logger.debug("process(%s)", oid)
+
+    if opts.get("reload"):
+        _reload_submodules()
 
     src_type = api.get_field("src_type", oid, "type")
     if not src_type or "ELF" not in src_type:
