@@ -5,6 +5,20 @@ import forms
 import models
 import stream
 
+# Attribute codes that carry a section base offset used for later form resolution
+_STR_OFFSETS_BASE = 0x72   # DW_AT_str_offsets_base
+_ADDR_BASE = 0x73           # DW_AT_addr_base
+_LOCLISTS_BASE = 0x8C       # DW_AT_loclists_base
+_RNGLISTS_BASE = 0x74       # DW_AT_rnglists_base
+
+# Map from attr code → unit_bases key
+_BASE_ATTRS: dict[int, str] = {
+    _STR_OFFSETS_BASE: "str_offsets_base",
+    _ADDR_BASE: "addr_base",
+    _LOCLISTS_BASE: "loclists_base",
+    _RNGLISTS_BASE: "rnglists_base",
+}
+
 
 def _parse_unit_header(reader: stream.BinaryReader) -> models.UnitHeader:
     unit_offset = reader.tell()
@@ -60,6 +74,10 @@ def parse_debug_info(debug_sections: dict) -> dict:
             abbrev.parse_abbrev_table(abbrev_data, unit.abbrev_offset) if abbrev_data else {}
         )
 
+        # unit_bases accumulates section-base attributes (str_offsets_base, addr_base …)
+        # scoped to this compile unit so STRX / ADDRX forms resolve correctly.
+        unit_bases: dict = {}
+
         dies = []
         while reader.tell() < unit.unit_end:
             die_offset = reader.tell()
@@ -72,7 +90,6 @@ def parse_debug_info(debug_sections: dict) -> dict:
                 break
 
             attrs = []
-            unit_bases = {}
             for spec in entry.attributes:
                 value = forms.decode_form(
                     spec.form,
@@ -83,6 +100,12 @@ def parse_debug_info(debug_sections: dict) -> dict:
                     unit_bases=unit_bases,
                     implicit_const=spec.implicit_const,
                 )
+                # Populate unit_bases immediately so subsequent forms in this
+                # unit (including later DIEs) can use the resolved base.
+                base_key = _BASE_ATTRS.get(spec.name)
+                if base_key is not None and isinstance(value, int):
+                    unit_bases[base_key] = value
+
                 attrs.append({"attr": spec.name, "form": spec.form, "value": value})
 
             dies.append(
@@ -95,13 +118,7 @@ def parse_debug_info(debug_sections: dict) -> dict:
                 }
             )
 
-        units.append(
-            {
-                "header": unit,
-                "dies": dies,
-            }
-        )
-
+        units.append({"header": unit, "dies": dies})
         reader.seek(unit.unit_end)
 
     return {"compile_units": units}
