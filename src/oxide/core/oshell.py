@@ -203,10 +203,11 @@ class OxideShell(Cmd):
         self.logger.debug("Loading history file")
         if readline_enabled:
             try:
-                if not os.path.isfile(local_oxide.config.conf.history.file):
-                    readline.write_history_file(local_oxide.config.conf.history.file)
-                readline.read_history_file(local_oxide.config.conf.history.file)
-                readline.set_history_length(local_oxide.config.conf.history.max)
+                if not os.path.isfile(local_oxide.config.history_file):
+                    readline.write_history_file(local_oxide.config.history_file)
+                readline.read_history_file(local_oxide.config.history_file)
+                readline.set_history_length(local_oxide.config.history_max)
+
             except IOError:
                 #print " - History file %s seems to be corupted. Trying to remove." % (local_oxide.config.history_file)
                 #os.remove(local_oxide.config.history_file)
