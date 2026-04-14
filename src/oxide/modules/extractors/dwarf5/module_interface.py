@@ -22,43 +22,73 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-desc = " This module extracts features from the ELF dwarf symbols."
-name = "parse_dwarf"
+DESC = "Extracts DWARF4/5 debug information from ELF binaries."
+NAME = "dwarf5"
 
+import importlib
 import logging
-import api
-import dwarf_extract
+import os
+import sys
+import types
+from typing import Any, Dict
 
-logger = logging.getLogger(name)
+from oxide.core import api
+import extract
+logger = logging.getLogger(NAME)
 logger.debug("init")
 
-opts_doc = {}
+# Submodule load order matters: leaf deps first.
+_SUBMODULES = (
+    "leb128", "stream", "models", "constants", "abbrev",
+    "addr", "forms", "str_offsets", "info",
+    "aranges", "line", "loclists", "rnglists", "extract",
+)
+
+opts_doc: Dict[str, Any] = {"reload": {"type": bool, "mangle": False, "default": False}}
 
 
-def documentation():
-    return {"description": desc, "opts_doc": opts_doc, "set": False, "atomic": True}
+def _reload_submodules() -> None:
+    """Hot-reload every submodule from source — use when source was edited mid-session."""
+    for name in _SUBMODULES:
+        mod = sys.modules.get(name)
+        if mod is not None:
+            importlib.reload(mod)
+    logger.debug("Submodules reloaded.")
 
 
-def process(oid, opts):
-    logger.debug("Processing oid %s", oid)
+def documentation() -> Dict[str, Any]:
+    return {"description": DESC, "opts_doc": opts_doc, "set": False, "atomic": True}
+
+
+def process(oid: str, opts: dict) -> bool:
+    logger.debug("process(%s)", oid)
+
+    if opts.get("reload"):
+        _reload_submodules()
+
     src_type = api.get_field("src_type", oid, "type")
-    if "ELF" not in src_type:
-        logger.info("oid (%s) is not ELF, only elf currently supported.", oid)
+    if not src_type or "ELF" not in src_type:
+        logger.info("oid (%s) is not ELF, skipping.", oid)
         return False
 
     src = api.source(oid)
+    if not src:
+        logger.debug("No source for oid %s", oid)
+        return False
+
     data = api.get_field(src, oid, "data", {})
     if not data:
-        logger.debug("Not able to process %s", oid)
+        logger.debug("No data for oid %s", oid)
         return False
 
     header = api.get_field("object_header", oid, oid)
     if header is None:
-        logger.debug("Not able to process header %s", oid)
+        logger.debug("No header for oid %s", oid)
         return False
 
-    result = dwarf_extract.parse_dwarf(oid, data, header)
-    if result is None: return False
-    import pprint; pprint.pprint(result)
-    # api.store(name, oid, result, opts)
+    result = extract.parse_dwarf(oid, data, header)
+    if result is None:
+        return False
+
+    api.store(NAME, oid, result, opts)
     return True
