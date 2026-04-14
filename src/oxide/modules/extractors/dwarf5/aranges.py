@@ -1,4 +1,4 @@
-"""Parser for .debug_aranges (minimal useful decode)."""
+"""Minimal parser for .debug_aranges"""
 
 import stream
 

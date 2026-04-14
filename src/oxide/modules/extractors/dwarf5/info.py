@@ -11,7 +11,7 @@ _ADDR_BASE = 0x73           # DW_AT_addr_base
 _LOCLISTS_BASE = 0x8C       # DW_AT_loclists_base
 _RNGLISTS_BASE = 0x74       # DW_AT_rnglists_base
 
-# Map from attr code → unit_bases key
+# Map from attr code to unit_bases key
 _BASE_ATTRS: dict[int, str] = {
     _STR_OFFSETS_BASE: "str_offsets_base",
     _ADDR_BASE: "addr_base",

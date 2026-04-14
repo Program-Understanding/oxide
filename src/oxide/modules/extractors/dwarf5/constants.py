@@ -1,4 +1,4 @@
-"""DWARF constants (DWARF4 + DWARF5), aligned with the DWARF5 standard."""
+"""DWARF constants (DWARF4 + DWARF5)"""
 
 from enum import IntEnum
 
@@ -68,7 +68,7 @@ class DwarfUnitType(IntEnum):
 
 
 class DwarfTag(IntEnum):
-    # DWARF5 section 7.4 table (partial, most common)
+    # DWARF5 section 7.4 table (most common tags)
     ARRAY_TYPE = 0x01
     CLASS_TYPE = 0x02
     ENTRY_POINT = 0x03

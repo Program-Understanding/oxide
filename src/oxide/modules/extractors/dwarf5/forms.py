@@ -1,4 +1,4 @@
-"""DWARF form decoding logic (v4 + v5 core forms)."""
+"""DWARF form decoding logic"""
 
 import constants
 import stream
@@ -10,7 +10,7 @@ def _read_offset(reader, dwarf64):
 
 
 def _resolve_strp(offset: int, debug_sections: dict) -> str:
-    """Resolve a byte offset into .debug_str → string."""
+    """Resolve a byte offset into .debug_str string."""
     str_data = debug_sections.get(".debug_str", {}).get("data", b"")
     if str_data and offset < len(str_data):
         end = str_data.index(b"\x00", offset) if b"\x00" in str_data[offset:] else len(str_data)
@@ -19,7 +19,7 @@ def _resolve_strp(offset: int, debug_sections: dict) -> str:
 
 
 def _resolve_line_strp(offset: int, debug_sections: dict) -> str:
-    """Resolve a byte offset into .debug_line_str → string."""
+    """Resolve a byte offset into .debug_line_str string."""
     line_str_data = debug_sections.get(".debug_line_str", {}).get("data", b"")
     if line_str_data and offset < len(line_str_data):
         end = (line_str_data.index(b"\x00", offset)
@@ -29,7 +29,7 @@ def _resolve_line_strp(offset: int, debug_sections: dict) -> str:
 
 
 def _resolve_strx(index: int, debug_sections: dict, unit_bases: dict, dwarf64: bool) -> str:
-    """Resolve a STRX index through .debug_str_offsets → .debug_str."""
+    """Resolve a STRX index through .debug_str_offsets .debug_str."""
     offsets_data = debug_sections.get(".debug_str_offsets", {}).get("data", b"")
     if not offsets_data:
         return f"<strx:{index}>"

@@ -13,7 +13,7 @@ from str_offsets import parse_str_offsets
 
 logger = logging.getLogger("dwarf5.extract")
 
-# Maps integer tag codes → DW_TAG_xxx string (best-effort; unknown → hex string)
+# Maps integer tag codes to DW_TAG_xxx string (unknown becomes hex string)
 _TAG_NAMES: dict[int, str] = {}
 for _t in DwarfTag:
     _TAG_NAMES[int(_t)] = "DW_TAG_" + _t.name.lower()
@@ -53,7 +53,6 @@ def _normalize_info(raw: dict) -> dict:
             for a in die.get("attributes", []):
                 attr_name = _attr_name(a["attr"])
                 value = a["value"]
-                # Resolve DW_AT_language to human-readable name (e.g., 12 → "C99")
                 if a["attr"] == _LANG_ATTR and isinstance(value, int):
                     value = LANGUAGE_NAME.get(value, str(value))
                 attrs.append((attr_name, value))
@@ -94,7 +93,7 @@ def parse_dwarf(oid: str, data: bytes, header) -> dict | None:
         # address_size is taken from the first CU header if available
         addr_size = 8
         if ".debug_info" in dwarf_sections:
-            # peek at raw for address_size
+            # use raw for address_size
             raw_info = parse_debug_info(dwarf_sections)
             cus = raw_info.get("compile_units", [])
             if cus:
