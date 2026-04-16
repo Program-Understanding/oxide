@@ -1,12 +1,25 @@
 DESC = ""
 NAME = "function_decomp"
 
+import hashlib
 import logging
 import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
 from oxide.core import api
+
+# Filesystem filename limit minus room for OID, modname, delimiters, and ".lock.write"
+_MAX_SUFFIX_LEN = 100
+
+
+def _safe_opts(opts: dict) -> dict:
+    """Return opts with function_name hashed if it would produce a filename-too-long error."""
+    name = opts.get("function_name", "None")
+    if isinstance(name, str) and len(name) > _MAX_SUFFIX_LEN:
+        hashed = hashlib.sha1(name.encode()).hexdigest()
+        return {**opts, "function_name": hashed}
+    return opts
 
 logger = logging.getLogger(NAME)
 logger.debug("init")
@@ -39,10 +52,11 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     oid_list = api.expand_oids(oid_list)
 
     oid = oid_list[0]
+    safe = _safe_opts(opts)
 
     # Read-through cache stored under target_oid
-    if api.exists(NAME, oid, opts):
-        return api.retrieve(NAME, oid, opts)
+    if api.exists(NAME, oid, safe):
+        return api.retrieve(NAME, oid, safe)
 
     if opts["function_name"] != "None":
         func_name = opts["function_name"]
@@ -51,12 +65,12 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
         func_name = _get_function_name(oid, func_addr)
     else:
         return {"ERROR": "Please pass in either function_name or function_addr"}
-    
+
     results = {'decomp': retrieve_function_decomp_text(oid, func_name)}
 
     # Store/update cache
-    api.store(NAME, oid, results, opts)
-        
+    api.store(NAME, oid, results, safe)
+
     return results
 # ---------------------------
 # Ghidra helpers
