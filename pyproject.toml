@@ -29,6 +29,8 @@ dependencies = [
     "statsmodels>=0.14.6",
     "seaborn>=0.13.2",
     "unblob>=26.3.30",
+    "uvicorn>=0.44.0",
+    "fastapi>=0.136.0",
 ]
 
 [dependency-groups]
