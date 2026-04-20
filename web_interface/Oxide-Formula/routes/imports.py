@@ -2,7 +2,7 @@ import tempfile
 import os
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from oxide.core import oxide as oxide
 
 imports_router = APIRouter(prefix="/import")
@@ -138,3 +138,82 @@ async def create_collection(payload: CreateCollectionRequest) -> CreateCollectio
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class DeleteCollectionResponse(BaseModel):
+    deleted: bool
+    collection: str
+    cid: str
+    oid_count: int
+
+
+@imports_router.delete("/collection/{collection_name}")
+async def delete_collection(collection_name: str) -> DeleteCollectionResponse:
+    cid = oxide.get_cid_from_name(collection_name)
+    if not cid:
+        raise HTTPException(status_code=404, detail=f"Collection not found: {collection_name}")
+
+    oid_list = oxide.expand_oids(cid)
+    ok = oxide.delete_collection_by_name(collection_name)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to delete collection")
+
+    return DeleteCollectionResponse(
+        deleted=True,
+        collection=collection_name,
+        cid=cid,
+        oid_count=len(oid_list),
+    )
+
+
+class DeleteOidResponse(BaseModel):
+    deleted: bool
+    oid: str
+    module: str
+
+
+class DeleteOidsRequest(BaseModel):
+    oid_list: list[str]
+
+
+class FlushOidResponse(BaseModel):
+    flushed: bool
+    oid: str
+    module_count: int
+
+
+@imports_router.delete("/oid/{oid}")
+async def flush_oid(oid: str) -> FlushOidResponse:
+    try:
+        oid_list = [oid]
+        modules = list(oxide.initialized_modules.keys())
+        count = 0
+        for mod_name in modules:
+            try:
+                oxide.flush_oid_for_module(oid, mod_name)
+                count += 1
+            except Exception:
+                pass
+        return FlushOidResponse(flushed=True, oid=oid, module_count=count)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@imports_router.post("/collection/{collection_name}/oids/delete")
+async def delete_oids_from_collection(
+    collection_name: str,
+    payload: DeleteOidsRequest,
+) -> dict:
+    cid = oxide.get_cid_from_name(collection_name)
+    if not cid:
+        raise HTTPException(status_code=404, detail=f"Collection not found: {collection_name}")
+
+    deleted_oids: list[str] = []
+    for oid in payload.oid_list:
+        try:
+            oxide.flush_oid(oid)
+            deleted_oids.append(oid)
+        except Exception:
+            pass
+
+    return {"deleted": deleted_oids, "count": len(deleted_oids)}
