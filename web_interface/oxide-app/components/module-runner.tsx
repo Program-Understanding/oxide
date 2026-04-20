@@ -5,6 +5,7 @@ import { apiClient } from "@/lib/api/client";
 import type { CollectionFile, OptEntry, UploadResponse } from "@/lib/api/types";
 import { DepthJsonView } from "@/components/depth-json-view";
 import { ModuleOptsForm } from "@/components/module-opts-form";
+import { CollectionManager } from "@/components/collection-manager";
 import { FileDropzone } from "@/components/file-dropzone";
 
 type RunState = {
@@ -203,7 +204,14 @@ export function ModuleRunner() {
 
   return (
     <section className="space-y-4">
-      <FileDropzone onUploadComplete={handleUploadComplete} />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <FileDropzone onUploadComplete={handleUploadComplete} />
+        <CollectionManager
+          onCollectionDeleted={() => {
+            void apiClient.getCollections().then((resp) => setCollections(resp.collections));
+          }}
+        />
+      </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <label className="flex flex-col gap-2 text-sm">

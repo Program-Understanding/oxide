@@ -13,6 +13,8 @@ export function FileDropzone({ onUploadComplete }: FileDropzoneProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<UploadResponse | null>(null);
+  const [lastCollection, setLastCollection] = useState<string>("");
+  const [isClearing, setIsClearing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const uploadFiles = useCallback(
@@ -37,10 +39,10 @@ export function FileDropzone({ onUploadComplete }: FileDropzoneProps) {
               oid_list: oids,
               notes: `Uploaded ${oids.length} file(s) via web UI`,
             });
+            setLastCollection(colResult.name);
             onUploadComplete(result, colResult.name);
           } catch {
-            // Collection creation failed (e.g. collections module not available)
-            // Files were still imported, so refresh collections and let user select manually
+            setLastCollection(collectionName);
             onUploadComplete(result, "");
           }
         } else {
@@ -54,6 +56,21 @@ export function FileDropzone({ onUploadComplete }: FileDropzoneProps) {
     },
     [onUploadComplete],
   );
+
+  const handleClear = useCallback(async () => {
+    if (!lastCollection) return;
+    setIsClearing(true);
+    try {
+      await apiClient.deleteCollection(lastCollection);
+      setResults(null);
+      setLastCollection("");
+      onUploadComplete({ uploaded: [], failed: [], total: 0 }, "");
+    } catch {
+      setError("Failed to clear collection");
+    } finally {
+      setIsClearing(false);
+    }
+  }, [lastCollection, onUploadComplete]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -148,6 +165,19 @@ export function FileDropzone({ onUploadComplete }: FileDropzoneProps) {
             {results.failed.length > 0 && `, ${results.failed.length} failed`}
           </p>
         </div>
+      )}
+
+      {lastCollection && (
+        <button
+          className="w-full rounded border border-red-700 bg-red-950/30 px-3 py-1.5 text-xs text-red-300 transition-colors hover:bg-red-900/50 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={isClearing}
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleClear();
+          }}
+        >
+          {isClearing ? "Clearing..." : `Clear upload collection (${lastCollection})`}
+        </button>
       )}
     </div>
   );

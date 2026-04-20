@@ -4,6 +4,10 @@ import {
   CollectionsResponse,
   CreateCollectionRequest,
   CreateCollectionResponse,
+  DeleteCollectionResponse,
+  DeleteOidsRequest,
+  DeleteOidsResponse,
+  FlushOidResponse,
   ModuleDocumentation,
   ModulesResponse,
   RetrieveRequest,
@@ -89,5 +93,28 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  },
+
+  deleteCollection(collectionName: string) {
+    return requestJson<DeleteCollectionResponse>(
+      `/import/collection/${encodeURIComponent(collectionName)}`,
+      { method: "DELETE" },
+    );
+  },
+
+  flushOid(oid: string) {
+    return requestJson<FlushOidResponse>(`/import/oid/${encodeURIComponent(oid)}`, {
+      method: "DELETE",
+    });
+  },
+
+  deleteOidsFromCollection(collectionName: string, oidList: string[]) {
+    return requestJson<DeleteOidsResponse>(
+      `/import/collection/${encodeURIComponent(collectionName)}/oids/delete`,
+      {
+        method: "POST",
+        body: JSON.stringify({ oid_list: oidList }),
+      },
+    );
   },
 };

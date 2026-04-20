@@ -38,6 +38,28 @@ export interface CreateCollectionResponse {
   oid_count: number;
 }
 
+export interface DeleteCollectionResponse {
+  deleted: boolean;
+  collection: string;
+  cid: string;
+  oid_count: number;
+}
+
+export interface FlushOidResponse {
+  flushed: boolean;
+  oid: string;
+  module_count: number;
+}
+
+export interface DeleteOidsRequest {
+  oid_list: string[];
+}
+
+export interface DeleteOidsResponse {
+  deleted: string[];
+  count: number;
+}
+
 export interface CollectionsResponse {
   collections: string[];
 }
