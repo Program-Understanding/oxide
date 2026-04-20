@@ -2,10 +2,13 @@ import {
   ChartCapabilitiesResponse,
   CollectionFilesResponse,
   CollectionsResponse,
+  CreateCollectionRequest,
+  CreateCollectionResponse,
   ModuleDocumentation,
   ModulesResponse,
   RetrieveRequest,
   RetrieveResponse,
+  UploadResponse,
 } from "./types";
 
 const API_BASE_URL =
@@ -63,5 +66,28 @@ export const apiClient = {
     return requestJson<ModuleDocumentation>(
       `/modules/${encodeURIComponent(moduleName)}/documentation`,
     );
+  },
+
+  async uploadFiles(files: File[]): Promise<UploadResponse> {
+    const formData = new FormData();
+    for (const file of files) {
+      formData.append("files", file);
+    }
+    const response = await fetch(`${API_BASE_URL}/import/upload`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`${response.status} ${response.statusText}: ${body}`);
+    }
+    return (await response.json()) as UploadResponse;
+  },
+
+  createCollection(payload: CreateCollectionRequest) {
+    return requestJson<CreateCollectionResponse>("/import/collection", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   },
 };

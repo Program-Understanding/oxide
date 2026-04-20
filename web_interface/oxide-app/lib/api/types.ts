@@ -13,6 +13,31 @@ export interface ModulesResponse {
   modules: string[];
 }
 
+export interface ImportedFile {
+  name: string;
+  oid: string;
+  success: boolean;
+  error: string | null;
+}
+
+export interface UploadResponse {
+  uploaded: ImportedFile[];
+  failed: ImportedFile[];
+  total: number;
+}
+
+export interface CreateCollectionRequest {
+  name: string;
+  oid_list: string[];
+  notes?: string;
+}
+
+export interface CreateCollectionResponse {
+  name: string;
+  cid: string;
+  oid_count: number;
+}
+
 export interface CollectionsResponse {
   collections: string[];
 }

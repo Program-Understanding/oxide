@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { apiClient } from "@/lib/api/client";
-import type { CollectionFile, OptEntry } from "@/lib/api/types";
+import type { CollectionFile, OptEntry, UploadResponse } from "@/lib/api/types";
 import { DepthJsonView } from "@/components/depth-json-view";
 import { ModuleOptsForm } from "@/components/module-opts-form";
+import { FileDropzone } from "@/components/file-dropzone";
 
 type RunState = {
   loading: boolean;
@@ -191,8 +192,19 @@ export function ModuleRunner() {
     runState.resultModule === selectedModule &&
     runState.resultOid === selectedOid;
 
+  function handleUploadComplete(_results: UploadResponse, newCollectionName: string) {
+    void apiClient.getCollections().then((resp) => {
+      setCollections(resp.collections);
+      if (newCollectionName) {
+        setSelectedCollection(newCollectionName);
+      }
+    });
+  }
+
   return (
     <section className="space-y-4">
+      <FileDropzone onUploadComplete={handleUploadComplete} />
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <label className="flex flex-col gap-2 text-sm">
           <span className="text-zinc-300">Collection</span>
