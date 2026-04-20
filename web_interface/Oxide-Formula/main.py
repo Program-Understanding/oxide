@@ -65,7 +65,7 @@ with open(CONFIG_PATH, "w") as configfile:
 if oxide_path not in sys.path:
     sys.path.append(oxide_path)
 
-from routes import collections_router, modules_router, retrieve_router, oxide_router
+from routes import collections_router, modules_router, retrieve_router, oxide_router, imports_router
 app = FastAPI()
 
 allowed_origins = {
@@ -87,6 +87,7 @@ app.include_router(collections_router, prefix="/api")
 app.include_router(modules_router, prefix="/api")
 app.include_router(retrieve_router, prefix="/api")
 app.include_router(oxide_router, prefix="/api")
+app.include_router(imports_router, prefix="/api")
 
 if __name__ == "__main__":
     uvicorn.run(app, port=hostport, host=host)
