@@ -24,6 +24,8 @@ export function ModuleRunner() {
   const [selectedCollection, setSelectedCollection] = useState<string>("");
   const [selectedOid, setSelectedOid] = useState<string>("");
   const [selectedModule, setSelectedModule] = useState<string>("");
+  const [moduleSearch, setModuleSearch] = useState<string>("");
+  const [moduleDropdownOpen, setModuleDropdownOpen] = useState(false);
   const [optsDoc, setOptsDoc] = useState<Record<string, OptEntry>>({});
   const [currentOpts, setCurrentOpts] = useState<Record<string, unknown>>({});
 
@@ -152,6 +154,15 @@ export function ModuleRunner() {
     [files, selectedOid],
   );
 
+  const filteredModules = useMemo(
+    () => {
+      if (!moduleSearch.trim()) return modules;
+      const q = moduleSearch.toLowerCase();
+      return modules.filter((m) => m.toLowerCase().includes(q));
+    },
+    [modules, moduleSearch],
+  );
+
   async function runModule() {
     if (!selectedModule || !selectedOid) {
       return;
@@ -249,18 +260,41 @@ export function ModuleRunner() {
 
         <label className="flex flex-col gap-2 text-sm">
           <span className="text-zinc-300">Module</span>
-          <select
-            className="rounded border border-zinc-800 bg-zinc-900 p-2"
-            value={selectedModule}
-            onChange={(event) => setSelectedModule(event.target.value)}
-          >
-            <option value="">Select module</option>
-            {modules.map((moduleName) => (
-              <option key={moduleName} value={moduleName}>
-                {moduleName}
-              </option>
-            ))}
-          </select>
+          <div className="relative">
+            <input
+              type="text"
+              className="w-full rounded border border-zinc-800 bg-zinc-900 p-2 text-sm"
+              placeholder={selectedModule || "Search or click..."}
+              value={moduleSearch}
+              onChange={(e) => {
+                setModuleSearch(e.target.value);
+                setModuleDropdownOpen(true);
+              }}
+              onFocus={() => setModuleDropdownOpen(true)}
+              onBlur={() => setTimeout(() => setModuleDropdownOpen(false), 150)}
+            />
+            {(moduleSearch || moduleDropdownOpen) && (
+              <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded border border-zinc-700 bg-zinc-900">
+                {filteredModules.length === 0 ? (
+                  <p className="p-2 text-xs text-zinc-500">No modules found</p>
+                ) : (
+                  filteredModules.map((moduleName) => (
+                    <button
+                      key={moduleName}
+                      className="w-full px-3 py-1.5 text-left text-sm text-zinc-300 hover:bg-zinc-800"
+                      onClick={() => {
+                        setSelectedModule(moduleName);
+                        setModuleSearch("");
+                        setModuleDropdownOpen(false);
+                      }}
+                    >
+                      {moduleName}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
         </label>
       </div>
 
