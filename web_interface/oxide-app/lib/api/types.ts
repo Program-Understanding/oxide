@@ -1,3 +1,14 @@
+export interface OptEntry {
+  type: "str" | "int" | "bool";
+  mangle: boolean;
+  default: string | number | boolean | null;
+}
+
+export interface ModuleDocumentation {
+  description: string;
+  opts_doc: Record<string, OptEntry>;
+}
+
 export interface ModulesResponse {
   modules: string[];
 }

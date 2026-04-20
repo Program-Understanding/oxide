@@ -2,6 +2,7 @@ import {
   ChartCapabilitiesResponse,
   CollectionFilesResponse,
   CollectionsResponse,
+  ModuleDocumentation,
   ModulesResponse,
   RetrieveRequest,
   RetrieveResponse,
@@ -56,5 +57,11 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  },
+
+  getModuleDocumentation(moduleName: string) {
+    return requestJson<ModuleDocumentation>(
+      `/modules/${encodeURIComponent(moduleName)}/documentation`,
+    );
   },
 };

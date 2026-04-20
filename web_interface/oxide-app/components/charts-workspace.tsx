@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { apiClient } from "@/lib/api/client";
-import type { CollectionFile, ModuleCapability } from "@/lib/api/types";
+import type { CollectionFile, ModuleCapability, OptEntry } from "@/lib/api/types";
 import { DepthJsonView } from "@/components/depth-json-view";
+import { ModuleOptsForm } from "@/components/module-opts-form";
 
 const ChartRenderer = dynamic(
   () => import("@/components/charts/chart-renderers").then((mod) => mod.ChartRenderer),
@@ -44,6 +45,8 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
   const [selectedCollection, setSelectedCollection] = useState<string>("");
   const [selectedOid, setSelectedOid] = useState<string>("");
   const [selectedChartModule, setSelectedChartModule] = useState<string>("");
+  const [chartOptsDoc, setChartOptsDoc] = useState<Record<string, OptEntry>>({});
+  const [chartCurrentOpts, setChartCurrentOpts] = useState<Record<string, unknown>>({});
 
   const [runState, setRunState] = useState<RunState>({
     loading: false,
@@ -134,6 +137,39 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
     });
   }, [selectedChartModule, selectedOid]);
 
+  // Fetch chart module options documentation when selection changes
+  useEffect(() => {
+    if (!selectedChartModule) {
+      setChartOptsDoc({});
+      setChartCurrentOpts({});
+      return;
+    }
+
+    let mounted = true;
+    apiClient
+      .getModuleDocumentation(selectedChartModule)
+      .then((doc) => {
+        if (!mounted) return;
+        setChartOptsDoc(doc.opts_doc);
+        const init: Record<string, unknown> = {};
+        for (const [key, opt] of Object.entries(doc.opts_doc)) {
+          if (opt.default !== null && opt.default !== undefined) {
+            init[key] = opt.default;
+          }
+        }
+        setChartCurrentOpts(init);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setChartOptsDoc({});
+        setChartCurrentOpts({});
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [selectedChartModule]);
+
   const selectedFile = useMemo(
     () => files.find((file) => file.oid === selectedOid) ?? null,
     [files, selectedOid],
@@ -155,7 +191,7 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
       const response = await apiClient.retrieve({
         module: selectedChartModule,
         oid: selectedOid,
-        opts: {},
+        opts: chartCurrentOpts,
       });
       setRunState({
         loading: false,
@@ -232,6 +268,8 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
           </select>
         </label>
       </div>
+
+      <ModuleOptsForm optsDoc={chartOptsDoc} onChange={setChartCurrentOpts} />
 
       <div className="flex items-center gap-3">
         <button

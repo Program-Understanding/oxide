@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { apiClient } from "@/lib/api/client";
-import type { CollectionFile } from "@/lib/api/types";
+import type { CollectionFile, OptEntry } from "@/lib/api/types";
 import { DepthJsonView } from "@/components/depth-json-view";
+import { ModuleOptsForm } from "@/components/module-opts-form";
 
 type RunState = {
   loading: boolean;
@@ -21,6 +22,8 @@ export function ModuleRunner() {
   const [selectedCollection, setSelectedCollection] = useState<string>("");
   const [selectedOid, setSelectedOid] = useState<string>("");
   const [selectedModule, setSelectedModule] = useState<string>("");
+  const [optsDoc, setOptsDoc] = useState<Record<string, OptEntry>>({});
+  const [currentOpts, setCurrentOpts] = useState<Record<string, unknown>>({});
 
   const [runState, setRunState] = useState<RunState>({
     loading: false,
@@ -87,6 +90,40 @@ export function ModuleRunner() {
     };
   }, [selectedCollection]);
 
+  // Fetch module options documentation when module selection changes
+  useEffect(() => {
+    if (!selectedModule) {
+      setOptsDoc({});
+      setCurrentOpts({});
+      return;
+    }
+
+    let mounted = true;
+    apiClient
+      .getModuleDocumentation(selectedModule)
+      .then((doc) => {
+        if (!mounted) return;
+        setOptsDoc(doc.opts_doc);
+        // Build initial opts from defaults
+        const init: Record<string, unknown> = {};
+        for (const [key, opt] of Object.entries(doc.opts_doc)) {
+          if (opt.default !== null && opt.default !== undefined) {
+            init[key] = opt.default;
+          }
+        }
+        setCurrentOpts(init);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setOptsDoc({});
+        setCurrentOpts({});
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [selectedModule]);
+
   useEffect(() => {
     setRunState((previous) => {
       if (
@@ -129,7 +166,7 @@ export function ModuleRunner() {
       const response = await apiClient.retrieve({
         module: selectedModule,
         oid: selectedOid,
-        opts: {},
+        opts: currentOpts,
       });
       setRunState({
         loading: false,
@@ -206,6 +243,8 @@ export function ModuleRunner() {
           </select>
         </label>
       </div>
+
+      <ModuleOptsForm optsDoc={optsDoc} onChange={setCurrentOpts} />
 
       <div className="flex items-center gap-3">
         <button
