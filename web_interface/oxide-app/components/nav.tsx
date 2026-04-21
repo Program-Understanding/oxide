@@ -3,6 +3,7 @@ import Link from "next/link";
 const links = [
   { href: "/", label: "Home" },
   { href: "/module-runner", label: "Module Runner" },
+  { href: "/collection-module-runner", label: "Collection Module Runner" },
   { href: "/charts", label: "Charts" },
 ];
 
