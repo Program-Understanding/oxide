@@ -1,4 +1,5 @@
 import {
+  ArcElement,
   CategoryScale,
   Chart as ChartJS,
   Legend,
@@ -18,6 +19,7 @@ export function ensureChartJsRegistered() {
   if (registered) return;
 
   ChartJS.register(
+    ArcElement,
     LineElement,
     PointElement,
     CategoryScale,

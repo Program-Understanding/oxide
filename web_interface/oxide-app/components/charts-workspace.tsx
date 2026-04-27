@@ -175,10 +175,13 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
     [files, selectedOid],
   );
 
+  const isCollectionOnly = selectedChartModule === "triage";
+
   async function runChartModule() {
-    if (!selectedChartModule || !selectedOid) {
-      return;
-    }
+    if (!selectedChartModule) return;
+    if (!isCollectionOnly && !selectedOid) return;
+
+    const trackingOid = isCollectionOnly ? null : selectedOid;
 
     setRunState({
       loading: true,
@@ -190,7 +193,7 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
     try {
       const response = await apiClient.retrieve({
         module: selectedChartModule,
-        oid: selectedOid,
+        ...(isCollectionOnly ? { collection: selectedCollection } : { oid: selectedOid }),
         opts: chartCurrentOpts,
       });
       setRunState({
@@ -198,7 +201,7 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
         error: null,
         result: response.results,
         resultModule: selectedChartModule,
-        resultOid: selectedOid,
+        resultOid: trackingOid,
       });
     } catch (err: unknown) {
       setRunState({
@@ -214,7 +217,7 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
   const hasFreshResult =
     runState.result !== null &&
     runState.resultModule === selectedChartModule &&
-    runState.resultOid === selectedOid;
+    (isCollectionOnly ? true : runState.resultOid === selectedOid);
 
   return (
     <section className="space-y-4">
@@ -274,7 +277,11 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
       <div className="flex items-center gap-3">
         <button
           className="rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-zinc-700"
-          disabled={!selectedChartModule || !selectedOid || runState.loading}
+          disabled={
+            !selectedChartModule ||
+            (!isCollectionOnly && !selectedOid) ||
+            runState.loading
+          }
           onClick={runChartModule}
         >
           {runState.loading ? "Running..." : "Run chart module"}
@@ -283,6 +290,9 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
           <p className="text-xs text-zinc-400">
             Selected: {selectedFile.names.join(", ")} ({selectedFile.oid})
           </p>
+        )}
+        {isCollectionOnly && (
+          <p className="text-xs text-zinc-500">Runs on entire collection</p>
         )}
       </div>
 
@@ -294,7 +304,7 @@ export function ChartsWorkspace({ capabilities }: ChartsWorkspaceProps) {
 
       <div className="rounded border border-zinc-800 p-4">
         <h2 className="mb-2 font-medium">Chart Module Result</h2>
-        {selectedChartModule && selectedOid && hasFreshResult ? (
+        {selectedChartModule && runState.result !== null && runState.resultModule === selectedChartModule ? (
           <div className="mb-4">
             <ChartRenderer moduleName={selectedChartModule} oid={selectedOid} result={runState.result} />
           </div>

@@ -1,5 +1,7 @@
 "use client";
 
+import { TriageRenderer } from "./renderers/triage-renderer";
+import { CycloComplexityRenderer } from "./renderers/cyclo-complexity-renderer";
 import { EntropyRenderer } from "./renderers/entropy-renderer";
 import { HistogramRenderer } from "./renderers/histogram-renderer";
 import { HeatmapRenderer } from "./renderers/heatmap-renderer";
@@ -17,6 +19,8 @@ export function ChartRenderer({ moduleName, oid, result }: ModuleRendererProps) 
     return <p className="text-sm text-zinc-400">No result available for selected module/file.</p>;
   }
 
+  if (moduleName === "triage") return <TriageRenderer data={moduleData} />;
+  if (moduleName === "cyclo_complexity") return <CycloComplexityRenderer data={moduleData} />;
   if (moduleName === "entropy_graph") return <EntropyRenderer data={moduleData} />;
   if (moduleName === "byte_histogram") {
     return (

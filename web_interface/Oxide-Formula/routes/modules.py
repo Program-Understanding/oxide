@@ -30,14 +30,16 @@ class ModuleDocumentationResponse(BaseModel):
 
 
 REQUIRED_CHART_MODULES = [
-   "entropy_graph",
-   "byte_histogram",
-   "byte_ngrams",
-   "opcode_histogram",
-   "opcode_ngrams",
-   "call_graph",
-   "control_flow_graph",
-   "binary_visualizer",
+    "entropy_graph",
+    "byte_histogram",
+    "byte_ngrams",
+    "opcode_histogram",
+    "opcode_ngrams",
+    "call_graph",
+    "control_flow_graph",
+    "binary_visualizer",
+    "triage",
+    "cyclo_complexity",
 ]
 
 _TYPE_MAP = {
