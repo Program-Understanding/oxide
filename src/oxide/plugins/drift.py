@@ -150,8 +150,8 @@ def compare_all_collections(args: Any, opts: Dict[str, Any]) -> Any:
 
         # merge into single flat dict
         row = {
-            "target": target,
-            "baseline": baseline,
+            "target": api.get_colname_from_oid(target),
+            "baseline": api.get_colname_from_oid(baseline),
             **func_totals,  # e.g. {'Matched': 92, 'Modified': 70, ...}
             **file_totals,  # e.g. {'Matched': 5, 'Added': 3, ...}
         }
