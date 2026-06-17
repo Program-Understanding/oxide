@@ -1141,6 +1141,7 @@ def wire_api():
     api.ghidra_path3 = config.dir_ghidra_path3
     api.ghidra_path4 = config.dir_ghidra_path4
     api.ghidra_path5 = config.dir_ghidra_path5
+    api.oghidra_path = config.dir_oghidra_path
     api.ghidra_project = config.ghidra_project_project_name
     api.pharos_image = config.pharos_docker_image
     api.local_llm_path = config.dir_local_llm_path

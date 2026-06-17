@@ -224,6 +224,7 @@ class DirConfig(ConfigSectionMixin):
     ghidra_path3: str = ""
     ghidra_path4: str = ""
     ghidra_path5: str = ""
+    oghidra_path: str = ""    
     ida_path: str = ""
     ghidra_project: str = str(data_directory / "scratch")
     scripts: str = str(dir_root.parent.parent / "scripts") #actual oxide_root
