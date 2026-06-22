@@ -335,6 +335,8 @@ def _load_or_build_index(
     previews: List[str] = []
     texts: List[str] = []
 
+    decompile = _get_decompile_map(oid)
+
     # decompile loop
     num_decomp_calls = 0
     t_decomp0 = time.perf_counter()
@@ -342,11 +344,16 @@ def _load_or_build_index(
 
     for addr, finfo in f_list:
         num_decomp_calls += 1
-        decomp_results = _safe_decompile(oid, addr)
-        text = _normalize_decomp_blob(decomp_results.get("decomp"), max_chars=max_chars)
+        func_name = _name_from_finfo(finfo)
+        raw_text = ""
+        if func_name:
+            key = func_name if func_name in decompile else _resolve_decomp_key(decompile, func_name)
+            if key is not None:
+                raw_text = _decomp_text_from_blocks(decompile.get(key))
+        text = _normalize_decomp_blob(raw_text, max_chars=max_chars)
         if text:
             addrs.append(str(addr))
-            names.append(decomp_results.get("func_name"))
+            names.append(func_name)
             previews.append(_first_preview_line(text))
             texts.append(text)
 
@@ -660,29 +667,76 @@ def _iter_functions(funcs: Any):
             yield addr, None
 
 
-def _safe_decompile(oid: str, addr: Any) -> Dict[str, Any]:
+def _name_from_finfo(finfo: Any) -> Optional[str]:
+    """Extract a function name from a ghidra_disasm functions-dict entry."""
+    if isinstance(finfo, dict):
+        n = finfo.get("name")
+        return n if isinstance(n, str) and n else None
+    if isinstance(finfo, str) and finfo:
+        return finfo
+    return None
+
+
+def _get_decompile_map(oid: str) -> Dict[str, Any]:
+    """Fetch the whole ghidra_decmap once and return its {func_name: blocks} dict.
+
+    Done once per binary instead of once per function — see the build loop.
     """
-    Oxide style output always dict.
-    function_decomp is expected to return a dict that includes decomp.
-    This unwraps either {oid: payload} or payload directly.
+    decmap = api.retrieve("ghidra_decmap", [oid], {"org_by_func": True})
+    if not isinstance(decmap, dict) or not decmap:
+        return {}
+    inner = decmap.get(oid)
+    dm = inner if isinstance(inner, dict) else decmap
+    decompile = dm.get("decompile") if isinstance(dm, dict) else None
+    return decompile if isinstance(decompile, dict) else {}
+
+
+def _resolve_decomp_key(decompile: Dict[str, Any], want: str) -> Optional[str]:
+    """Resolve a function name to a decompile key, tolerating C++ '::' qualifiers."""
+    if want in decompile:
+        return want
+    want_short = want.split("::")[-1]
+    cands = [
+        k for k in decompile
+        if isinstance(k, str) and k.split("::")[-1] == want_short
+    ]
+    return cands[0] if len(cands) == 1 else None
+
+
+def _decomp_text_from_blocks(func_blocks: Any) -> str:
+    """Reconstruct decompiled text from one function's ghidra_decmap blocks.
+
+    Mirrors function_decomp.retrieve_function_decomp_text so indexed text is
+    identical, but operates on an already-fetched block dict (no per-call I/O).
     """
-    # function_decomp expects the option name "function_addr".
-    res = api.retrieve("function_decomp", [oid], {"function_addr": addr})
-
-    payload = None
-    if isinstance(res, dict):
-        payload = res.get(oid, res)
-    else:
-        payload = res
-
-    if not isinstance(payload, dict):
-        return {"func_addr": addr, "func_name": None, "decomp": payload}
-
-    return {
-        "func_addr": payload.get("func_addr", addr),
-        "func_name": payload.get("func_name"),
-        "decomp": payload.get("decomp"),
-    }
+    if not isinstance(func_blocks, dict):
+        return ""
+    decomp_map: Dict[int, str] = {}
+    saw_any_tagged = False
+    untagged_fallback: List[str] = []
+    for _block_id, block in func_blocks.items():
+        if not isinstance(block, dict):
+            continue
+        lines = block.get("line") or []
+        if not isinstance(lines, list):
+            continue
+        for raw in lines:
+            if not isinstance(raw, str):
+                continue
+            try:
+                left, right = raw.split(":", 1)
+                ln = int(left.strip())
+                decomp_map.setdefault(ln, right.rstrip("\r\n"))
+                saw_any_tagged = True
+                continue
+            except Exception:
+                pass
+            untagged_fallback.append(raw.rstrip("\r\n"))
+    if saw_any_tagged and decomp_map:
+        return "\n".join(decomp_map[ln] for ln in sorted(decomp_map))
+    if untagged_fallback:
+        return "\n".join(untagged_fallback)
+    return ""
 
 
 def _first_preview_line(text: str) -> str:
