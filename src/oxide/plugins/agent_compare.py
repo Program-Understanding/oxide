@@ -1,6 +1,6 @@
 '''
 Author: Nate Buck
-Last updated June 17th, 2026
+Last updated June 22nd, 2026
 '''
 
 import logging
@@ -9,11 +9,10 @@ import subprocess
 import shutil
 import sys
 
-from oxide.core.oxide import api
 
 logger = logging.getLogger(__name__)
 
-def tool_compare(args, opts):
+def agent_compare(args, opts):
     '''
     This is a tool where you can choose an AI-powered reverse engineering tool
     to compare backdoored files to determine if an LLM is able to identify the backdoor.
@@ -38,6 +37,7 @@ def tool_compare(args, opts):
         
         tool_compare --tool=oghidra --eval=e3 ^clean_file.exe ^backdoored_file1.exe ^backdoored_file2.exe
     '''
+    from oxide.core import api
     llm_responses = {}
     eval_strats = {
         "e1": """
@@ -95,22 +95,24 @@ def tool_compare(args, opts):
     if eval_strat not in eval_strats:
         logger.warning(f"Invalid evaluation given: {eval_strat}. Using e1 instead.")
         eval_strat = "e1"
-
       # Using Ghidra
+
     if "oghidra" in opts.get("tool", ""):
-        # Checking paths (TODO: Fix api.api. calls when possible)
-        oghidra_path = api.api.oghidra_path
-        if not oghidra_path:
-            logger.critical("OGhidra path not found. Please ensure it is in your config file.")
-            return
-        ghidra_path = api.api.ghidra_path
+        print("Don't forget to activate the venv before running!")
+        ghidra_path = getattr(api, "ghidra_path", None)
         print(ghidra_path)
         if not ghidra_path:
             logger.critical("Ghidra path not found. Please ensure it is in your config file.")
-        ghidra_projects_path = api.api.scratch_dir
+            return
+        ghidra_projects_path = api.scratch_dir
         print(ghidra_projects_path)
         if not ghidra_projects_path:
             logger.critical("Ghidra project path not found. Please ensure it is in your config file.")
+            return
+        oghidra_path = getattr(api, "oghidra_path", None)
+        print(oghidra_path)
+        if not oghidra_path:
+            logger.critical("OGhidra path not found. Please ensure it is in your config file.")
             return
         # Get OGhidra's .env file for Ollama info
         oghidra_env = os.path.join(oghidra_path, ".env")
@@ -121,31 +123,39 @@ def tool_compare(args, opts):
         project_file = project_dir + ".gpr"
         project_repo = project_dir + ".rep"
 
-        # Remove previous execution of Ghidra on generic projects
+        # Remove previous execution of Ghidra on generic projects 
         if (os.path.exists(project_file)):
             os.remove(project_file)
             shutil.rmtree(project_repo)
-        # Get all of the original file paths for the oids
-        file_paths = []
-        for file in oids:
-            true_file = api.retrieve("original_path", file)
-            file_paths.append(list(true_file[file])[0])
 
-        # Analyze the clean binary to create the clean analysis in Ghidra
-        result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, "project_name/clean", "-overwrite", "-import", file_paths[0]] , capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"Error running headless analysis on clean: {result.stderr}")
-            logger.critical("analyzeHeadless failed")
-        else:
-            print(f"Analysis on clean file succeeded.{result.stdout}")
-        # Analyze all of the backdoored programs entered. Uses enumerate to label each of them.
-        for j, file in enumerate(file_paths[1:]):
-            result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/backdoored{j + 1}", "-overwrite", "-import", file] , capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"Error running headless analysis on backdoored: {result.stderr}")
-                logger.critical("analyzeHeadless failed")
+        tmp_files = []
+        clean = True
+        for i, oid in enumerate(oids):
+            file_name = api.get_field("file_meta", oid, "names").pop()
+            tmp_files.append(file_name)
+            data = api.get_field(api.source(oid), oid, "data", {})
+            if not data:
+                logger.warning(f"No data in {file_name}")
+                continue
+            tmp_file = api.tmp_file(file_name, data)
+            if clean:
+                # Analyze the clean binary to create the clean analysis in Ghidra
+                result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, "project_name/clean", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"Error running headless analysis on clean: {result.stderr}")
+                    logger.critical("analyzeHeadless failed")
+                else:
+                    print(f"Analysis on clean file succeeded.{result.stdout}")
+                clean = False
             else:
-                print(f"Analysis on backdoored file {j+1} succeeded.{result.stdout}")
+                # Analyze all of the backdoored programs entered. Uses enumerate to label each of them.
+                result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/backdoored{i + 1}", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"Error running headless analysis on backdoored: {result.stderr}")
+                    logger.critical("analyzeHeadless failed")
+                else:
+                    print(f"Analysis on backdoored file {i+1} succeeded.{result.stdout}")
+
         # Open Ghidra
         result = subprocess.run([ghidra_path + "/ghidraRun", project_file] , capture_output=True, text=True)
         if result.returncode != 0:
@@ -171,14 +181,14 @@ def tool_compare(args, opts):
             logger.critical("There are no active Ghidra instances open. Open the ones you want to test.")
             return
         ports = sorted(total_instances.keys())
-        if not len(ports) == len(file_paths):
-            missing = len(file_paths) - len(ports)
+        if not len(ports) == len(oids):
+            missing = len(oids) - len(ports)
             logger.warning(f"Error. Mismatched amount of ports vs files desired. Open {missing} more file(s) in Ghidra then press enter.")
             input()
         # Getting the file type for each file to ensure correct tool usage
         file_info = {}
-        for i, file in enumerate(oids):
-            file_info[os.path.basename(file_paths[i])] = api.api.get_field("src_type", file, "type")
+        for i, oid in enumerate(oids):
+            file_info[oid] = api.get_field("src_type", oid, "type")
 
         prompt = f"""
         You are an experienced reverse engineer and binary security analyst. 
@@ -193,16 +203,38 @@ def tool_compare(args, opts):
         clean = True
         for n, port in enumerate(ports):
             bridge.ghidra.instances_use(port)
-            key = os.path.basename(file_paths[n])
             bridge.set_task_mode(enabled=True, mode="malware")
-            response = bridge.process_query(prompt + str(file_info[key]))
+            response = bridge.process_query(prompt + str(file_info[oids[n]]))
             if clean:
                 llm_responses["clean"] = response
                 clean = False
             else:
-                llm_responses[os.path.basename(file_paths[n]) + str(n)] = response
+                llm_responses[os.path.basename(tmp_files[n]) + str(n)] = response
         # Remove OGhidra .env file because it is no longer needed
-        subprocess.run("bash", "rm", ".env")
+        subprocess.run(["rm", ".env"])
+        _print_results(llm_responses, eval_strat)
     return llm_responses
 
-exports = [tool_compare]
+def _print_results(llm_responses, eval_strat):
+    width = 80
+
+    print("\n" + "=" * width)
+    print(f"    RESULTS     |   EVALUATION STRATEGY: {eval_strat}")
+    print("\n" + "=" * width)
+
+    for file, response in llm_responses.items():
+        clean = (file == "clean")
+        if clean:
+            print("\n" + "-" * width)
+            print("CLEAN FILE")
+            print("\n" + "-" * width)
+        else:
+            print("\n" + "-" * width)
+            print(f"BACKDOORED FILE: {file}")
+            print("\n" + "-" * width)
+        print(response)
+
+    print("\n" + "=" * width)
+
+
+exports = [agent_compare]
