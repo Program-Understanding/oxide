@@ -12,6 +12,7 @@ import time
 import ollama
 import json
 from dotenv import load_dotenv
+from datetime import datetime
 
 NAME = "agent_compare"
 
@@ -47,11 +48,16 @@ def agent_compare(args, opts):
     You can also choose to have an llm parse the output and return the shortened summary
     for quicker review. To do this, simply add '--llm_outprocess=True'
 
+    This plugin outputs to a file, which you can specify a different place for it with
+    the following flag: '--outdir=/custom/path'
+
     When using this plugin, provide the tool you want to use first, then the evaluation 
-    level, the extra tools, and then clean file followed by one or more backdoored files. 
+    level, number of queries you want sent to each file, and then clean file(s) followed by 
+    the backdoored file(s). 
+
     For example: 
         
-        tool_compare --runs=5 --tool=oghidra --eval=e3 &safe_files &backdoored_files
+        tool_compare --tool=oghidra --eval=e3 --runs=5  &safe_files &backdoored_files
 
     Disclaimer:
         - For OGhidra to work correctly, you need to have all of its dependencies. The best 
@@ -245,7 +251,10 @@ def agent_compare(args, opts):
 
         File type: 
         """
-        
+        # Getting the output directory if one is specified or not
+        out_dir = opts.get("out_dir", os.path.join(api.scratch_dir, "agent_compare_output"))
+        os.makedirs(out_dir, exist_ok=True)
+
         # Loop to use OGhidra on each open instance ensuring each output is stored into the llm_responses dict.
         for n, port in enumerate(ports):
             if reset_bridge_state(bridge) != 1:
@@ -277,20 +286,26 @@ def agent_compare(args, opts):
                 response = bridge.process_query(prompt + str(file_info[all_oids[n]]))
                 llm_responses[file_label][f"Run {run + 1}"] = response
         if opts.get("llm_outprocess", False) is True:
-            _llm_outprocessing(llm_responses, eval_strat)
+            _llm_outprocessing(llm_responses, eval_strat, out_dir)
         else:
-            _get_results(llm_responses, eval_strat)
+            _get_results(llm_responses, eval_strat, out_dir)
     return llm_responses
 
 # Gets results using programatic pattern matching
-def _get_results(llm_responses, eval_strat):
+def _get_results(llm_responses, eval_strat, out_dir):
     width = 80
 
+    file_lines = []
     print("\n" + "=" * width)
     print(f"    RESULTS     |   EVALUATION STRATEGY: {eval_strat}")
     print("\n" + "=" * width)
+    file_lines.append("\n" + "=" * width)
+    file_lines.append(f"    RESULTS     |   EVALUATION STRATEGY: {eval_strat}")
+    file_lines.append("\n" + "=" * width)
 
     summary_data = {}
+    # Used to make the file output
+
 
     for file, run_dict in llm_responses.items():
         clean = (file.startswith("clean_"))
@@ -298,16 +313,24 @@ def _get_results(llm_responses, eval_strat):
             print("\n" + "-" * width)
             print(f"CLEAN FILE: {file}")
             print("\n" + "-" * width)
+            file_lines.append("\n" + "-" * width)
+            file_lines.append(f"CLEAN FILE: {file}")
+            file_lines.append("\n" + "-" * width)
         else:
             print("\n" + "-" * width)
             print(f"BACKDOORED FILE: {file}")
             print("\n" + "-" * width)
+            file_lines.append("\n" + "-" * width)
+            file_lines.append(f"BACKDOORED FILE: {file}")
+            file_lines.append("\n" + "-" * width)
         
         found_backdoor_runs = []
 
         for run_name, response_txt in run_dict.items():
             print(f"\n\t<<< {run_name} >>>\n\n")
             print(response_txt)
+            file_lines.append(f"\n\t<<< {run_name} >>>\n\n")
+            file_lines.append(response_txt)
             # Pattern matching to seen patterns of how OGhidra likes to say there is no backdoor
             # If not in this list, it most likely found a backdoor
             if not any(phrase in response_txt.lower() for phrase in ["no backdoor", "there is no backdoor", "not a backdoor", "no proof of a backdoor", "no definitive evidence of a backdoor", "no pre-installed backdoor exists", ]):
@@ -322,6 +345,8 @@ def _get_results(llm_responses, eval_strat):
         
     print("\n" + "." * (width))
     print(f"\nFinal Summary")
+    file_lines.append("\n" + "." * (width))
+    file_lines.append(f"\nFinal Summary")
     # Counts all of the backdoors found and labels them either
     # as backdoors or false positives depending on what kind
     # of file it was counted in. Also returns which run it 
@@ -330,23 +355,48 @@ def _get_results(llm_responses, eval_strat):
         total = stats["total_runs"]
 
         print(f"\n\n\tAnalysis on {file}:")
+        file_lines.append(f"\n\n\tAnalysis on {file}:")
 
         if stats["clean"]:
             print(f"\n\t - False positives: {len(stats['caught'])}/{total}")
+            file_lines.append(f"\n\t - False positives: {len(stats['caught'])}/{total}")
             if len(stats["caught"]) > 0:
                 print(f"\n\t\t - False positives found here: {', '.join(stats['caught'])}")
+                file_lines.append(f"\n\t\t - False positives found here: {', '.join(stats['caught'])}")
             else:
                 print(f"\n\t - Agent successfully labeled this as clean.")
+                file_lines.append(f"\n\t - Agent successfully labeled this as clean.")
             
         else:
             print(f"\n\t - Backdoor detected {len(stats['caught'])}/{total}")   
+            file_lines.append(f"\n\t - Backdoor detected {len(stats['caught'])}/{total}") 
             if len(stats["caught"]) > 0:
                 print(f"\n\t\t - Backdoors detected here: {', '.join(stats['caught'])}")
+                file_lines.append(f"\n\t\t - Backdoors detected here: {', '.join(stats['caught'])}")
             else:
                 print(f"\n\t - Agent failed to find the backdoor completely.")
+                file_lines.append(f"\n\t - Agent failed to find the backdoor completely.")
             
         print("\n" + "-" * (width))
+        file_lines.append("\n" + "-" * (width))
     print("\n" + "=" * width)
+    file_lines.append("\n" + "=" * width)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_file = os.path.join(out_dir, f"agent_compare_report_{timestamp}.txt")
+    with open(report_file, 'w') as file:
+        file.write("\n".join(file_lines))
+    
+    summary_file = os.path.join(out_dir, f"summary_{timestamp}.json")
+    with open(summary_file, 'w') as file:
+        json.dump(summary_data, file, indent=2)
+    
+    responses_file = os.path.join(out_dir, f"llm_responses_{timestamp}.json")
+    with open(responses_file, 'w') as file:
+        json.dump(llm_responses, file, indent=2)
+
+    print(f"Results written to {out_dir}")
+    print(f"\nFiles created: {report_file}, \n{summary_file}, \n{responses_file}")
 
 # When doing multiple runs, you must clear the bridge to 
 # ensure the model isn't using previously gathered information.
@@ -370,13 +420,20 @@ def reset_bridge_state(bridge):
 # Gets the results using an LLM for pattern matching.
 # This is the better way since OGhidra doesn't always
 # listen to direct prompting.
-def _llm_outprocessing(llm_responses, eval_strat):
+def _llm_outprocessing(llm_responses, eval_strat, out_dir):
     width = 80
+
+    # Used for file output
+    file_lines = []
 
     print("\n" + "=" * width)
     print(f"    RESULTS     |   EVALUATION STRATEGY: {eval_strat}")
     print("\n" + "=" * width)
+    file_lines.append("\n" + "=" * width)
+    file_lines.append(f"    RESULTS     |   EVALUATION STRATEGY: {eval_strat}")
+    file_lines.append("\n" + "=" * width)
 
+    
     summary_data = {}
 
     for file, run_dict in llm_responses.items():
@@ -385,16 +442,24 @@ def _llm_outprocessing(llm_responses, eval_strat):
             print("\n" + "-" * width)
             print(f"CLEAN FILE: {file}")
             print("\n" + "-" * width)
+            file_lines.append("\n" + "-" * width)
+            file_lines.append(f"CLEAN FILE: {file}")
+            file_lines.append("\n" + "-" * width)
         else:
             print("\n" + "-" * width)
             print(f"BACKDOORED FILE: {file}")
             print("\n" + "-" * width)
+            file_lines.append("\n" + "-" * width)
+            file_lines.append(f"BACKDOORED FILE: {file}")
+            file_lines.append("\n" + "-" * width)
         
         found_backdoor_runs = []
 
         for run_name, response_txt in run_dict.items():
             print(f"\n\t<<< {run_name} >>>\n\n")
             print(response_txt)
+            file_lines.append(f"\n\t<<< {run_name} >>>\n\n")
+            file_lines.append(response_txt)
             prompt = f"""
             You are tasked to do two things:
             1. Find the section explicitly starting with the header '### Conclusion'. Copy everything under that header verbatim and put it into the 'conclusion' JSON field.
@@ -430,12 +495,14 @@ def _llm_outprocessing(llm_responses, eval_strat):
 
                 # Just showing conclusion to get a quick overview of each run
                 print(result.get("conclusion"))
+                file_lines.append(result.get("conclusion"))
                 # Checks for if there was a backdoor using the json format
                 # with an option for if it doesn't write it like a boolean
-                if result.get("backdoor_found") is True or str(result.get("backdoor_found").lower() == "true"):
+                if result.get("backdoor_found") is True:
                     found_backdoor_runs.append(run_name)
             except Exception as e:
                 print(f"Error processing with the llm for {run_name}: {e}")
+                file_lines.append(f"Error processing with the llm for {run_name}: {e}")
                 
         summary_data[file] = {
                 "clean": clean,
@@ -446,27 +513,54 @@ def _llm_outprocessing(llm_responses, eval_strat):
         
     print("\n" + "." * (width))
     print(f"\nFinal Summary")
-    
+    file_lines.append("\n" + "." * (width))
+    file_lines.append(f"\nFinal Summary")
+
     for file, stats in summary_data.items():
         total = stats["total_runs"]
 
         print(f"\n\n\tAnalysis on {file}:")
+        file_lines.append(f"\n\n\tAnalysis on {file}:")
 
         if stats["clean"]:
             print(f"\n\t - False positives: {len(stats['caught'])}/{total}")
+            file_lines.append(f"\n\t - False positives: {len(stats['caught'])}/{total}")
             if len(stats["caught"]) > 0:
                 print(f"\n\t\t - False positives found here: {', '.join(stats['caught'])}")
+                file_lines.append(f"\n\t\t - False positives found here: {', '.join(stats['caught'])}")
             else:
                 print(f"\n\t - Agent successfully labeled this as clean.")
+                file_lines.append(f"\n\t - Agent successfully labeled this as clean.")
             
         else:
-            print(f"\n\t - Backdoor detected {len(stats['caught'])}/{total}")   
+            print(f"\n\t - Backdoor detected {len(stats['caught'])}/{total}") 
+            file_lines.append(f"\n\t - Backdoor detected {len(stats['caught'])}/{total}") 
             if len(stats["caught"]) > 0:
                 print(f"\n\t\t - Backdoors detected here: {', '.join(stats['caught'])}")
+                file_lines.append(f"\n\t\t - Backdoors detected here: {', '.join(stats['caught'])}")
             else:
                 print(f"\n\t - Agent failed to find the backdoor completely.")
+                file_lines.append(f"\n\t - Agent failed to find the backdoor completely.")
             
         print("\n" + "-" * (width))
+        file_lines.append("\n" + "-" * (width))
     print("\n" + "=" * width)
+    file_lines.append("\n" + "=" * width)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_file = os.path.join(out_dir, f"agent_compare_report_{timestamp}.txt")
+    with open(report_file, 'w') as file:
+        file.write("\n".join(file_lines))
+    
+    summary_file = os.path.join(out_dir, f"summary_{timestamp}.json")
+    with open(summary_file, 'w') as file:
+        json.dump(summary_data, file, indent=2)
+    
+    responses_file = os.path.join(out_dir, f"llm_responses_{timestamp}.json")
+    with open(responses_file, 'w') as file:
+        json.dump(llm_responses, file, indent=2)
+
+    print(f"Results written to {out_dir}")
+    print(f"\nFiles created: {report_file}, \n{summary_file}, \n{responses_file}")
 
 exports = [agent_compare]
