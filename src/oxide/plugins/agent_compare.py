@@ -44,7 +44,6 @@ def agent_compare(args, opts):
         '--runs=5'
     This must be an integer.
 
-    **NOT WORKING YET**
     You can also choose to have an llm parse the output and return the shortened summary
     for quicker review. To do this, simply add '--llm_outprocess=True'
 
@@ -370,7 +369,7 @@ def reset_bridge_state(bridge):
     
 # Gets the results using an LLM for pattern matching.
 # This is the better way since OGhidra doesn't always
-# listen to direct prompting. **NOT WORKING YET**
+# listen to direct prompting.
 def _llm_outprocessing(llm_responses, eval_strat):
     width = 80
 
@@ -418,7 +417,9 @@ def _llm_outprocessing(llm_responses, eval_strat):
                 # Using Ollama and having it with a low temperature to
                 # make more logical matches and using format to output as json
                 # for easy parsing.
-                response = ollama.chat(
+                ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+                client = ollama.Client(host=ollama_host)
+                response = client.chat(
                     model=model_name,
                     messages=[{"role":"user", "content":prompt}],
                     options={"temperature": 0.0},
