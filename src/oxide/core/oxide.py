@@ -82,7 +82,6 @@ module_types = ["source", "extractors", "analyzers", "map_reducers"]
 modules_available = {}
 for mod_type in module_types:
     modules_available[mod_type] = []
-module_import_errors = {}
 
 # ------------- CORE FUNCTIONS -------------------------------------------------------------
 
@@ -95,24 +94,10 @@ def get_oid_from_data(data: bytes) -> str:
 
 
 def documentation(mod_name: str) -> Optional[dict]:
-    """Return the documentaton of a module"""
+    """ Return the documentaton of a module
+    """
     if mod_name not in initialized_modules:
-        if mod_name in module_import_errors:
-            reason = module_import_errors[mod_name]
-            if "No module named" in reason:
-                # Extract the missing package name from the error text
-                pkg = reason.split("'")[1] if "'" in reason else reason
-                logger.warning(
-                    "Documentation::Module %s not found.\n\t╰─> Missing %s package – please pip install or add to toml.",
-                    mod_name,
-                    pkg,
-                )
-            else:
-                logger.warning(
-                    "Documentation::Module %s not found.\n\t╰─> %s", mod_name, reason
-                )
-        else:
-            logger.warning("Documentation::Module %s not found.", mod_name)
+        logger.warning("Documentation::Module %s not found.", mod_name)
         return None
     # Catch syntax errors
     try:
@@ -695,17 +680,9 @@ def initialize_module(mod_name: str, mod_dir: str) -> bool:
         logger.debug("TypeError: %s in module(%s)", err, mod_name)
         return False
     except ModuleNotFoundError as err:
-        missing_mod = err.name
-        module_import_errors[mod_name] = (
-            f"Missing {missing_mod} package – please pip install or add to toml."
-        )
         logger.debug("ModuleNotFound:%s in module(%s)", err, mod_name)
         return False
     except ImportError as err:
-        missing_mod = err.name
-        module_import_errors[mod_name] = (
-            f"Missing {missing_mod} package – please pip install or add to toml."
-        )
         logger.debug("ImportError:%s in module(%s)", err, mod_name)
         return False
     except AttributeError as err:
