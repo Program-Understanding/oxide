@@ -9,7 +9,6 @@ import subprocess
 import shutil
 import sys
 import time
-import ollama
 import json
 from dotenv import load_dotenv
 from datetime import datetime
@@ -62,7 +61,8 @@ def agent_compare(args, opts):
     Disclaimer:
         - For OGhidra to work correctly, you need to have all of its dependencies. The best 
         way to do this is to get a .venv in your oxide with all of the requirements for OGhidra.
-        These can be found in OGhidra's requirements.txt file.
+        These can be found in OGhidra's requirements.txt file. OGhidra also by default only allows 
+        10 ports to be open at once but this can be raised by going into the source code. 
     '''
     from oxide.core import api
     llm_responses = {}
@@ -166,49 +166,61 @@ def agent_compare(args, opts):
         project_file = project_dir + ".gpr"
         project_repo = project_dir + ".rep"
 
-        # Remove previous execution of Ghidra on generic projects 
-        if (os.path.exists(project_file)):
-            os.remove(project_file)
-            shutil.rmtree(project_repo)
+        # Gives user the option to rerun the most recent project
+        keep_project = opts.get("keep_project", False)
 
-        # Make tmp files for each of the clean files
-        clean_tmp_files = []
-        for i, oid in enumerate(clean_oids):
-            file_name = api.get_field("file_meta", oid, "names").pop()
-            clean_tmp_files.append(os.path.splitext(os.path.basename(file_name))[0])
-            data = api.get_field(api.source(oid), oid, "data", {})
-            if not data:
-                logger.warning(f"No data in {file_name}")
-                continue
-            tmp_file = api.tmp_file(file_name, data)
-            # Analyze the clean binary to create the clean analysis in Ghidra. Uses enumerate to label each of them.
-            result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/clean{i + 1}", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"Error running headless analysis on clean: {result.stderr}")
-                logger.critical("analyzeHeadless failed")
-                return
-            else:
-                print(f"Analysis on clean file {i + 1} succeeded.{result.stdout}")
+        # Normal functionality for new files
+        if not keep_project:
+            # Remove previous execution of Ghidra on generic projects 
+            if (os.path.exists(project_file)):
+                os.remove(project_file)
+                shutil.rmtree(project_repo)
 
-        # Make tmp files for each of the backdoored files
-        backdoored_tmp_files = []
-        for i, oid in enumerate(backdoored_oids):
-            file_name = api.get_field("file_meta", oid, "names").pop()
-            backdoored_tmp_files.append(os.path.splitext(os.path.basename(file_name))[0])
-            data = api.get_field(api.source(oid), oid, "data", {})
-            if not data:
-                logger.warning(f"No data in {file_name}")
-                continue
-            tmp_file = api.tmp_file(file_name, data)
-            # Analyze all of the backdoored programs entered. Uses enumerate to label each of them as well.
-            result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/backdoored{i + 1}", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"Error running headless analysis on backdoored: {result.stderr}")
-                logger.critical("analyzeHeadless failed")
-                return
-            else:
-                print(f"Analysis on backdoored file {i + 1} succeeded.{result.stdout}")
+            # Make tmp files for each of the clean files
+            clean_tmp_files = []
+            for i, oid in enumerate(clean_oids):
+                file_name = api.get_field("file_meta", oid, "names").pop()
+                clean_tmp_files.append(os.path.splitext(os.path.basename(file_name))[0])
+                data = api.get_field(api.source(oid), oid, "data", {})
+                if not data:
+                    logger.warning(f"No data in {file_name}")
+                    continue
+                tmp_file = api.tmp_file(file_name, data)
+                # Analyze the clean binary to create the clean analysis in Ghidra. Uses enumerate to label each of them.
+                result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/clean{i + 1}", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"Error running headless analysis on clean: {result.stderr}")
+                    logger.critical("analyzeHeadless failed")
+                    return
+                else:
+                    print(f"Analysis on clean file {i + 1} succeeded.{result.stdout}")
 
+            # Make tmp files for each of the backdoored files
+            backdoored_tmp_files = []
+            for i, oid in enumerate(backdoored_oids):
+                file_name = api.get_field("file_meta", oid, "names").pop()
+                backdoored_tmp_files.append(os.path.splitext(os.path.basename(file_name))[0])
+                data = api.get_field(api.source(oid), oid, "data", {})
+                if not data:
+                    logger.warning(f"No data in {file_name}")
+                    continue
+                tmp_file = api.tmp_file(file_name, data)
+                # Analyze all of the backdoored programs entered. Uses enumerate to label each of them as well.
+                result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/backdoored{i + 1}", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"Error running headless analysis on backdoored: {result.stderr}")
+                    logger.critical("analyzeHeadless failed")
+                    return
+                else:
+                    print(f"Analysis on backdoored file {i + 1} succeeded.{result.stdout}")
+        # Option to reuse files from previous run
+        else:
+            print("Skipping project deletion and import. Using most recent project files.")
+            # Builds temp file lists with the names that are loaded
+            # in Ghidra already. Uses list comprehension to make it easier to understand 
+            # because without it, using .append() adds more parentheses.
+            clean_tmp_files = [os.path.splitext(os.path.basename(api.get_field("file_meta", oid, "names").pop()))[0] for oid in clean_oids]
+            backdoored_tmp_files = [os.path.splitext(os.path.basename(api.get_field("file_meta", oid, "names").pop()))[0] for oid in backdoored_oids]
         # Open Ghidra
         result = subprocess.run([ghidra_path + "/ghidraRun", project_file] , capture_output=True, text=True)
         if result.returncode != 0:
@@ -235,9 +247,13 @@ def agent_compare(args, opts):
             return
         ports = sorted(total_instances.keys())
         all_oids = clean_oids + backdoored_oids
-        if not len(ports) == len(all_oids):
-            logger.critical(f"Error. Mismatched amount of ports vs files desired.")
-            return
+        # Give the opportunity to correct mismatched ports
+        while not len(ports) == len(all_oids):
+            total_instances = bridge.ghidra.active_instances
+            ports = sorted(total_instances.keys())
+            mismatch = len(all_oids) - len(ports)
+            logger.warning(f"Error. Mismatched amount of ports vs files desired. Please open {mismatch} more file(s) in Ghidra. Press any key when ready.")
+            input()
         # Getting the file type for each file to ensure correct tool usage
         file_info = {}
         for i, oid in enumerate(all_oids):
@@ -421,6 +437,7 @@ def reset_bridge_state(bridge):
 # This is the better way since OGhidra doesn't always
 # listen to direct prompting.
 def _llm_outprocessing(llm_responses, eval_strat, out_dir):
+    import ollama
     width = 80
 
     # Used for file output
