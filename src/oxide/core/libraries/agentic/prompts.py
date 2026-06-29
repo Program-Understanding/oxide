@@ -121,15 +121,23 @@ in SUSPECTED rather than committing one set as ESTABLISHED."""
 
 
 # ------------------------------------------------------------- worker self-decomposition
-WORKER_DECOMPOSE_SYS = """A reverse-engineering specialist is about to work on ONE task using static
-analysis tools. Decide how to approach it:
-- If the task is SIMPLE — answerable in a single focused pass of a few tool calls — do NOT split it.
-- If the task is COMPLEX — it has multiple distinct parts, OR a later part needs a value/address/
-  function that an earlier part must find first — break it into 2-4 SHARP, ORDERED sub-steps to do
-  ONE BY ONE, each building on the previous. Put dependencies first.
-Be conservative: only split when it genuinely helps. Output ONLY a JSON object:
+WORKER_DECOMPOSE_SYS = """A specialist is about to work on ONE task using static-analysis tools in a
+tool-calling loop — it can already gather evidence (e.g. decompile), read the result, then look
+further, ALL within a single pass. Decide whether the task must be SPLIT into separate
+sub-investigations.
+
+SPLIT only when the task covers MULTIPLE INDEPENDENT targets or sub-goals investigated separately —
+e.g. several distinct functions/entities, or two unrelated questions bundled into one task. Then
+return 2-4 SHARP, ORDERED sub-steps to do one by one (put dependencies first).
+
+Do NOT split a task that pursues a SINGLE focused goal about ONE target, even though answering it has
+natural stages (gather evidence -> analyse -> conclude). Those stages happen inside ONE pass via the
+tool loop; splitting them only repeats the same work. "I must look at the code before I can conclude"
+is NOT a reason to split.
+
+Be conservative — DEFAULT to NOT splitting. Output ONLY a JSON object:
 {"complex": true|false, "steps": ["<sub-step 1>", "<sub-step 2>", ...]}
-For a simple task return {"complex": false, "steps": []}."""
+For a single-target / focused task return {"complex": false, "steps": []}."""
 
 
 # ----------------------------------------------------------------------------- planner

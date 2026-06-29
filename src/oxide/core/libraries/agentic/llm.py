@@ -304,16 +304,24 @@ def run_react(llm: LLM, system: str, user: str, tools_schema: list, call_tool, m
                              "above, output your final answer / required JSON now — do not call "
                              "more tools and do not return an empty message."})
             continue
-        messages.append({"role": "assistant", "content": msg.content or "",
-                         "tool_calls": [{"id": tc.id, "type": "function",
-                                         "function": {"name": tc.function.name,
-                                                      "arguments": tc.function.arguments}}
-                                        for tc in tool_calls]})
+        parsed = []
         for tc in tool_calls:
             try:
                 args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
+                if not isinstance(args, dict):                # model emitted a non-object -> recover
+                    args = {}
+            except json.JSONDecodeError:                      # malformed args (e.g. "{}{...}") -> recover
                 args = {}
+            parsed.append((tc, args))
+        # Echo the assistant turn with NORMALIZED (re-serialized) arguments, never the model's raw
+        # string: a malformed tool-call args string ("{}{...}") would otherwise poison history and make
+        # the NEXT request 400 server-side ("Extra data: line 1 column N").
+        messages.append({"role": "assistant", "content": msg.content or "",
+                         "tool_calls": [{"id": tc.id, "type": "function",
+                                         "function": {"name": tc.function.name,
+                                                      "arguments": json.dumps(args)}}
+                                        for tc, args in parsed]})
+        for tc, args in parsed:
             log(f"    [{label}] -> {tc.function.name}({json.dumps(args)[:80]})")
             out = call_tool(tc.function.name, args)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": _cap(str(out))})

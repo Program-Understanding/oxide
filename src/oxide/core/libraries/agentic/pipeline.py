@@ -281,6 +281,10 @@ def run(oid: str, question: str, cfg: dict, max_rounds: int, max_subtasks: int,
         max_iter: int) -> str:
     """Run the sequential planner-driven analysis on ONE oid; returns the tiered answer.
     Called by the plugin (plugins/agentic_re.py). Caps are env-overridable (see _analyze_oid_impl)."""
+    # Reset the per-run LLM-usage counter so the max_llm_calls budget is PER-FUNCTION. L.USAGE is a
+    # module-level accumulator; without this, a process that analyzes many functions (run_trex.py
+    # --all) would carry the count across functions and starve every function after the budget is hit.
+    L.USAGE["prompt"] = L.USAGE["completion"] = L.USAGE["calls"] = 0
     with TR.span(f"binre.run: {question[:60]}", "AGENT", f"{oid}\n{question}") as _root_out:
         ans = _analyze_oid_impl(oid, question, cfg, max_rounds, max_subtasks, max_iter)
         _root_out(ans)
