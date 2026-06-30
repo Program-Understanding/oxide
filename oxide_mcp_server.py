@@ -129,6 +129,7 @@ class BytesReadResult(BaseModel):
     offset: int
     size: int
     data: str  # hex-encoded
+    error: Optional[str] = None
 
 
 class FunctionSearchResult(BaseModel):
@@ -225,17 +226,7 @@ def _paginate(items: list, offset: int, limit: int) -> dict:
 
 
 # ── In-process ghidra_disasm cache ─────────────────────────────────────────────
-# Recompute/persistence is handled below the server (modules cache their results
-# via local_store; extractors are datastore-persisted), but no layer provides an
-# *in-memory* cache — every retrieve re-reads and unpickles the blob from disk.
-# That only matters where the deserialize is expensive AND the hot path hits it
-# on every call. Measured per-call deserialize of already-persisted blobs on a
-# 22MB / 13.5k-function binary: ghidra_disasm = ~1.9s, call_mapping = ~18ms.
-# So only ghidra_disasm clears the bar for an in-server memo (disassemble and
-# list_xrefs' name resolution touch it on every call → minutes saved on large
-# binaries). call_mapping (~18ms) and the derived offset->name table are cheap
-# enough to recompute per call once ghidra_disasm is in memory, so they are not
-# memoized. Safe to memo here because the server only ever reads these blobs.
+# Cache ghidra_disasm in memory for repeated read-only lookups.
 _GHIDRA_DISASM_CACHE: dict = {}
 
 def _get_ghidra_disasm(oid: str) -> dict:
@@ -494,6 +485,15 @@ async def search_symbols_by_name(oid_or_name: str, query: str,
     if err:
         return err
 
+    # Numeric or hex queries never match function names — redirect immediately.
+    stripped_query = query.strip()
+    if re.fullmatch(r"0x[0-9a-fA-F]+|\d+", stripped_query):
+        return (
+            f"search_symbols_by_name searches by function name, not offset. "
+            f"To look up a function at numeric offset {stripped_query!r}, call "
+            f"decompile_function('{oid_or_name}', '{stripped_query}') directly."
+        )
+
     result = oxide.get_field("function_summary", [oid], oid) or {}
     if not result:
         return _no_data(oid_or_name, "function data")
@@ -614,7 +614,6 @@ async def disassemble(oid_or_name: str, function_name_or_offset: str,
     if not result:
         return _no_data(oid_or_name, "disassembly")
 
-    # ghidra_disasm returns flat (not wrapped by oid)
     blocks = result.get("original_blocks", {})
     all_insns = sorted(
         (insn_off, insn_str)
@@ -633,7 +632,11 @@ async def disassemble(oid_or_name: str, function_name_or_offset: str,
                 break
 
     if not lines:
-        return f"No instructions at offset 0x{target_offset:x}."
+        return (
+            f"No instructions at offset 0x{target_offset:x}. The function may be "
+            "missing from the cached instruction blocks; try decompile_function "
+            "or verify the function offset with search_symbols_by_name."
+        )
 
     return DisassembleResult(offset=target_offset, count=len(lines),
                              listing="\n".join(lines)).model_dump()
@@ -659,10 +662,20 @@ async def decompile_function(oid_or_name: str, function_name_or_offset: str) -> 
     code = _decomp_for_function(oid, func_name)
 
     if code is None:
+        disasm_funcs = _get_ghidra_disasm(oid).get("functions", {})
+        if target_offset is not None and target_offset in disasm_funcs:
+            error_msg = (
+                f"Function '{func_name}' (offset {target_offset}) is in the disassembly "
+                "but Ghidra decompilation is not cached for it. "
+                "Use disassemble() to see the raw instructions instead."
+            )
+        else:
+            error_msg = (
+                f"No decompilation for '{func_name}'. The Ghidra decompilation "
+                "analysis may not have run for this binary; run it first, then retry."
+            )
         return DecompiledFunction(
-            name=func_name, offset=target_offset, code=None,
-            error=(f"No decompilation for '{func_name}'. The Ghidra decompilation "
-                   "analysis may not have run for this binary; run it first, then retry.")
+            name=func_name, offset=target_offset, code=None, error=error_msg
         ).model_dump()
 
     return DecompiledFunction(name=func_name, offset=target_offset,
@@ -696,21 +709,20 @@ async def get_call_graph(oid_or_name: str, function_name: str = None,
     oid, err = _resolve_or_error(oid_or_name)
     if err:
         return err
+    if depth <= 0:
+        return "Invalid 'depth': must be a positive integer."
+    if max_nodes <= 0:
+        return "Invalid 'max_nodes': must be a positive integer."
 
     G = _unwrap(oxide.retrieve("call_graph", [oid]), oid)
     if not isinstance(G, nx.DiGraph):
         return _no_data(oid_or_name, "call graph")
-    # call_graph nodes are function name strings — pass an empty mapping so
-    # _nx_to_mermaid uses the node (name) directly as the label.
     name_map: dict = {}
     truncated = False
 
     if function_name:
         if function_name not in G:
             return f"Function '{function_name}' not found in call graph."
-        # Breadth-first expansion, one hop per iteration, capped at max_nodes so
-        # a high-degree neighborhood can't blow up the response (a naive 2-hop on
-        # a real binary can exceed 400 nodes / 25K tokens and get offloaded).
         neighbors = {function_name}
         frontier = {function_name}
         for _ in range(max(1, depth)):
@@ -785,11 +797,6 @@ async def list_xrefs(oid_or_name: str, function_name_or_offset: str,
 
     xrefs = []
     if direction in ("calls_to", "both"):
-        # calls_to: {callee_offset: callee_vaddr} — the target calls these
-        # But semantically, "calls_to" in our API means who calls this function
-        # (matching pyghidra-mcp list_xrefs which returns refs TO a target)
-        # In call_mapping: calls_to[f] = functions f calls; calls_from[f] = callers of f
-        # So "xrefs to this function" = calls_from
         for caller_offset in func_data.get("calls_from", {}):
             xrefs.append(XrefInfo(
                 from_function=offset_to_name.get(caller_offset),
@@ -898,7 +905,6 @@ async def list_exports(oid_or_name: str,
     if not header:
         return _no_data(oid_or_name, "object header")
 
-    # (attr_name, offset_field) pairs covering ELF dyn_symbols and PE exports
     symbol_sources = [("dyn_symbols", "value"), ("exports", "offset")]
     exports = []
     for attr, offset_key in symbol_sources:
@@ -927,7 +933,8 @@ async def read_bytes(oid_or_name: str, offset: int | str, size: int = 32) -> dic
         size: Number of bytes to read (default 32, capped at 4096).
 
     Returns:
-        {offset, size, data} where data is a hex string.
+        {offset, size, data, error} where data is a hex string. `error` is set
+        when no bytes were read at the requested file offset.
     """
     oid, err = _resolve_or_error(oid_or_name)
     if err:
@@ -949,7 +956,18 @@ async def read_bytes(oid_or_name: str, offset: int | str, size: int = 32) -> dic
         return _no_data(oid_or_name, "raw file data")
 
     chunk = data[offset: offset + size]
-    return BytesReadResult(offset=offset, size=len(chunk), data=chunk.hex()).model_dump()
+    error_msg = None
+    if len(chunk) == 0:
+        error_msg = (
+            "No bytes read at this file offset; the offset may be past EOF "
+            "or outside available raw file data."
+        )
+    return BytesReadResult(
+        offset=offset,
+        size=len(chunk),
+        data=chunk.hex(),
+        error=error_msg,
+    ).model_dump()
 
 
 @mcp.tool()
@@ -1011,7 +1029,13 @@ async def search_functions(
         List of {oid, function_name, offset, score, match_type} dicts, ordered
         by score descending. Returns an error string if no analysis is available.
     """
-    # Resolve scope
+    if top_k <= 0:
+        return "Invalid 'top_k': must be a positive integer."
+    if search_mode not in {"semantic", "literal", "both"}:
+        return "Invalid 'search_mode': use 'semantic', 'literal', or 'both'."
+    if similarity_threshold < 0.0 or similarity_threshold > 1.0:
+        return "Invalid 'similarity_threshold': must be between 0.0 and 1.0."
+
     if oid_or_name:
         oid, err = _resolve_or_error(oid_or_name)
         if err:
