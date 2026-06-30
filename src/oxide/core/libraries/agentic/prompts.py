@@ -120,6 +120,17 @@ verified sets genuinely conflict and you cannot tell which traces the branch's o
 in SUSPECTED rather than committing one set as ESTABLISHED."""
 
 
+LOCATION_RULE = """IDENTITY BY STORAGE LOCATION. If the question identifies the items to report by a
+STORAGE LOCATION (a register or a stack offset), map each item to the finding about the variable AT
+THAT EXACT LOCATION — never guess which finding pairs with which item, and never carry a type from one
+location to another. Decompiler names encode the location, so use them to match deterministically:
+a `local_<hex>` lives at that stack offset (e.g. local_48 -> stack -0x48; the suffix IS the offset),
+and `param_1, param_2, ...` are the 1st, 2nd, ... incoming argument registers (rdi, rsi, rdx, rcx, r8,
+r9 on x86-64 SysV). Pair each requested location with the finding whose variable resolves to the SAME
+location; if no finding covers a location, mark that item COULDN'T-DETERMINE rather than guessing its
+type from a different location."""
+
+
 # ------------------------------------------------------------- worker self-decomposition
 WORKER_DECOMPOSE_SYS = """A specialist is about to work on ONE task using static-analysis tools in a
 tool-calling loop — it can already gather evidence (e.g. decompile), read the result, then look
@@ -166,6 +177,13 @@ ESTABLISHED — only verified findings, each citing its concrete evidence (tool 
 SUSPECTED — anything weaker, clearly labeled.
 COULDN'T DETERMINE — what remains unknown and why.
 Never present a suspected lead as established.
+
+TASK-CONCLUSION PRECEDENCE. If AUTHORITATIVE TASK CONCLUSIONS are provided, they are the system's
+already-assessed answers and OUTRANK the raw findings: state them as established and do NOT re-derive,
+swap, or override any value in them from the findings (the findings are fragmentary and may contradict
+each other — re-deriving risks scrambling an answer the assessment already settled). Use the findings
+only to (a) cite evidence for a conclusion and (b) fill in entities the conclusions don't cover. When a
+conclusion and a finding disagree, the conclusion wins; if two conclusions disagree, the later task wins.
 
 RECOVERED-VALUE GUARD. A concrete recovered value that ANSWERS the question — a password,
 key, serial, or flag — may be placed in ESTABLISHED only if it is backed by a complete,
@@ -293,15 +311,20 @@ def extract_json(text: str):
 
 # ----------------------------------------------------------------------- user-message builders
 def worker_user(subtask: dict) -> str:
+    # GOAL-DRIVEN worker: it sees the OVERALL GOAL (so it keeps copies of the same logical value
+    # consistent and anchors to the requested entities) and builds on prior tasks' results.
     goal = (subtask.get("goal") or "").strip()
     head = f"OVERALL GOAL (answer THIS): {goal}\n\n" if goal else ""
     prior = (subtask.get("prior") or "").strip()
-
     if prior:
         head += ("PRIOR ESTABLISHED RESULTS (from earlier tasks — build on these, do not "
                  f"re-derive):\n{prior}\n\n")
     return (head + f"Sub-question ({subtask.get('id', 'S1')}): {subtask['question']}\n\n"
-            "Investigate with the tools, then output your findings.\n\n" + WORKER_OUTPUT)
+            "Investigate with the tools, then output your findings. Cover EVERY variable — both the "
+            "PARAMETERS (the incoming arguments: param_1, param_2, ...) AND the locals; keep copies of "
+            "the SAME value consistent; never guess a type from the function or binary name — always "
+            "call the tools.\n\n"
+            + WORKER_OUTPUT)
 
 
 def decompose_user(question: str, task: str, prior: str = "") -> str:
@@ -328,8 +351,19 @@ def reformat_user(claim: str, raw: str) -> str:
     return f"CLAIM:\n{claim}\n\nVERIFICATION WRITE-UP:\n{raw[:4000]}"
 
 
-def synth_user(question: str, verified: list, suspected: list = None) -> str:
-    user = (f"QUESTION:\n{question}\n\nVERIFIED FINDINGS (confirmed — eligible for ESTABLISHED):\n"
+def synth_user(question: str, verified: list, suspected: list = None,
+               task_results: list = None) -> str:
+    head = ""
+    if task_results:
+        # The planner's own ASSESSED, per-task conclusions — the system's authoritative answer to
+        # each sub-question, already reconciled against that task's verified findings. The final
+        # answer must PRESERVE these; the raw findings below are only for filling gaps / citing
+        # evidence, never for overriding a task conclusion (re-deriving from raw findings risks
+        # scrambling an answer the per-task assessment already got right).
+        body = "\n".join(f"- {tid}: {res}" for tid, res in task_results)
+        head = ("AUTHORITATIVE TASK CONCLUSIONS (preserve these — do NOT re-derive or override "
+                f"them from the raw findings; later tasks supersede earlier ones on conflict):\n{body}\n\n")
+    user = (head + f"QUESTION:\n{question}\n\nVERIFIED FINDINGS (confirmed — eligible for ESTABLISHED):\n"
             + json.dumps(verified, indent=2)[:12000])
     if suspected:
         user += ("\n\nUNVERIFIED FINDINGS (verifier inconclusive, NOT refuted — SUSPECTED at most):\n"
@@ -337,8 +371,13 @@ def synth_user(question: str, verified: list, suspected: list = None) -> str:
     return user
 
 
-def consistency_user(question: str, verified: list, draft: str) -> str:
-    return (f"QUESTION:\n{question}\n\nVERIFIED FINDINGS:\n"
+def consistency_user(question: str, verified: list, draft: str, task_results: list = None) -> str:
+    head = ""
+    if task_results:
+        body = "\n".join(f"- {tid}: {res}" for tid, res in task_results)
+        head = ("AUTHORITATIVE TASK CONCLUSIONS (the draft must stay consistent with these; do not "
+                f"introduce values that contradict them):\n{body}\n\n")
+    return (head + f"QUESTION:\n{question}\n\nVERIFIED FINDINGS:\n"
             + json.dumps([f.get("claim") for f in verified], indent=2)[:8000]
             + f"\n\nDRAFT ANSWER:\n{draft}\n\nReturn the consistency-checked final answer.")
 

@@ -266,7 +266,7 @@ def _fit(messages: list, budget: int) -> None:
 
 
 def run_react(llm: LLM, system: str, user: str, tools_schema: list, call_tool, max_steps: int,
-              label: str = "agent", logfn=None) -> str:
+              label: str = "agent", logfn=None, require_grounding: bool = True) -> str:
     """Tool-calling loop: the model calls tools until it stops, then returns final content.
 
     tools_schema : OpenAI function-tool schemas (from tools.tool_schemas()).
@@ -276,6 +276,8 @@ def run_react(llm: LLM, system: str, user: str, tools_schema: list, call_tool, m
     log = logfn or (lambda m: None)
     budget = ctx_chars()
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    grounded = False                 # has ANY tool actually been called this session?
+    ground_nudges = 0                # bounded retries to force tool-grounding before accepting findings
     for _ in range(1, max_steps + 1):
         _fit(messages, budget)                       # keep the prompt under the model window
         try:
@@ -296,6 +298,18 @@ def run_react(llm: LLM, system: str, user: str, tools_schema: list, call_tool, m
         if not tool_calls:
             content = msg.content or ""
             if content.strip():
+                if require_grounding and not grounded and ground_nudges < 2:   # ungrounded guess (no tool call)
+                    ground_nudges += 1
+                    log(f"    [{label}] answered without calling a tool — requiring tool-grounded evidence")
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content":
+                                     "You produced findings WITHOUT calling any tool. Every claim MUST be "
+                                     "grounded in ACTUAL output from a tool you call (decompile / disassemble / "
+                                     "stack_var / value_usage / xrefs / ...). Do NOT infer from the function "
+                                     "name, the binary name, or prior knowledge — those are guesses, not "
+                                     "evidence. Call the relevant tool(s) now, then base your findings ONLY on "
+                                     "what they return."})
+                    continue
                 return content
             log(f"    [{label}] empty completion — nudging for the answer")
             messages.append({"role": "assistant", "content": ""})
@@ -325,6 +339,7 @@ def run_react(llm: LLM, system: str, user: str, tools_schema: list, call_tool, m
             log(f"    [{label}] -> {tc.function.name}({json.dumps(args)[:80]})")
             out = call_tool(tc.function.name, args)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": _cap(str(out))})
+        grounded = True              # at least one tool actually ran -> findings can be evidence-backed
     # ran out of steps -> force a tool-free turn that emits the required output
     messages.append({"role": "user", "content":
                      "Stop calling tools. Based ONLY on the tool outputs above, output your "

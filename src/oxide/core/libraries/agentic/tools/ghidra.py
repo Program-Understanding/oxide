@@ -118,6 +118,77 @@ def decompile(ctx, addr: str) -> str:
     return "\n".join(out) or "(no decompiler output)"
 
 
+@tool(group="ghidra", params={"addr": {"type": "string"}, "var": {"type": "string"}},
+      required=["addr", "var"],
+      desc="Summarize how a value is USED in a function: memory accesses (dereferences and the byte "
+           "offsets reached through it), array indexing, address arithmetic, scalar arithmetic/"
+           "comparison, and which callees receive it (with arg position). Reports observed usage only "
+           "— useful for data-flow, struct reconstruction, type inference, and taint analysis.")
+def value_usage(ctx, addr: str, var: str) -> dict:
+    """Deterministic data-use summary for one decompiler variable (e.g. param_1, local_38, uVar3).
+    Reports observed usage facts only — the caller does any interpretation."""
+    var = (var or "").strip()
+    if not var:
+        return {"error": "empty var"}
+    _NOT_CALL = {"for", "while", "if", "switch", "return", "sizeof", "do",
+                 ctx.resolve_func(addr)}                  # C keywords + the function's own name
+    dec = decompile(ctx, addr)
+    if not isinstance(dec, str) or dec.startswith("(no"):
+        return {"error": f"no decompilation for {addr}"}
+    v = re.escape(var)
+    bound = rf"(?<![\w]){v}(?![\w])"                       # the var as a whole token
+    offsets, scalar_ops, passed_to, evidence = set(), [], [], []
+    deref = indexed = ptr_arith = False
+    off_re   = re.compile(rf"{bound}\s*\+\s*(0x[0-9a-fA-F]+|\d+)")          # var + N
+    derefN   = re.compile(rf"\*\s*\([^()]*\)\s*\(\s*{bound}\s*\+\s*(0x[0-9a-fA-F]+|\d+)\s*\)")  # *(T*)(var + N)
+    deref0   = re.compile(rf"\*\s*\(?[^()]*\)?\(?\s*{bound}\s*\)?(?![\w\[])")                    # *var / *(T*)var
+    idx_re   = re.compile(rf"{bound}\s*\[\s*([^\]]*)\]")                    # var[ idx ]
+    cmp_re   = re.compile(rf"{bound}\s*(==|!=|<=|>=|<|>|>>|<<|&|\||%|\^)")  # used AS A VALUE
+    call_re  = re.compile(r"\b([A-Za-z_]\w*)\s*\(([^()]*)\)")
+    for raw in dec.splitlines():
+        l = raw.strip()
+        if not re.search(bound, l):
+            continue
+        evidence.append(l[:100])
+        for m in derefN.finditer(l):
+            deref = True; offsets.add(int(m.group(1), 0))
+        if deref0.search(l):
+            deref = True; offsets.add(0)
+        for m in idx_re.finditer(l):
+            indexed = True; deref = True
+            g = m.group(1).strip()
+            if re.fullmatch(r"0x[0-9a-fA-F]+|\d+", g):
+                offsets.add(int(g, 0))
+        if off_re.search(l):
+            ptr_arith = True
+        if cmp_re.search(l) and not derefN.search(l) and not deref0.search(l):
+            scalar_ops.append(l[:90])
+        for m in call_re.finditer(l):
+            callee, args = m.group(1), m.group(2)
+            if callee == var or callee in _NOT_CALL:      # skip keywords / the var itself
+                continue
+            for ai, a in enumerate(x.strip() for x in args.split(",")):
+                if re.search(bound, a):
+                    passed_to.append({"callee": callee, "arg": ai + 1,
+                                      "addr_of": a.lstrip().startswith("&")})
+    offs = sorted(offsets)
+    # FACTUAL recap of observed usage only — no type verdict; the caller interprets.
+    parts = []
+    if deref:
+        parts.append(f"dereferenced at offset(s) {[hex(o) for o in offs]}" + (" via indexing" if indexed else ""))
+    if ptr_arith:
+        parts.append("address arithmetic (var + N)")
+    if scalar_ops:
+        parts.append(f"{len(scalar_ops)} scalar arithmetic/comparison use(s) with no dereference")
+    if passed_to:
+        parts.append("passed to " + ", ".join(sorted({f"{p['callee']}(arg{p['arg']})" for p in passed_to})))
+    summary = "; ".join(parts) or "no dereference, arithmetic, or call usage observed in this function"
+    return {"var": var, "dereferenced": deref, "access_offsets": [hex(o) for o in offs],
+            "indexed": indexed, "address_arith": ptr_arith,
+            "scalar_ops": scalar_ops[:6], "passed_to": passed_to[:8],
+            "evidence": evidence[:12], "summary": summary}
+
+
 @tool(group="ghidra", params={"addr": {"type": "string"}}, required=["addr"],
       desc="Control-flow graph of the function at addr (blocks + jump/fail edges).")
 def cfg(ctx, addr: str) -> dict:

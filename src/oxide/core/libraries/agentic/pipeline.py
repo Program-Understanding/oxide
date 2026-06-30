@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 from oxide.core.oxide import api
@@ -161,8 +162,10 @@ def _adjudicate(verifier, call_tool, finding: dict, log) -> dict:
                 "corrected_claim": f"the code DOES call {present}"}
     # tool-using LLM verifier (different model family) — gets the FULL tool set (can re-run anything)
     refs = json.dumps(finding.get("evidence_refs", []))[:1500]
+    # require_grounding=False: the verifier already has its own grounding discipline; forcing it would
+    # turn every quick verdict into a full 8-step investigation (the grounding guard is for WORKERS).
     raw = L.run_react(verifier, P.VERIFIER_BACKSTORY, P.verifier_user(finding.get("claim"), refs),
-                      T.TOOL_SCHEMAS, call_tool, 8, "verifier", log)
+                      T.TOOL_SCHEMAS, call_tool, 8, "verifier", log, require_grounding=False)
     d = P.extract_json(raw) or {}
     consensus = str(d.get("consensus", "")).upper()
     # INCONCLUSIVE is now a first-class verdict the verifier may emit (uncertain != refuted), so only
@@ -196,7 +199,37 @@ def _dedup_claims(findings: List[dict]) -> List[dict]:
     return out
 
 
-def _apply_verifier_correction(records: List[dict], f: dict, v: dict, main_ct) -> None:
+def _entity_subj(claim) -> str:
+    """The referent a finding predicates ABOUT, generically: the first identifier token of the
+    form <alpha><digits> (e.g. a variable id `V5`, a block `BB3`). Such ids are how independent
+    tasks refer to the same logical entity; everything else (prose, addresses) yields None and is
+    never superseded. Belief-revision key only — not type/RE specific."""
+    m = re.search(r"\b([A-Za-z]{1,5}[0-9]{1,4})\b", str(claim))
+    return m.group(1) if m else None
+
+
+def _supersede(records: List[dict]) -> int:
+    """Generic belief revision over VERIFIED findings: when several agree-findings predicate about
+    the SAME entity subject, only the ones from the LATEST task survive — a later task reasons with
+    every earlier task's result as `prior`, so its verdict supersedes stale earlier ones (this is
+    what keeps register/stack copies of one value consistent). Deterministic-recall findings carry
+    seq=None and are exempt (always kept). Marks losers with `_superseded`; returns the count."""
+    agree = [r for r in records if r["verdict"]["consensus"] == "AGREE" and r.get("seq") is not None]
+    best = {}
+    for r in agree:
+        s = _entity_subj(r["finding"].get("claim", ""))
+        if s is not None:
+            best[s] = max(best.get(s, -1), r["seq"])
+    n = 0
+    for r in agree:
+        s = _entity_subj(r["finding"].get("claim", ""))
+        if s is not None and r["seq"] < best[s]:
+            r["_superseded"] = True
+            n += 1
+    return n
+
+
+def _apply_verifier_correction(records: List[dict], f: dict, v: dict, main_ct, seq=None) -> None:
     """Promote a verifier's DISAGREE correction to a certified fact ONLY when it asserts something
     positive (not an admission of absence/ignorance) and isn't itself a false-absence — so a vague
     refutation can't overwrite a concrete finding (e.g. char* -> undefined*)."""
@@ -213,7 +246,7 @@ def _apply_verifier_correction(records: List[dict], f: dict, v: dict, main_ct) -
                             "source": "verifier_correction",
                             "evidence_refs": f.get("evidence_refs", []),
                             "subtask_id": f.get("subtask_id")},
-                            "verdict": {"consensus": "AGREE"}})
+                            "verdict": {"consensus": "AGREE"}, "seq": seq})
 
 
 # ----------------------------------------------------------------------------- assess / revise
@@ -269,11 +302,12 @@ def _print_plan(plan: List[dict]) -> None:
         print(f"  {t['id']} [{t['status']}] ({','.join(t['specialists'])})  {t['description'][:78]}")
 
 
-def _synthesize(planner, question, verified, suspected) -> str:
+def _synthesize(planner, question, verified, suspected, task_results=None) -> str:
     ans = planner.complete(P.SYNTH_SYS + "\n\n" + P.COMPOSE_RULE + "\n\n" + P.BRANCH_TARGET_RULE
                            + "\n\n" + P.COORDINATE_RULE,
-                           P.synth_user(question, verified, suspected))
-    return planner.complete(P.CONSISTENCY_SYS, P.consistency_user(question, verified, ans))
+                           P.synth_user(question, verified, suspected, task_results))
+    return planner.complete(P.CONSISTENCY_SYS,
+                            P.consistency_user(question, verified, ans, task_results))
 
 
 # ----------------------------------------------------------------------------- public entry
@@ -298,6 +332,7 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
     max_tasks = _cap("max_tasks", max_subtasks)
     max_retries = _cap("max_retries", max_rounds)
     max_calls = _cap("max_llm_calls", 0)
+    verify_conc = max(1, _cap("verify_concurrency", 1))    # adjudicate N findings concurrently (1=serial)
 
     # warm the heavy extractor so the workers only read cached results
     api.retrieve("ghidra_disasm", [oid])
@@ -336,17 +371,32 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
             # DISPATCH specialist agent(s) -> ANALYZE (verify each finding) -- serial.
             findings = _dedup_claims(_dispatch_task(cfg, oid, question, task, prior, max_iter, log))
             task_records: List[dict] = []
-            for f in findings:
+
+            def _adj_one(f):
+                # one finding's verification (independent of the others). The file trace is lock-guarded
+                # (trace._TRACE_LOCK), so concurrent spans/writes are safe.
                 with TR.span(f"adjudicate: {str(f.get('claim', ''))[:48]}", "CHAIN",
                              f.get("claim", "")) as _a_out:
                     v = _adjudicate(verifier, main_ct, f, log)
                     _a_out(json.dumps(v))
-                rec = {"finding": f, "verdict": v}
+                return f, v
+
+            # findings are independent -> adjudicate concurrently (verify_conc>1) to fill the otherwise
+            # idle GPU; ThreadPoolExecutor.map preserves order so results apply deterministically.
+            if verify_conc > 1 and len(findings) > 1:
+                with ThreadPoolExecutor(max_workers=verify_conc) as _ex:
+                    results = list(_ex.map(_adj_one, findings))
+            else:
+                results = [_adj_one(f) for f in findings]
+
+            # apply verdicts SEQUENTIALLY (shared state: records, corrections, prints).
+            for f, v in results:
+                rec = {"finding": f, "verdict": v, "seq": i}
                 records.append(rec)
                 task_records.append(rec)
                 mark = {"AGREE": "✓", "DISAGREE": "✗"}.get(v["consensus"], "~")
                 print(f"    {mark} {str(f['claim'])[:80]}")
-                _apply_verifier_correction(records, f, v, main_ct)
+                _apply_verifier_correction(records, f, v, main_ct, seq=i)
             task["raw_findings"] = findings
             tverified = [r["finding"] for r in task_records if r["verdict"]["consensus"] == "AGREE"]
             tsuspected = [r["finding"] for r in task_records if r["verdict"]["consensus"] != "AGREE"]
@@ -422,8 +472,13 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
     except Exception as e:  # noqa: BLE001
         print(f"  (coordinate recall skipped: {str(e)[:80]})")
 
-    verified = [r["finding"] for r in records if r["verdict"]["consensus"] == "AGREE"]
-    
+    _sup = _supersede(records)
+    if _sup:
+        print(f"  + supersession: dropped {_sup} stale verified finding(s) "
+              f"(later task wins on the same entity)")
+    verified = [r["finding"] for r in records
+                if r["verdict"]["consensus"] == "AGREE" and not r.get("_superseded")]
+
     _vclaims = {str(f.get("claim", "")).strip().lower() for f in verified}
     suspected = [r["finding"] for r in records
                  if r["verdict"]["consensus"] != "AGREE"
@@ -434,8 +489,12 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
     print(f"\n── PLAN STATUS: {_d} done, {_u} unsolvable, {_p} pending ──")
     print(f"── SYNTHESIZE ({len(verified)} verified, {len(suspected)} suspected"
           f"/{len(records)} total) ──")
+    # authoritative per-task conclusions (the planner's own assessed answers) — later tasks last so
+    # they win on conflict; synthesis must preserve these rather than re-derive from raw findings.
+    task_results = [(t["id"], t["result"]) for t in plan
+                    if t.get("status") == "done" and str(t.get("result", "")).strip()]
     with TR.span("synthesize: tiered answer", "CHAIN", f"{len(verified)} verified findings") as _s_out:
-        answer = _synthesize(planner, question, verified, suspected)
+        answer = _synthesize(planner, question, verified, suspected, task_results)
         _s_out(answer)
     TR.note("ANSWER", answer)
     print(f"── TOKENS: {L.USAGE['completion']:,} out / {L.USAGE['prompt']:,} in across "
