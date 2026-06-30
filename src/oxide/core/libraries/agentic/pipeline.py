@@ -180,6 +180,57 @@ def _adjudicate(verifier, call_tool, finding: dict, log) -> dict:
             "corrected_claim": d.get("corrected_claim", "")}
 
 
+def _adjudicate_batch(verifier, call_tool, findings: List[dict], log) -> List[tuple]:
+    """SAFE call-reducer: same deterministic oracles per finding (V1/V3/V4), then ONE batched LLM
+    verifier call for ALL remaining findings instead of one call each. Returns [(finding, verdict)].
+    Same claims + criteria, judged together — score-neutral; only the per-finding LLM calls collapse."""
+    verdicts: List = [None] * len(findings)
+    pending = []                                   # (idx, finding) needing the LLM verifier
+    for idx, f in enumerate(findings):
+        grounded, ev = G.deterministic_grounding(call_tool, f)
+        if grounded:
+            verdicts[idx] = {"consensus": "AGREE", "reason": f"deterministically reproduced — {ev}",
+                             "corrected_claim": ""}
+            continue
+        cg, cev = G.call_grounding(call_tool, f)
+        if cg:
+            verdicts[idx] = {"consensus": "AGREE", "reason": f"deterministically reproduced — {cev}",
+                             "corrected_claim": ""}
+            continue
+        absent = G.false_absence(call_tool, f)
+        if absent:
+            present = absent.split("DOES call ", 1)[1].split(" —", 1)[0]
+            verdicts[idx] = {"consensus": "DISAGREE", "reason": absent,
+                             "corrected_claim": f"the code DOES call {present}"}
+            continue
+        pending.append((idx, f))
+
+    if pending:
+        items = [{"id": j + 1, "claim": f.get("claim"), "refs": f.get("evidence_refs", [])}
+                 for j, (idx, f) in enumerate(pending)]
+        with TR.span(f"adjudicate-batch: {len(pending)} findings", "CHAIN",
+                     json.dumps([it["claim"] for it in items])[:200]) as _b_out:
+            raw = L.run_react(verifier, P.VERIFIER_BATCH_SYS, P.verifier_batch_user(items),
+                              T.TOOL_SCHEMAS, call_tool, 8, "verifier-batch", log,
+                              require_grounding=False)
+            d = P.extract_json(raw) or {}
+            by_id = {}
+            for v in (d.get("verdicts") or []):
+                try:
+                    by_id[int(v.get("id"))] = v
+                except (TypeError, ValueError):
+                    pass
+            _b_out(json.dumps({"n": len(pending), "parsed": len(by_id)}))
+        for j, (idx, f) in enumerate(pending):
+            v = by_id.get(j + 1) or {}
+            cons = str(v.get("consensus", "")).upper()
+            if cons not in ("AGREE", "DISAGREE", "INCONCLUSIVE"):
+                cons = "INCONCLUSIVE"             # missing/unparsed verdict -> abstain (never overrides)
+            verdicts[idx] = {"consensus": cons, "reason": str(v.get("reason", ""))[:300],
+                             "corrected_claim": v.get("corrected_claim", "")}
+    return list(zip(findings, verdicts))
+
+
 def _dedup_claims(findings: List[dict]) -> List[dict]:
     """Collapse exact-duplicate claims (same subject+content) before the expensive verification.
     Key on (subject, content) so different hypotheses for the same subject are both kept."""
@@ -381,9 +432,11 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
                     _a_out(json.dumps(v))
                 return f, v
 
-            # findings are independent -> adjudicate concurrently (verify_conc>1) to fill the otherwise
-            # idle GPU; ThreadPoolExecutor.map preserves order so results apply deterministically.
-            if verify_conc > 1 and len(findings) > 1:
+            # SAFE call-reducer: one batched verifier call for all findings (AGENTIC_VERIFY_BATCH=1),
+            # else the legacy per-finding path (optionally concurrent to fill the idle GPU).
+            if _cap("verify_batch", 0) == 1 and findings:
+                results = _adjudicate_batch(verifier, main_ct, findings, log)
+            elif verify_conc > 1 and len(findings) > 1:
                 with ThreadPoolExecutor(max_workers=verify_conc) as _ex:
                     results = list(_ex.map(_adj_one, findings))
             else:

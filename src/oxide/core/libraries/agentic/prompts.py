@@ -79,6 +79,21 @@ NOT default to refuting:
 Output ONLY JSON: {{"consensus":"AGREE"|"DISAGREE"|"INCONCLUSIVE","reason":"...","corrected_claim":"..."}}."""
 
 
+VERIFIER_BATCH_SYS = f"""You are a rigorous, skeptical verifier. You are given SEVERAL numbered claims
+about ONE binary function. Judge EACH claim independently by INDEPENDENTLY checking the cited tools
+({TOOLS}) — you may call a tool once and use its output to judge several claims. For EACH claim pick
+ONE verdict — do NOT default to refuting:
+- AGREE: the output CONFIRMS the claim (minor fixes go in corrected_claim).
+- DISAGREE: the output shows a DIFFERENT, CONTRADICTORY fact (a different value/arch, a call/access
+  present when claimed absent or vice-versa). Refute ONLY on such positive contradiction; give the
+  corrected claim grounded in YOUR output.
+- INCONCLUSIVE: you CANNOT confirm the claim (variable/address not visible, no access found, evidence
+  silent). Absence of evidence is NOT a contradiction — output INCONCLUSIVE, do NOT DISAGREE.
+
+Output ONLY JSON with EXACTLY one entry per claim id:
+{{"verdicts":[{{"id":<n>,"consensus":"AGREE"|"DISAGREE"|"INCONCLUSIVE","reason":"...","corrected_claim":"..."}}, ...]}}."""
+
+
 # ----------------------------------------------------------------------------- synthesis
 COMPOSE_RULE = """COMPOSE VERIFIED ATOMICS — TRANSFORM-AGNOSTIC (do not under-commit): the
 answer is usually spread across several verified findings; assemble them rather than demanding
@@ -339,6 +354,16 @@ def verifier_user(claim: str, refs: str) -> str:
             "CORRECT arguments you determine from the binary. NEVER hand-decode or hand-compute. "
             'Then output ONLY JSON: {"consensus":"AGREE"|"DISAGREE","reason":"<grounded in YOUR '
             'tool calls>","corrected_claim":"<corrected claim if wrong, else empty>"}')
+
+
+def verifier_batch_user(items: list) -> str:
+    """`items`: list of {id, claim, refs} — all the claims to verify in ONE call."""
+    lines = []
+    for it in items:
+        lines.append(f'[{it["id"]}] {it["claim"]}\n      cited: {json.dumps(it.get("refs", []))[:240]}')
+    return ("CLAIMS (verify EACH; the cited tool args may be missing — determine your own):\n"
+            + "\n".join(lines)
+            + "\n\nOutput ONLY the verdicts JSON array — EXACTLY one entry per claim id above.")
 
 
 REFORMAT_SYS = ("You convert a verification write-up into a verdict. Output ONLY JSON: "
