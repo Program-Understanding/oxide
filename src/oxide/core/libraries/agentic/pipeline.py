@@ -259,24 +259,67 @@ def _entity_subj(claim) -> str:
     return m.group(1) if m else None
 
 
+_ABSTAIN_RE = re.compile(r"undefined|unknown|undetermin|cannot|could ?n'?t|not (present|accessed|"
+                         r"referenced|found|determin)|no (evidence|usage|access)|unused", re.I)
+_STOP_TOKENS = {"the", "a", "an", "is", "are", "was", "of", "to", "in", "and", "it", "its",
+                "as", "for", "this", "that", "with", "at", "on", "be"}
+
+
+def _value_tokens(claim, subj: str) -> set:
+    """Content tokens of a claim with the entity subject and stopwords removed — the basis for
+    Jaccard-clustering prose variants of one asserted value into a single consensus group."""
+    c = re.sub(r"\b" + re.escape(subj) + r"\b", " ", str(claim).lower())
+    return set(re.findall(r"[a-z0-9_*]+", c)) - _STOP_TOKENS
+
+
+def _jaccard(a: set, b: set) -> float:
+    return len(a & b) / len(a | b) if (a or b) else 1.0
+
+
 def _supersede(records: List[dict]) -> int:
-    """Generic belief revision over VERIFIED findings: when several agree-findings predicate about
-    the SAME entity subject, only the ones from the LATEST task survive — a later task reasons with
-    every earlier task's result as `prior`, so its verdict supersedes stale earlier ones (this is
-    what keeps register/stack copies of one value consistent). Deterministic-recall findings carry
-    seq=None and are exempt (always kept). Marks losers with `_superseded`; returns the count."""
+    """Generic belief revision over VERIFIED findings, CONSENSUS over recency (recency-wins was the
+    measured root cause of per-function score variance — a later task is just another stochastic
+    draw and routinely swapped/dropped values an earlier task had right). Per entity subject
+    (`_entity_subj`): (1) a concrete value always beats an ABSTENTION (undefined/unknown/absent);
+    (2) concrete findings are clustered by token-Jaccard overlap (>=0.5) so prose variants of one
+    value group together, and the value backed by the MOST distinct tasks wins — recency only breaks
+    ties (so a genuine later correction backed by >=2 tasks still wins). Deterministic-recall
+    findings carry seq=None and are exempt (always kept). Marks losers with `_superseded`; returns
+    the count."""
     agree = [r for r in records if r["verdict"]["consensus"] == "AGREE" and r.get("seq") is not None]
-    best = {}
+    by_subj: dict = {}
     for r in agree:
         s = _entity_subj(r["finding"].get("claim", ""))
         if s is not None:
-            best[s] = max(best.get(s, -1), r["seq"])
+            by_subj.setdefault(s, []).append(r)
     n = 0
-    for r in agree:
-        s = _entity_subj(r["finding"].get("claim", ""))
-        if s is not None and r["seq"] < best[s]:
-            r["_superseded"] = True
-            n += 1
+    for s, rs in by_subj.items():
+        concrete = [r for r in rs if not _ABSTAIN_RE.search(str(r["finding"].get("claim", "")))]
+        if concrete and len(concrete) < len(rs):           # (1) concrete beats abstention
+            for r in rs:
+                if r not in concrete:
+                    r["_superseded"] = True
+                    n += 1
+        if len(concrete) < 2:
+            continue
+        clusters: List[list] = []                          # (2) Jaccard-cluster the concrete values
+        for r in concrete:
+            toks = _value_tokens(r["finding"].get("claim", ""), s)
+            for cl in clusters:
+                if _jaccard(toks, cl[0][1]) >= 0.5:
+                    cl.append((r, toks))
+                    break
+            else:
+                clusters.append([(r, toks)])
+        if len(clusters) < 2:
+            continue                                       # one value (however phrased) -> no conflict
+        win = max(clusters, key=lambda cl: (len({r["seq"] for r, _ in cl}),
+                                            max(r["seq"] for r, _ in cl)))
+        for cl in clusters:
+            if cl is not win:
+                for r, _ in cl:
+                    r["_superseded"] = True
+                    n += 1
     return n
 
 
@@ -384,6 +427,10 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
     max_retries = _cap("max_retries", max_rounds)
     max_calls = _cap("max_llm_calls", 0)
     verify_conc = max(1, _cap("verify_concurrency", 1))    # adjudicate N findings concurrently (1=serial)
+    # early-exit (AGENTIC_EARLY_EXIT=1): the entity ids the question asks about (e.g. V1..Vn); once
+    # every one has a VERIFIED finding, remaining tasks are skipped. Empty set = feature off.
+    early_ids = (set(re.findall(r"\b[A-Z]{1,4}[0-9]{1,4}\b", question))
+                 if _cap("early_exit", 0) == 1 else set())
 
     # warm the heavy extractor so the workers only read cached results
     api.retrieve("ghidra_disasm", [oid])
@@ -482,6 +529,14 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
             print(f"  ✗ {task['id']} CAN'T-BE-SOLVED — {assess['reason'][:64]}")
             TR.note("TASK_END", {"id": task["id"], "status": "unsolvable", "reason": assess["reason"]})
 
+        if early_ids and task["status"] == "done":
+            have = {_entity_subj(r["finding"].get("claim", ""))
+                    for r in records if r["verdict"]["consensus"] == "AGREE"}
+            if early_ids <= have:
+                print(f"── EARLY-EXIT: verified findings cover all {len(early_ids)} question ids ──")
+                TR.note("EARLY_EXIT", {"ids": sorted(early_ids)})
+                break
+
         new = _revise_plan(planner, question, plan, task, len(plan), max_tasks - len(plan))
         if new:
             plan.extend(new)
@@ -527,8 +582,8 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
 
     _sup = _supersede(records)
     if _sup:
-        print(f"  + supersession: dropped {_sup} stale verified finding(s) "
-              f"(later task wins on the same entity)")
+        print(f"  + supersession: dropped {_sup} conflicting verified finding(s) "
+              f"(consensus wins on the same entity; recency breaks ties)")
     verified = [r["finding"] for r in records
                 if r["verdict"]["consensus"] == "AGREE" and not r.get("_superseded")]
 

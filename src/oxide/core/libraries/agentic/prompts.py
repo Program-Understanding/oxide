@@ -198,7 +198,9 @@ already-assessed answers and OUTRANK the raw findings: state them as established
 swap, or override any value in them from the findings (the findings are fragmentary and may contradict
 each other — re-deriving risks scrambling an answer the assessment already settled). Use the findings
 only to (a) cite evidence for a conclusion and (b) fill in entities the conclusions don't cover. When a
-conclusion and a finding disagree, the conclusion wins; if two conclusions disagree, the later task wins.
+conclusion and a finding disagree, the conclusion wins; if two conclusions disagree, prefer the one
+corroborated by MORE verified findings (count the findings asserting the same value); only when
+corroboration is equal prefer the later task.
 
 RECOVERED-VALUE GUARD. A concrete recovered value that ANSWERS the question — a password,
 key, serial, or flag — may be placed in ESTABLISHED only if it is backed by a complete,
@@ -387,7 +389,8 @@ def synth_user(question: str, verified: list, suspected: list = None,
         # scrambling an answer the per-task assessment already got right).
         body = "\n".join(f"- {tid}: {res}" for tid, res in task_results)
         head = ("AUTHORITATIVE TASK CONCLUSIONS (preserve these — do NOT re-derive or override "
-                f"them from the raw findings; later tasks supersede earlier ones on conflict):\n{body}\n\n")
+                "them from the raw findings; on conflict prefer the conclusion corroborated by more "
+                f"verified findings, then the later task):\n{body}\n\n")
     user = (head + f"QUESTION:\n{question}\n\nVERIFIED FINDINGS (confirmed — eligible for ESTABLISHED):\n"
             + json.dumps(verified, indent=2)[:12000])
     if suspected:
