@@ -147,6 +147,36 @@ def _dispatch_task(cfg, oid: str, question: str, task: dict, prior: str, max_ite
 
 
 # ----------------------------------------------------------------------------- verification
+# A verifier DISAGREE justified ONLY by absence ("returned no slot / no such variable / doesn't
+# exist / empty result / not found") is not a positive contradiction — the verifier's own rule is
+# "absence of evidence is NOT contradiction -> INCONCLUSIVE". Models violate it, and a false absence
+# DISAGREE drags a CORRECT finding to undefined. Downgrade such verdicts to INCONCLUSIVE so they
+# can't refute; keep DISAGREE only when it offers a CONCRETE alternative value. Generic (any entity).
+_ABSENCE_RE = re.compile(
+    r"\bno\b.{0,24}\b(slot|stack\s*var\w*|variable|value|entry|access\w*|reference|call|register|"
+    r"such|match|result|offset)\b|does\s*n[o']?t\s+exist|not\s+exist|doesn.?t\s+exist|"
+    r"empty\s+result|returned\s+no\b|there\s+is\s+no\b|not\s+found|no\s+entry|"
+    r"nothing\s+(was\s+)?(found|returned)", re.I)
+
+
+def _absence_only_disagree(reason: str, corrected: str) -> bool:
+    """True if a DISAGREE is justified purely by absence (couldn't find it), with no concrete
+    alternative value in corrected_claim."""
+    if not _ABSENCE_RE.search(reason or ""):
+        return False
+    cc = (corrected or "").strip()
+    return not cc or len(cc) < 8 or bool(_ABSENCE_RE.search(cc))
+
+
+def _guard_absence(verdict: dict) -> dict:
+    """Downgrade an absence-only DISAGREE to INCONCLUSIVE in place; returns the verdict."""
+    if verdict.get("consensus") == "DISAGREE" and \
+            _absence_only_disagree(verdict.get("reason", ""), verdict.get("corrected_claim", "")):
+        verdict["consensus"] = "INCONCLUSIVE"
+        verdict["reason"] = "[absence-only refutation downgraded] " + str(verdict.get("reason", ""))
+    return verdict
+
+
 def _adjudicate(verifier, call_tool, finding: dict, log) -> dict:
     """Deterministic fast-paths first (V1/V3/V4), then the tool-using LLM verifier."""
     grounded, ev = G.deterministic_grounding(call_tool, finding)
@@ -176,8 +206,8 @@ def _adjudicate(verifier, call_tool, finding: dict, log) -> dict:
         consensus = str(d.get("consensus", "")).upper()
     if consensus not in ("AGREE", "DISAGREE", "INCONCLUSIVE"):
         consensus = "INCONCLUSIVE"
-    return {"consensus": consensus, "reason": str(d.get("reason", ""))[:300],
-            "corrected_claim": d.get("corrected_claim", "")}
+    return _guard_absence({"consensus": consensus, "reason": str(d.get("reason", ""))[:300],
+                           "corrected_claim": d.get("corrected_claim", "")})
 
 
 def _adjudicate_batch(verifier, call_tool, findings: List[dict], log) -> List[tuple]:
@@ -226,8 +256,8 @@ def _adjudicate_batch(verifier, call_tool, findings: List[dict], log) -> List[tu
             cons = str(v.get("consensus", "")).upper()
             if cons not in ("AGREE", "DISAGREE", "INCONCLUSIVE"):
                 cons = "INCONCLUSIVE"             # missing/unparsed verdict -> abstain (never overrides)
-            verdicts[idx] = {"consensus": cons, "reason": str(v.get("reason", ""))[:300],
-                             "corrected_claim": v.get("corrected_claim", "")}
+            verdicts[idx] = _guard_absence({"consensus": cons, "reason": str(v.get("reason", ""))[:300],
+                                             "corrected_claim": v.get("corrected_claim", "")})
     return list(zip(findings, verdicts))
 
 
