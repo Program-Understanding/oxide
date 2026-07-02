@@ -40,6 +40,12 @@ RULES (a claim breaking any of these is invalid):
   magic value), get its ADDRESS (`search_bytes` / `strings`) then `references_to(addr)` to find the
   exact instruction(s) and function that USE it — then decompile that function. `xrefs_to` finds
   callers of a FUNCTION; `references_to` finds code that references an ADDRESS/string. Use the right one.
+- VARIABLE / PARAMETER by storage location: when the sub-question targets a specific variable or
+  parameter given by its STORAGE LOCATION (a register or a stack offset), first resolve it to the
+  decompiler's identifier — a parameter in a register maps via the calling convention for `info`'s
+  architecture; a stack slot via `stack_var` / `value_usage` — then read its ACTUAL uses
+  (dereferences, indexing, arithmetic, and which callees receive it in which argument position) to
+  answer. Cite the storage location so the identity is unambiguous.
 - Locate functions via `list_functions`/`xrefs_to`/`references_to`; never guess addresses.
 - BE EFFICIENT — limited tool-call budget. PLAN your calls; never call the same tool with the same
   arguments twice (identical repeats are blocked and wasted). Once a tool answers, move on, try
