@@ -194,7 +194,9 @@ Make each task sharp and self-contained."""
 SYNTH_SYS = """You are the orchestrator writing the final answer. You are given the user's
 question and the list of VERIFIED (AGREE) findings with their evidence. Write a concise
 answer in three tiers:
-ESTABLISHED — only verified findings, each citing its concrete evidence (tool + detail).
+ESTABLISHED — only verified findings. For each, reference WHICH verified finding supports it — you
+have NO tools of your own, so cite the FINDING, never a tool; NEVER write "verified by <tool>",
+"confirmed by disassemble/stack_var/...", or any tool citation (you did not call it — that is fabrication).
 SUSPECTED — anything weaker, clearly labeled.
 COULDN'T DETERMINE — what remains unknown and why.
 Never present a suspected lead as established.
@@ -203,7 +205,8 @@ TASK-CONCLUSION PRECEDENCE. If AUTHORITATIVE TASK CONCLUSIONS are provided, they
 already-assessed answers and OUTRANK the raw findings: state them as established and do NOT re-derive,
 swap, or override any value in them from the findings (the findings are fragmentary and may contradict
 each other — re-deriving risks scrambling an answer the assessment already settled). Use the findings
-only to (a) cite evidence for a conclusion and (b) fill in entities the conclusions don't cover. When a
+only to (a) reference the supporting finding for a conclusion and (b) fill in entities the conclusions
+don't cover. When a
 conclusion and a finding disagree, the conclusion wins; if two conclusions disagree, prefer the one
 corroborated by MORE verified findings (count the findings asserting the same value); only when
 corroboration is equal prefer the later task.
@@ -225,8 +228,8 @@ PROVENANCE / NO FABRICATION (critical). You have NO tools — you only have the 
 findings text. Every concrete value you state (command/function name, decoded string, key,
 password, serial, address, constant) MUST appear VERBATIM in a verified finding. NEVER
 introduce a value that is not in the findings, never "improve" or guess a more plausible-
-sounding name, and NEVER write "as confirmed by the X tool (args ...)" — you did not call any
-tool, so do not invent tool citations. If two findings give different values for the same
+sounding name, and NEVER write "as confirmed by the X tool (args ...)" or "Verified by <tool>" —
+you did not call any tool, so do not invent tool citations. If two findings give different values for the same
 thing, report the discrepancy rather than picking one. If a recovered value carries an obvious
 artifact introduced by the decode itself (terminator bytes, padding, or encoding markers),
 report the clean value AND note the artifact — do not substitute a different value. If no
@@ -340,8 +343,10 @@ def worker_user(subtask: dict) -> str:
     head = f"OVERALL GOAL (answer THIS): {goal}\n\n" if goal else ""
     prior = (subtask.get("prior") or "").strip()
     if prior:
-        head += ("PRIOR ESTABLISHED RESULTS (from earlier tasks — build on these, do not "
-                 f"re-derive):\n{prior}\n\n")
+        head += ("PRIOR RESULTS from earlier tasks — treat as CONTEXT and LEADS, NOT ground truth. "
+                 "They come from other LLM steps and may be incomplete or wrong. Use them to orient, "
+                 "but before you rely on any specific value, address, register, or type from them, "
+                 f"RE-CONFIRM it with a tool call — do not copy a claim forward unchecked:\n{prior}\n\n")
     return (head + f"Sub-question ({subtask.get('id', 'S1')}): {subtask['question']}\n\n"
             "Investigate with the tools, then output your findings. Cover EVERY variable — both the "
             "PARAMETERS (the incoming arguments: param_1, param_2, ...) AND the locals; keep copies of "
@@ -351,7 +356,8 @@ def worker_user(subtask: dict) -> str:
 
 
 def decompose_user(question: str, task: str, prior: str = "") -> str:
-    head = f"PRIOR RESULTS (already established):\n{prior}\n\n" if prior else ""
+    head = (f"PRIOR RESULTS from earlier steps (context — may be incomplete or wrong; verify before "
+            f"relying on a specific value):\n{prior}\n\n") if prior else ""
     return head + f"OVERALL QUESTION:\n{question}\n\nTASK TO TRIAGE:\n{task}"
 
 

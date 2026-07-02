@@ -206,8 +206,16 @@ def _adjudicate(verifier, call_tool, finding: dict, log) -> dict:
         consensus = str(d.get("consensus", "")).upper()
     if consensus not in ("AGREE", "DISAGREE", "INCONCLUSIVE"):
         consensus = "INCONCLUSIVE"
-    return _guard_absence({"consensus": consensus, "reason": str(d.get("reason", ""))[:300],
-                           "corrected_claim": d.get("corrected_claim", "")})
+    verdict = _guard_absence({"consensus": consensus, "reason": str(d.get("reason", ""))[:300],
+                              "corrected_claim": d.get("corrected_claim", "")})
+    # register-source guard (V5): a DISAGREE whose corrected_claim asserts a register source the tool
+    # CONTRADICTS is a hallucination — downgrade to INCONCLUSIVE so it can't refute the real finding.
+    if verdict["consensus"] == "DISAGREE" and str(verdict.get("corrected_claim", "")).strip():
+        if G.false_register_source(call_tool, {"claim": verdict["corrected_claim"],
+                                               "evidence_refs": finding.get("evidence_refs", [])}):
+            verdict["consensus"] = "INCONCLUSIVE"
+            verdict["reason"] = "[false register-source refutation downgraded] " + verdict["reason"]
+    return verdict
 
 
 def _adjudicate_batch(verifier, call_tool, findings: List[dict], log) -> List[tuple]:
@@ -363,8 +371,11 @@ def _apply_verifier_correction(records: List[dict], f: dict, v: dict, main_ct, s
                        r"usage|such)|unused|likely not", cc, re.I)
     if v.get("consensus") == "DISAGREE" and len(cc) > 10 and not _vague \
             and cc.lower() != str(f.get("claim", "")).strip().lower():
-        if G.false_absence(main_ct, {"claim": cc, "evidence_refs": f.get("evidence_refs", [])}):
+        _cc_finding = {"claim": cc, "evidence_refs": f.get("evidence_refs", [])}
+        if G.false_absence(main_ct, _cc_finding):
             print(f"    ⊘ dropped false-absence correction: {cc[:70]}")
+        elif G.false_register_source(main_ct, _cc_finding):     # V5: reject hallucinated reg source
+            print(f"    ⊘ dropped false register-source correction: {cc[:70]}")
         else:
             records.append({"finding": {"claim": cc, "confidence": 1.0,
                             "source": "verifier_correction",
@@ -585,7 +596,8 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
                 TR.note("EARLY_EXIT", {"ids": sorted(early_ids)})
                 break
 
-        if not fixed_plan:                 # fixed plans never grow: structure stays deterministic
+        # REVISE (planner appends new tasks). Off when fixed_plan, or via AGENTIC_REVISE=0.
+        if not fixed_plan and _cap("revise", 1) == 1:
             new = _revise_plan(planner, question, plan, task, len(plan), max_tasks - len(plan))
             if new:
                 plan.extend(new)

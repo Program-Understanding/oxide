@@ -160,6 +160,60 @@ def false_absence(call_tool, finding):
     return ""
 
 
+# --------------------------------------------------- V5: false register-source (anti-hallucination)
+_REG = r"(?:r[abcd]x|r[sd]i|r[bs]p|r(?:8|9|1[0-5])|e[abcd]x|e[sd]i|[abcd][lx])"
+_REG_SRC_RE = re.compile(r"\b(?:stored|saved|copied|moved|loaded|comes?|from|holds?|is|=)\b[^.;\n]{0,28}?\b(" + _REG + r")\b", re.I)
+_STORE_RE = re.compile(r"mov\s+(?:[a-z]+\s+ptr\s+)?\[[^\]]+\]\s*,\s*(" + _REG + r")\b", re.I)
+
+
+def _reg_family(r: str) -> str:
+    """Normalize a register to its family so rax/eax/ax/al compare equal."""
+    r = r.lower()
+    fam = {"rax": "a", "eax": "a", "ax": "a", "al": "a", "rbx": "b", "ebx": "b", "bx": "b", "bl": "b",
+           "rcx": "c", "ecx": "c", "cx": "c", "cl": "c", "rdx": "d", "edx": "d", "dx": "d", "dl": "d",
+           "rsi": "si", "esi": "si", "si": "si", "rdi": "di", "edi": "di", "di": "di",
+           "rbp": "bp", "ebp": "bp", "rsp": "sp", "esp": "sp"}
+    return fam.get(r, r)
+
+
+def false_register_source(call_tool, finding):
+    """Refute a false REGISTER-SOURCE claim. If a claim says a stack slot 'is stored from <REG>' but
+    re-running stack_var shows the slot is written from a DIFFERENT register, the claim is false.
+    Deterministic — catches verifier/worker hallucinations like 'V9 stored from RAX' when the code
+    actually does `mov [rbp-0xf0],rcx`. Returns an evidence string (naming the real register) or ''."""
+    claim = str(finding.get("claim", ""))
+    m = _REG_SRC_RE.search(claim)
+    if not m:
+        return ""
+    claimed = m.group(1)
+    off = addr = None
+    for ref in finding.get("evidence_refs", []) or []:
+        a = ref.get("args") or {}
+        if a.get("offset") and off is None:
+            off = a["offset"]
+        if a.get("addr") and addr is None:
+            addr = a["addr"]
+    if off is None:
+        mo = re.search(r"(?:stack|rbp)\s*\+?\s*(-?0x[0-9a-fA-F]+)", claim)
+        off = mo.group(1) if mo else None
+    if not off or not addr:
+        return ""
+    try:
+        fresh = call_tool("stack_var", {"addr": addr, "offset": off})
+    except Exception:  # noqa: BLE001
+        return ""
+    if not fresh or "error" in str(fresh)[:40].lower():
+        return ""
+    stores = _STORE_RE.findall(str(fresh))
+    if not stores:
+        return ""
+    actual = stores[0]                       # first store = the initial spill into the slot
+    if _reg_family(actual) != _reg_family(claimed):
+        return (f"stack_var({off}) shows the slot is written from {actual.upper()}, "
+                f"not {claimed.upper()} — the claimed register source is false")
+    return ""
+
+
 # --------------------------------------------------------------- R4: coordinate recall
 _ADDR_TOK = re.compile(r"0x[0-9a-fA-F]{3,}")
 
