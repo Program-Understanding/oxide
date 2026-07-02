@@ -21,7 +21,13 @@ try:
 except Exception:  # noqa: BLE001
     litellm = None
 
-_SEED = 1234
+def _seed() -> int:
+    """Sampling seed sent to the server (greedy+seed => deterministic replays). Override with
+    AGENTIC_SEED to draw independent trajectories for variance measurement; default 1234."""
+    try:
+        return int(os.environ.get("AGENTIC_SEED", "1234"))
+    except (ValueError, TypeError):
+        return 1234
 
 USAGE = {"prompt": 0, "completion": 0, "calls": 0}
 
@@ -119,7 +125,7 @@ class LLM:
 
     def _kwargs(self) -> dict:
         kw = {"model": self.litellm_model, "temperature": self.temperature,
-              "max_tokens": max_tokens(), "seed": _SEED, "timeout": req_timeout(),
+              "max_tokens": max_tokens(), "seed": _seed(), "timeout": req_timeout(),
               "api_base": self.endpoint,                                  # required (resolve_config)
               "api_key": os.environ.get("OPENAI_API_KEY") or "EMPTY"}     # local servers ignore the key
         if not self.think:

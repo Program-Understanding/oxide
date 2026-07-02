@@ -77,7 +77,8 @@ def agentic_re(args: List[str], opts: Dict[str, Any]):
             print(f"[agentic_re] oid={oid[:12]}  endpoint={cfg['endpoint']}  "
                   f"worker={cfg['worker_model']}  verifier={cfg['verifier_model']}")
             print(f"question={question}\n" + "=" * 60)
-            answer = pipeline.run(oid, question, cfg, max_rounds, max_subtasks, max_iter)
+            answer = pipeline.run(oid, question, cfg, max_rounds, max_subtasks, max_iter,
+                                  fixed_plan=opts.get("plan"))
             api.local_store(NAME, key, answer)
         print("\n" + "=" * 60 + "\nFINAL ANSWER\n" + "=" * 60 + "\n" + str(answer) + "\n")
         out[oid] = answer

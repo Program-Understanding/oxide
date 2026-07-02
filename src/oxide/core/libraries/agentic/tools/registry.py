@@ -119,8 +119,11 @@ def build_tools(api, oid: str, groups=None):
 
     def call_tool(name, args=None):
         k = _key(name, args)
-        if k in _cache:                       # identical earlier call -> reuse, tell the model to stop
-            return _REPEAT + _cache[k]
+        if k in _cache:                       # identical earlier call -> short stub, tell the model to
+            # stop. Do NOT re-inject the full output: it is already in the model's context from the
+            # first call, and repeating it (measured: ~2/3 of tool calls are repeats) bloats prefill.
+            return _REPEAT + _cache[k][:400] + ("\n…[truncated — full output is in your context above]"
+                                                if len(_cache[k]) > 400 else "")
         if _traced():
             with _trace.tool_span(name, dict(args or {})) as out:
                 res = _invoke(name, args)

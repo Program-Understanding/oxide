@@ -406,21 +406,24 @@ def _synthesize(planner, question, verified, suspected, task_results=None) -> st
 
 # ----------------------------------------------------------------------------- public entry
 def run(oid: str, question: str, cfg: dict, max_rounds: int, max_subtasks: int,
-        max_iter: int) -> str:
+        max_iter: int, fixed_plan: list | None = None) -> str:
     """Run the sequential planner-driven analysis on ONE oid; returns the tiered answer.
-    Called by the plugin (plugins/agentic_re.py). Caps are env-overridable (see _analyze_oid_impl)."""
+    Called by the plugin (plugins/agentic_re.py). Caps are env-overridable (see _analyze_oid_impl).
+    fixed_plan: optional caller-supplied task list ([{id, description, specialists}, ...]) — skips
+    the planner's plan call AND plan revision, so the task structure is deterministic; the planner
+    still assesses/replans individual tasks and synthesizes."""
     # Reset the per-run LLM-usage counter so the max_llm_calls budget is PER-FUNCTION. L.USAGE is a
     # module-level accumulator; without this, a process that analyzes many functions (run_trex.py
     # --all) would carry the count across functions and starve every function after the budget is hit.
     L.USAGE["prompt"] = L.USAGE["completion"] = L.USAGE["calls"] = 0
     with TR.span(f"binre.run: {question[:60]}", "AGENT", f"{oid}\n{question}") as _root_out:
-        ans = _analyze_oid_impl(oid, question, cfg, max_rounds, max_subtasks, max_iter)
+        ans = _analyze_oid_impl(oid, question, cfg, max_rounds, max_subtasks, max_iter, fixed_plan)
         _root_out(ans)
         return ans
 
 
 def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_subtasks: int,
-                      max_iter: int) -> str:
+                      max_iter: int, fixed_plan: list | None = None) -> str:
     log = lambda m: print(m)
     # caps (env / [agentic] config overridable); the legacy opts supply the defaults.
     max_tasks = _cap("max_tasks", max_subtasks)
@@ -440,9 +443,14 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
     verifier = L.make_llm("verifier", cfg)
     _schemas, main_ct = T.build_tools(api, oid)   # full-tool dispatcher for verify/grounding/recall
 
-    with TR.span("planner: make ordered plan", "CHAIN", question) as _p_out:
-        plan = _make_plan(planner, question, oid, max_tasks)
-        _p_out(json.dumps([t["description"] for t in plan]))
+    if fixed_plan:
+        # Caller-supplied deterministic plan: no planner call, and no revision below — the task
+        # STRUCTURE is fixed; only task content (worker findings, assess results) is model-driven.
+        plan = _coerce_tasks(fixed_plan, 0, "fixed")[:max_tasks]
+    else:
+        with TR.span("planner: make ordered plan", "CHAIN", question) as _p_out:
+            plan = _make_plan(planner, question, oid, max_tasks)
+            _p_out(json.dumps([t["description"] for t in plan]))
     _print_plan(plan)
     TR.note("PLAN", [{"id": t["id"], "description": t["description"],
                       "specialists": t["specialists"]} for t in plan])
@@ -501,8 +509,18 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
             tverified = [r["finding"] for r in task_records if r["verdict"]["consensus"] == "AGREE"]
             tsuspected = [r["finding"] for r in task_records if r["verdict"]["consensus"] != "AGREE"]
 
-            # ASSESS: planner synthesizes the task result + marks solved/unsolved.
-            assess = _assess_task(planner, question, task, tverified, tsuspected, prior)
+            # ASSESS: with a FIXED plan, assess DETERMINISTICALLY — the task's result IS its verified
+            # findings (solved iff it verified anything). This skips the assess LLM call, removes the
+            # replan/dropped-findings failure (a group with 1-2 uncovered vars was marked "unsolvable",
+            # which both wasted retries AND excluded its verified findings from synthesis), and keeps
+            # the task result authoritative. Otherwise the planner assesses (LLM).
+            if fixed_plan:
+                claims = "; ".join(str(f.get("claim", "")) for f in tverified)
+                assess = {"solved": bool(tverified), "result": claims,
+                          "reason": f"fixed-plan: {len(tverified)} verified finding(s) recorded",
+                          "retry_task": ""}
+            else:
+                assess = _assess_task(planner, question, task, tverified, tsuspected, prior)
             _t_out(json.dumps(assess))
         TR.note("ASSESS", {"id": task["id"], "solved": assess["solved"],
                            "result": assess["result"], "reason": assess["reason"],
@@ -537,10 +555,11 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
                 TR.note("EARLY_EXIT", {"ids": sorted(early_ids)})
                 break
 
-        new = _revise_plan(planner, question, plan, task, len(plan), max_tasks - len(plan))
-        if new:
-            plan.extend(new)
-            _print_plan(plan)
+        if not fixed_plan:                 # fixed plans never grow: structure stays deterministic
+            new = _revise_plan(planner, question, plan, task, len(plan), max_tasks - len(plan))
+            if new:
+                plan.extend(new)
+                _print_plan(plan)
         i += 1
 
     # DETERMINISTIC capability recall (R1)
