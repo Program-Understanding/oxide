@@ -144,13 +144,15 @@ class LLM:
         _trace_llm(f"complete[{self.model}]", msgs, content, _t0)
         return content
 
-    def chat(self, messages: list, tools: list | None = None):
+    def chat(self, messages: list, tools: list | None = None, response_format=None):
         if litellm is None:
             raise RuntimeError("litellm is not installed (add it to oxide deps)")
         kw = self._kwargs()
         if tools:
             kw["tools"] = tools
             kw["tool_choice"] = "auto"
+        if response_format is not None:      # structured output (JSON schema) — coerce the reply's
+            kw["response_format"] = response_format   # shape; used for the final findings turn
         _t0 = time.time()
         resp = litellm.completion(messages=messages, **kw)
         _track(resp)
@@ -272,11 +274,19 @@ def _fit(messages: list, budget: int) -> None:
 
 
 def run_react(llm: LLM, system: str, user: str, tools_schema: list, call_tool, max_steps: int,
-              label: str = "agent", logfn=None, require_grounding: bool = True) -> str:
+              label: str = "agent", logfn=None, require_grounding: bool = True,
+              output_schema=None, evidence_sink=None) -> str:
     """Tool-calling loop: the model calls tools until it stops, then returns final content.
 
     tools_schema : OpenAI function-tool schemas (from tools.tool_schemas()).
     call_tool    : a callable(name, args_dict) -> str result (the Oxide-backed dispatcher).
+    output_schema: optional JSON-schema response_format applied ONLY to the final tool-free answer
+      turn (never during tool-calling) — forces models that emit prose instead of the required JSON
+      (e.g. Gemma) to return the structured shape. None = plain text (the default, model-agnostic).
+    evidence_sink: optional list; if given, each executed tool call is appended as
+      {"tool","args","result"} — the ACTUAL (tool, args, output) trail this agent saw. Lets a caller
+      hand a worker's real tool evidence to the verifier so it can confirm against what the worker
+      saw instead of blindly re-deriving from scratch (which a light step-cap can't reproduce).
     Mirrors run_orchestrator.react_loop, but synchronous and litellm-routed.
     """
     log = logfn or (lambda m: None)
@@ -316,6 +326,15 @@ def run_react(llm: LLM, system: str, user: str, tools_schema: list, call_tool, m
                                      "evidence. Call the relevant tool(s) now, then base your findings ONLY on "
                                      "what they return."})
                     continue
+                if output_schema is not None:                 # coerce prose -> required JSON shape
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content":
+                                     "Now output ONLY that as the required JSON and nothing else."})
+                    try:
+                        r2 = llm.chat(messages, tools=None, response_format=output_schema)
+                        return r2.choices[0].message.content or content
+                    except Exception:  # noqa: BLE001
+                        return content
                 return content
             log(f"    [{label}] empty completion — nudging for the answer")
             messages.append({"role": "assistant", "content": ""})
@@ -345,13 +364,15 @@ def run_react(llm: LLM, system: str, user: str, tools_schema: list, call_tool, m
             log(f"    [{label}] -> {tc.function.name}({json.dumps(args)[:80]})")
             out = call_tool(tc.function.name, args)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": _cap(str(out))})
+            if evidence_sink is not None:            # capture the REAL (tool, args, result) for the verifier
+                evidence_sink.append({"tool": tc.function.name, "args": args, "result": str(out)[:1200]})
         grounded = True              # at least one tool actually ran -> findings can be evidence-backed
     # ran out of steps -> force a tool-free turn that emits the required output
     messages.append({"role": "user", "content":
                      "Stop calling tools. Based ONLY on the tool outputs above, output your "
                      "final answer / required JSON now."})
     try:
-        resp = llm.chat(messages, tools=None)
+        resp = llm.chat(messages, tools=None, response_format=output_schema)
         return resp.choices[0].message.content or ""
     except Exception:  # noqa: BLE001
         return "(max steps reached)"

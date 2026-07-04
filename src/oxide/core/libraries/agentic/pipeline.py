@@ -72,14 +72,20 @@ def _make_plan(planner, question: str, label: str, cap: int) -> List[dict]:
 def _worker_pass(spec, schemas, ct, worker, subtask, max_iter, log) -> List[dict]:
     """ONE ReAct pass of a specialist on a (sub)task; returns its parsed findings."""
     with TR.span(f"worker {subtask['id']} [{spec}]", "CHAIN", subtask["question"]) as _w_out:
+        evidence: List[dict] = []                    # the worker's REAL (tool, args, result) trail
         out = L.run_react(worker, S.backstory(spec), P.worker_user(subtask), schemas, ct,
-                          max_iter, f"worker {subtask['id']}/{spec}", log)
+                          max_iter, f"worker {subtask['id']}/{spec}", log,
+                          output_schema=P.WORKER_FINDINGS_SCHEMA, evidence_sink=evidence)
         d = P.extract_json(out) or {}
         findings = []
         for f in (d.get("findings") or []):
             if not f.get("claim"):
                 continue
             f.setdefault("evidence_refs", [])
+            # Attach the worker's ACTUAL tool output so the verifier can confirm the claim against what
+            # the worker saw, rather than re-deriving from scratch (a light step-cap can't reproduce a
+            # multi-tool investigation, so correct findings were dying as INCONCLUSIVE -> undefined).
+            f["worker_evidence"] = evidence
             f["subtask_id"] = subtask["id"]
             findings.append(f)
         _w_out(json.dumps([f.get("claim") for f in findings]))
@@ -194,8 +200,10 @@ def _adjudicate(verifier, call_tool, finding: dict, log) -> dict:
     refs = json.dumps(finding.get("evidence_refs", []))[:1500]
     # require_grounding=False: the verifier already has its own grounding discipline; forcing it would
     # turn every quick verdict into a full 8-step investigation (the grounding guard is for WORKERS).
-    raw = L.run_react(verifier, P.VERIFIER_BACKSTORY, P.verifier_user(finding.get("claim"), refs),
-                      T.TOOL_SCHEMAS, call_tool, 8, "verifier", log, require_grounding=False)
+    raw = L.run_react(verifier, P.VERIFIER_BACKSTORY,
+                      P.verifier_user(finding.get("claim"), refs, finding.get("worker_evidence")),
+                      T.TOOL_SCHEMAS, call_tool, _cap("verify_max_iter", 8), "verifier", log,
+                      require_grounding=False)
     d = P.extract_json(raw) or {}
     consensus = str(d.get("consensus", "")).upper()
     # INCONCLUSIVE is now a first-class verdict the verifier may emit (uncertain != refuted), so only
@@ -249,7 +257,7 @@ def _adjudicate_batch(verifier, call_tool, findings: List[dict], log) -> List[tu
         with TR.span(f"adjudicate-batch: {len(pending)} findings", "CHAIN",
                      json.dumps([it["claim"] for it in items])[:200]) as _b_out:
             raw = L.run_react(verifier, P.VERIFIER_BATCH_SYS, P.verifier_batch_user(items),
-                              T.TOOL_SCHEMAS, call_tool, 8, "verifier-batch", log,
+                              T.TOOL_SCHEMAS, call_tool, _cap("verify_max_iter", 8), "verifier-batch", log,
                               require_grounding=False)
             d = P.extract_json(raw) or {}
             by_id = {}
@@ -641,6 +649,27 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
     except Exception as e:  # noqa: BLE001
         print(f"  (coordinate recall skipped: {str(e)[:80]})")
 
+    # DOMAIN ORACLES (Ω) — task-specific deterministic certifiers, dispatched by the task's DECLARED
+    # set only (AGENTIC_DOMAIN_ORACLES: names, or "auto" to select from the query shape). A generic
+    # (non-type) task registers none, so the pipeline stays task-agnostic (G3). Oracles are tried in
+    # declared order; the first to pin an entity wins, so list stronger certifiers first (ABI before
+    # decompiler inference). For type recovery the harness registers "callee_signature,decompiler_pointer".
+    oracle_facts: dict = {}                       # entity -> deterministically-certified value
+    for _oname, _ofn in G.resolve_domain_oracles(L.cfg_get("domain_oracles", ""), question):
+        try:
+            for f in _ofn(main_ct, question):
+                vid = f["vid"]
+                if vid in oracle_facts:           # an earlier (stronger) oracle already pinned it
+                    continue
+                oracle_facts[vid] = (f["ctype"], _oname, 0)
+                records.append({"finding": {
+                    "claim": f["claim"], "confidence": 1.0, "source": f["source"],
+                    "evidence_refs": [{"tool": "decompile", "args": {}}]},
+                    "verdict": {"consensus": "AGREE", "reason": f["reason"]}})
+                print(f"  + {_oname}: {vid} = {f['ctype']}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  ({_oname} oracle skipped: {str(e)[:80]})")
+
     _sup = _supersede(records)
     if _sup:
         print(f"  + supersession: dropped {_sup} conflicting verified finding(s) "
@@ -665,6 +694,16 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
     with TR.span("synthesize: tiered answer", "CHAIN", f"{len(verified)} verified findings") as _s_out:
         answer = _synthesize(planner, question, verified, suspected, task_results)
         _s_out(answer)
+    # A deterministic oracle is ABI-certain, so it is AUTHORITATIVE over the synthesis model's own
+    # value for that entity (which can fork under decoding noise, or be dropped by an over-cautious
+    # task assessment). Append a machine-readable, oracle-certified trailer that a consumer treats as
+    # the top-priority answer for those entities. Task-agnostic: (entity, value) pairs only.
+    if oracle_facts:
+        lines = "\n".join(f"- {vid}: {ctype}" for vid, (ctype, _c, _a) in sorted(
+            oracle_facts.items(), key=lambda kv: kv[0]))
+        answer = (answer.rstrip()
+                  + "\n\nORACLE-CERTIFIED (deterministic, authoritative — overrides the above):\n"
+                  + lines + "\n")
     TR.note("ANSWER", answer)
     print(f"── TOKENS: {L.USAGE['completion']:,} out / {L.USAGE['prompt']:,} in across "
           f"{L.USAGE['calls']} model calls ──")

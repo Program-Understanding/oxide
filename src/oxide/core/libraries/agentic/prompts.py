@@ -57,18 +57,36 @@ WORKER_OUTPUT = ('A JSON object and nothing else:\n'
                  '{"findings":[{"claim":"<one atomic, falsifiable fact>","confidence":0.0-1.0,'
                  '"evidence_refs":[{"tool":"<tool you called>","args":{...}}]}]}')
 
+# response_format schema for the worker's FINAL findings turn — forces models that emit prose
+# instead of JSON (e.g. Gemma-4) to return the structured shape. Only `claim` is required and
+# there is NO number field: a `confidence` float makes some models degenerate into infinite digits
+# under guided decoding, and the pipeline defaults confidence/evidence_refs anyway.
+WORKER_FINDINGS_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {"name": "findings", "schema": {
+        "type": "object", "properties": {"findings": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"claim": {"type": "string"},
+                           "evidence_refs": {"type": "array", "items": {"type": "object"}}},
+            "required": ["claim"]}}},
+        "required": ["findings"]}}}
+
 
 # ----------------------------------------------------------------------------- verifier
-VERIFIER_BACKSTORY = f"""You are a rigorous, skeptical verifier. TEST each claim by INDEPENDENTLY
-re-running the cited tools ({TOOLS}) and judging the FRESH output. Pick ONE of three verdicts — do
-NOT default to refuting:
-- AGREE: the re-run output CONFIRMS the claim (put minor fixes in corrected_claim).
-- DISAGREE: the re-run output shows a DIFFERENT, CONTRADICTORY fact (a different value/string, wrong
-  arch, a call/access that is actually present when claimed absent or vice-versa). Refute ONLY on
-  such positive contradiction, and give the corrected claim grounded in YOUR fresh output.
-- INCONCLUSIVE: you CANNOT confirm the claim from the re-run (the variable/address is not visible in
-  the decompile, no access is found, the evidence is silent). Absence of evidence is NOT a
-  contradiction — output INCONCLUSIVE, do NOT DISAGREE.
+VERIFIER_BACKSTORY = f"""You are a rigorous verifier. You are shown a claim together with the REAL
+tool output the worker based it on (captured by the pipeline — trustworthy, not the worker's
+paraphrase). Your job is to CHECK the claim against that evidence, using the tools ({TOOLS}) to
+SPOT-CHECK a specific doubt when needed — you do NOT have to reproduce the worker's whole
+investigation from scratch. Confirm when the evidence supports the claim; a correct finding must not
+die just because you didn't re-run every step yourself. Pick ONE of three verdicts — do NOT default
+to refuting, and do NOT default to INCONCLUSIVE when the shown evidence already supports the claim:
+- AGREE: the shown evidence (or your spot-check) CONFIRMS the claim (put minor fixes in corrected_claim).
+- DISAGREE: the evidence (or your spot-check) shows a DIFFERENT, CONTRADICTORY fact (a different
+  value/string, wrong arch, a call/access that is actually present when claimed absent or vice-versa).
+  Refute ONLY on such positive contradiction, and give the corrected claim grounded in the output.
+- INCONCLUSIVE: the shown evidence is silent AND a spot-check finds nothing (the variable/address is
+  not visible, no access is found). Absence of evidence is NOT a contradiction — output INCONCLUSIVE,
+  do NOT DISAGREE. But do NOT use INCONCLUSIVE when the shown evidence already supports the claim.
 
 - Recovered value (password/key/serial/flag): AGREE only if (a) it came from a deterministic tool
   (compute/read_values), not by hand, AND (b) a re-runnable
@@ -347,11 +365,16 @@ def worker_user(subtask: dict) -> str:
                  "They come from other LLM steps and may be incomplete or wrong. Use them to orient, "
                  "but before you rely on any specific value, address, register, or type from them, "
                  f"RE-CONFIRM it with a tool call — do not copy a claim forward unchecked:\n{prior}\n\n")
+    # NOTE: the worker deliberately covers EVERY variable, not just its task's subset. Measured
+    # (2026-07-04, 8-func A/B): scoping each worker to its subset cut LLM calls only ~14% (the cost is
+    # the per-task ReAct investigation, not variable-reporting) but dropped score 84.9->80.1 with worse
+    # tail variance — the full overlap gives each variable ~3 independent findings for consensus to
+    # vote on. So the redundant coverage is a quality ensemble worth its modest cost; keep it.
     return (head + f"Sub-question ({subtask.get('id', 'S1')}): {subtask['question']}\n\n"
-            "Investigate with the tools, then output your findings. Cover EVERY variable — both the "
-            "PARAMETERS (the incoming arguments: param_1, param_2, ...) AND the locals; keep copies of "
-            "the SAME value consistent; never guess a type from the function or binary name — always "
-            "call the tools.\n\n"
+            "Investigate with the tools, then output your findings. Cover EVERY entity the sub-question "
+            "asks about — for variables, both the PARAMETERS (the incoming arguments: param_1, "
+            "param_2, ...) AND the locals; keep copies of the SAME value consistent; never guess an "
+            "answer from the function or binary name — always call the tools.\n\n"
             + WORKER_OUTPUT)
 
 
@@ -361,13 +384,24 @@ def decompose_user(question: str, task: str, prior: str = "") -> str:
     return head + f"OVERALL QUESTION:\n{question}\n\nTASK TO TRIAGE:\n{task}"
 
 
-def verifier_user(claim: str, refs: str) -> str:
-    return (f"CLAIM:\n{claim}\n\nThe worker cited these tools, but their args may be MISSING or "
-            f"empty — do NOT rely on them: {refs}\n\n"
-            "INDEPENDENTLY confirm or refute the claim by CALLING THE TOOLS YOURSELF with the "
-            "CORRECT arguments you determine from the binary. NEVER hand-decode or hand-compute. "
-            'Then output ONLY JSON: {"consensus":"AGREE"|"DISAGREE","reason":"<grounded in YOUR '
-            'tool calls>","corrected_claim":"<corrected claim if wrong, else empty>"}')
+def verifier_user(claim: str, refs: str, worker_evidence: list = None) -> str:
+    ev = ""
+    if worker_evidence:
+        blocks = []
+        for e in worker_evidence[:8]:               # the REAL tool output the worker based the claim on
+            blocks.append(f"$ {e.get('tool')}({json.dumps(e.get('args', {}))[:140]})\n"
+                          f"{str(e.get('result', ''))[:900]}")
+        ev = ("\n\nThe worker reached this claim from the ACTUAL tool output below — these are REAL tool "
+              "results captured by the pipeline (NOT the worker's paraphrase), so they are trustworthy "
+              "evidence. CHECK the claim against this evidence first; call a tool yourself only to "
+              "SPOT-CHECK a specific doubt — you do NOT need to re-derive the whole thing from "
+              "scratch:\n" + "\n\n".join(blocks))
+    return (f"CLAIM:\n{claim}{ev}\n\n"
+            "Judge the claim. AGREE if the evidence above (or a quick spot-check) supports it — do NOT "
+            "withhold AGREE merely because you didn't personally re-run every step. DISAGREE only on a "
+            "POSITIVE contradiction (the evidence shows a different fact). INCONCLUSIVE only if the "
+            "evidence is genuinely silent AND a spot-check finds nothing. Output ONLY JSON: "
+            '{"consensus":"AGREE"|"DISAGREE"|"INCONCLUSIVE","reason":"...","corrected_claim":"<if wrong>"}')
 
 
 def verifier_batch_user(items: list) -> str:

@@ -14,6 +14,11 @@ the cited tools and checking the fresh output. Two families:
     R4  coordinate_recall_facts  — vaddr -> file offset for vaddrs in the verified findings
 
 (V2/R2 were earlier variants, since removed — the numbering is kept stable for the surviving ones.)
+
+The V*/R* oracles above are TASK-GENERIC. TASK-SPECIFIC certifiers (the task's Ω) are NOT defined
+here; a task module registers them at import via `register_domain_oracle(name, fn)` and the pipeline
+dispatches only the ones a task names. See e.g. `tasks/type_recovery.py` for the callee-signature and
+decompiler-pointer type oracles. This keeps the core library free of any single task's domain knowledge.
 """
 from __future__ import annotations
 
@@ -303,3 +308,35 @@ def value_recall_facts(call_tool, records) -> list:
             if re.fullmatch(r"-?\d+", v) and not bare_const:
                 facts.append((f"`compute({expr})` = {v}", ref))
     return facts
+
+
+# ============================================================================================
+#  Domain-oracle registry (Ω) and dispatcher.
+#  The CORE library defines NO task-specific oracle. TASK MODULES (see tasks/) register their
+#  certifiers here at import via register_domain_oracle(name, fn); the pipeline dispatches only the
+#  ones a task names in its Ω. Each registered oracle is `fn(call_tool, question) -> list of
+#  {"vid","ctype","source","claim","reason"}`. This keeps the core free of any single task's domain
+#  knowledge (design goal G3).
+# ============================================================================================
+
+DOMAIN_ORACLES: dict = {}          # name -> normalized oracle fn; populated by task modules on import
+
+
+def register_domain_oracle(name: str, fn) -> None:
+    """Register a task-specific deterministic oracle under `name` (idempotent overwrite). Called by a
+    task module (e.g. tasks/type_recovery.py) on import; the harness imports the task module it needs."""
+    DOMAIN_ORACLES[name] = fn
+
+
+def resolve_domain_oracles(spec, question: str = "") -> list:
+    """Map a task's Ω specification to an ordered list of (name, fn) pairs to dispatch. `spec` is a
+    list of names, a comma/space-separated string, or the literal ``"auto"`` (= every currently
+    registered domain oracle, since a task module registers only its own). Order is significant —
+    earlier oracles take precedence when two would pin the same entity. Unknown names are ignored."""
+    if isinstance(spec, str):
+        names = [s for s in re.split(r"[,\s]+", spec.strip()) if s]
+    else:
+        names = list(spec or [])
+    if names == ["auto"]:
+        names = list(DOMAIN_ORACLES.keys())
+    return [(n, DOMAIN_ORACLES[n]) for n in names if n in DOMAIN_ORACLES]

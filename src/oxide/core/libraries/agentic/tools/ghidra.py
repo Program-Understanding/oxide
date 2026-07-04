@@ -137,6 +137,26 @@ def value_usage(ctx, addr: str, var: str) -> dict:
         return {"error": f"no decompilation for {addr}"}
     v = re.escape(var)
     bound = rf"(?<![\w]){v}(?![\w])"                       # the var as a whole token
+    # DISAMBIGUATION: if `var` appears NOWHERE in the decompilation it is not a decompiler
+    # identifier (a common failure: querying a raw register `rdi` instead of the decompiler's
+    # `param_1`). Returning an empty "no usage observed" here silently starves the caller and
+    # makes it conclude the variable is unused. Instead, surface the ACTUAL identifiers and, for a
+    # register, its calling-convention parameter — turning a dead end into a self-correcting hint.
+    if not re.search(bound, dec):
+        avail = sorted(set(re.findall(
+            r"\b((?:param_|local_|[a-z]{1,3}Var|[a-z]{1,4}Stack|in_|unaff_|extraout_|uStack_|"
+            r"iStack_|acStack_|auStack_)\w+)\b", dec)))
+        _REG2PARAM = {"rdi": "param_1", "edi": "param_1", "rsi": "param_2", "esi": "param_2",
+                      "rdx": "param_3", "edx": "param_3", "rcx": "param_4", "ecx": "param_4",
+                      "r8": "param_5", "r8d": "param_5", "r9": "param_6", "r9d": "param_6"}
+        hint = (f"'{var}' is not a decompiler variable in this function. Use one of the identifiers "
+                f"that actually appear below.")
+        mapped = _REG2PARAM.get(var.lower())
+        if mapped and re.search(rf"(?<![\w]){mapped}(?![\w])", dec):
+            hint = (f"'{var}' is a raw register; the decompiler names it '{mapped}' "
+                    f"(x86-64 calling convention). Re-query with var='{mapped}'.")
+        return {"error": f"variable '{var}' not found", "hint": hint,
+                "available_vars": avail[:40]}
     offsets, scalar_ops, passed_to, evidence = set(), [], [], []
     deref = indexed = ptr_arith = False
     off_re   = re.compile(rf"{bound}\s*\+\s*(0x[0-9a-fA-F]+|\d+)")          # var + N
