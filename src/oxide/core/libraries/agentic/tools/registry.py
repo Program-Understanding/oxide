@@ -75,11 +75,16 @@ def _stringify(res) -> str:
     return s if cap <= 0 else s[:cap]
 
 
-def build_tools(api, oid: str, groups=None):
+def build_tools(api, oid: str, groups=None, memoize=True):
     """Return (schemas, call_tool) bound to one oid.
     - schemas: tool schemas filtered to `groups` (None = all) — what the LLM sees.
     - call_tool(name, args) -> str: dispatch to ANY registered tool (not group-limited), so
-      grounding/recall can re-run any tool. Emits a Phoenix TOOL span when tracing is on."""
+      grounding/recall can re-run any tool. Emits a Phoenix TOOL span when tracing is on.
+    - memoize: when True (worker dispatchers), a repeat call returns a truncated `[REPEAT CALL]` stub
+      to break small-model repeat loops and cut prefill. Set FALSE for the deterministic layer
+      (verify/recall/oracles): those parse the FULL tool output programmatically and must never get the
+      truncated stub — otherwise an oracle silently mis-reads a truncated decompilation and fails to
+      fire (measured: callee-signature missing `strcmp`/`fopen` past the 400-char cut)."""
     from .context import OxideContext
     try:
         from oxide.core.libraries.agentic import trace as _trace
@@ -119,7 +124,7 @@ def build_tools(api, oid: str, groups=None):
 
     def call_tool(name, args=None):
         k = _key(name, args)
-        if k in _cache:                       # identical earlier call -> short stub, tell the model to
+        if memoize and k in _cache:           # identical earlier call -> short stub, tell the model to
             # stop. Do NOT re-inject the full output: it is already in the model's context from the
             # first call, and repeating it (measured: ~2/3 of tool calls are repeats) bloats prefill.
             return _REPEAT + _cache[k][:400] + ("\n…[truncated — full output is in your context above]"

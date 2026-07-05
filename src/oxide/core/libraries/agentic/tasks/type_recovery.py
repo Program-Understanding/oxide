@@ -131,6 +131,99 @@ def decompiler_pointer_facts(call_tool, question) -> list:
     return [(vid, decl[nm]) for vid, nm in vid_name.items() if nm in decl]
 
 
+# Argument list allowing ONE level of nested parens, so a forwarded call with casts
+# (`FUN_x(param_1, (int)param_2, param_3)`) is captured whole instead of truncating at the first `(`.
+_CALL_ARGS = r"\(((?:[^()]|\([^()]*\))*)\)"
+_USERFN_CALL = re.compile(r"\b(FUN_[0-9a-fA-F]+)\s*" + _CALL_ARGS)
+_LIBC_CALL = re.compile(r"\b([A-Za-z_]\w*)\s*" + _CALL_ARGS)
+
+
+def _callee_addr(name: str):
+    """`FUN_0010b353` -> `0x0010b353` (Ghidra encodes the entry address in the auto-name)."""
+    m = re.match(r"FUN_0*([0-9a-fA-F]+)$", name or "")
+    return f"0x{m.group(1)}" if m else None
+
+
+def _libc_type_of_param(dec: str, pname: str):
+    """If `pname` (or a one-level local alias) is passed to a known libc function at a fixed-type
+    position anywhere in `dec`, return (ctype, callee, argpos-1based); else None."""
+    aliases = {pname}
+    for am in re.finditer(rf"\b([A-Za-z_]\w*)\s*=\s*{re.escape(pname)}\b(?![\w.\[])", dec):
+        aliases.add(am.group(1))
+    alt = "|".join(re.escape(a) for a in aliases)
+    for line in dec.splitlines():
+        for cm in _LIBC_CALL.finditer(line):
+            sig = _LIBC_SIG.get(cm.group(1))
+            if not sig:
+                continue
+            args = [a.strip() for a in cm.group(2).split(",")]
+            for j, a in enumerate(args):
+                if j < len(sig) and sig[j] and re.search(rf"(?<![\w])(?:{alt})(?![\w])", a):
+                    return (sig[j], cm.group(1), j + 1)
+    return None
+
+
+def interprocedural_param_usage_facts(call_tool, question) -> list:
+    """Recover a forwarded parameter's type ONE HOP away. When a queried register parameter has no
+    local usage but is passed straight into a user function `FUN_xxxx`, decompile that callee and, if
+    it hands the forwarded argument to a known libc function at a fixed-type position, pin that type.
+    This is the deterministic inter-procedural signal thin wrapper/forwarder functions need (they carry
+    no intra-procedural evidence). Returns (vid, ctype, callee, callee_param, libc_fn, argpos) tuples."""
+    m = re.search(r"at\s+(?:vaddr\s+)?(0x[0-9a-fA-F]+)", question or "")
+    if not m:
+        return []
+    vid_param = {}
+    for vm in re.finditer(r"\bV(\d+)\b[^)]*?\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
+        k = _REGOFF_TO_ARG.get(int(vm.group(2), 16))
+        if k:
+            vid_param[f"V{vm.group(1)}"] = k
+    if not vid_param:
+        return []
+    try:
+        dec = call_tool("decompile", {"addr": m.group(1)})
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(dec, str) or dec.startswith("(no"):
+        return []
+    facts, taken, callee_cache = [], set(), {}
+    for vid, k in vid_param.items():
+        if vid in taken:
+            continue
+        pname = f"param_{k}"
+        aliases = {pname}
+        for am in re.finditer(rf"\b([A-Za-z_]\w*)\s*=\s*{re.escape(pname)}\b(?![\w.\[])", dec):
+            aliases.add(am.group(1))
+        alt = "|".join(re.escape(a) for a in aliases)
+        for line in dec.splitlines():
+            for cm in _USERFN_CALL.finditer(line):
+                args = [a.strip() for a in cm.group(2).split(",")]
+                pos = next((j for j, a in enumerate(args)
+                            if re.search(rf"(?<![\w])(?:{alt})(?![\w])", a)), None)
+                if pos is None:
+                    continue
+                caddr = _callee_addr(cm.group(1))
+                if not caddr:
+                    continue
+                if caddr not in callee_cache:
+                    try:
+                        cd = call_tool("decompile", {"addr": caddr})
+                    except Exception:  # noqa: BLE001
+                        cd = ""
+                    callee_cache[caddr] = cd if isinstance(cd, str) and not cd.startswith("(no") else ""
+                cdec = callee_cache[caddr]
+                if not cdec:
+                    continue
+                res = _libc_type_of_param(cdec, f"param_{pos + 1}")
+                if res:
+                    ctype, lc, apos = res
+                    facts.append((vid, ctype, cm.group(1), f"param_{pos + 1}", lc, apos))
+                    taken.add(vid)
+                    break
+            if vid in taken:
+                break
+    return facts
+
+
 # --- normalized Ω oracles (return {"vid","ctype","source","claim","reason"}) + registration --------
 def _oracle_callee_signature(call_tool, question) -> list:
     out = []
@@ -156,5 +249,19 @@ def _oracle_decompiler_pointer(call_tool, question) -> list:
     return out
 
 
+def _oracle_interprocedural_param_usage(call_tool, question) -> list:
+    out = []
+    for vid, ctype, callee, cparam, lc, apos in interprocedural_param_usage_facts(call_tool, question):
+        out.append({
+            "vid": vid, "ctype": ctype, "source": "deterministic_interprocedural_param_usage",
+            "claim": (f"{vid} has C type `{ctype}` — it is forwarded to user function `{callee}` "
+                      f"(as its `{cparam}`), which passes it as argument {apos} to `{lc}`, whose "
+                      f"library ABI signature fixes that parameter's type. Treat as established; this "
+                      f"inter-procedural evidence overrides any weaker guess for {vid}."),
+            "reason": f"forwarded to {callee}; {lc} ABI fixes argument {apos} one hop away"})
+    return out
+
+
 register_domain_oracle("callee_signature", _oracle_callee_signature)
 register_domain_oracle("decompiler_pointer", _oracle_decompiler_pointer)
+register_domain_oracle("interprocedural_param_usage", _oracle_interprocedural_param_usage)

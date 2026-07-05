@@ -490,7 +490,10 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
 
     planner = L.make_llm("planner", cfg)
     verifier = L.make_llm("verifier", cfg)
-    _schemas, main_ct = T.build_tools(api, oid)   # full-tool dispatcher for verify/grounding/recall
+    # Deterministic layer's dispatcher: memoize=False so oracles/recall/verification always get the
+    # FULL tool output. (The truncated [REPEAT CALL] stub is only for the workers' own memoized
+    # dispatchers; feeding it to an oracle made it silently mis-read a truncated decompilation.)
+    _schemas, main_ct = T.build_tools(api, oid, memoize=False)   # verify / grounding / recall / Ω
 
     if fixed_plan:
         # Caller-supplied deterministic plan: no planner call, and no revision below — the task
