@@ -183,8 +183,11 @@ def _guard_absence(verdict: dict) -> dict:
     return verdict
 
 
-def _adjudicate(verifier, call_tool, finding: dict, log) -> dict:
-    """Deterministic fast-paths first (V1/V3/V4), then the tool-using LLM verifier."""
+def _adjudicate(verifier, call_tool, finding: dict, log, question: str = "") -> dict:
+    """Deterministic fast-paths first (storage identity, then V1/V3/V4), then the tool-using LLM verifier."""
+    sv = G.storage_consistency_violation(question, finding)
+    if sv:
+        return {"consensus": "DISAGREE", "reason": f"storage mismatch — {sv}", "corrected_claim": ""}
     grounded, ev = G.deterministic_grounding(call_tool, finding)
     if grounded:
         return {"consensus": "AGREE", "reason": f"deterministically reproduced — {ev}", "corrected_claim": ""}
@@ -226,13 +229,18 @@ def _adjudicate(verifier, call_tool, finding: dict, log) -> dict:
     return verdict
 
 
-def _adjudicate_batch(verifier, call_tool, findings: List[dict], log) -> List[tuple]:
-    """SAFE call-reducer: same deterministic oracles per finding (V1/V3/V4), then ONE batched LLM
-    verifier call for ALL remaining findings instead of one call each. Returns [(finding, verdict)].
-    Same claims + criteria, judged together — score-neutral; only the per-finding LLM calls collapse."""
+def _adjudicate_batch(verifier, call_tool, findings: List[dict], log, question: str = "") -> List[tuple]:
+    """SAFE call-reducer: same deterministic oracles per finding (storage identity, V1/V3/V4), then ONE
+    batched LLM verifier call for ALL remaining findings instead of one call each. Returns
+    [(finding, verdict)]. Same claims + criteria, judged together — score-neutral; only LLM calls collapse."""
     verdicts: List = [None] * len(findings)
     pending = []                                   # (idx, finding) needing the LLM verifier
     for idx, f in enumerate(findings):
+        sv = G.storage_consistency_violation(question, f)
+        if sv:
+            verdicts[idx] = {"consensus": "DISAGREE", "reason": f"storage mismatch — {sv}",
+                             "corrected_claim": ""}
+            continue
         grounded, ev = G.deterministic_grounding(call_tool, f)
         if grounded:
             verdicts[idx] = {"consensus": "AGREE", "reason": f"deterministically reproduced — {ev}",
@@ -535,14 +543,14 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
                 # (trace._TRACE_LOCK), so concurrent spans/writes are safe.
                 with TR.span(f"adjudicate: {str(f.get('claim', ''))[:48]}", "CHAIN",
                              f.get("claim", "")) as _a_out:
-                    v = _adjudicate(verifier, main_ct, f, log)
+                    v = _adjudicate(verifier, main_ct, f, log, question)
                     _a_out(json.dumps(v))
                 return f, v
 
             # SAFE call-reducer: one batched verifier call for all findings (AGENTIC_VERIFY_BATCH=1),
             # else the legacy per-finding path (optionally concurrent to fill the idle GPU).
             if _cap("verify_batch", 0) == 1 and findings:
-                results = _adjudicate_batch(verifier, main_ct, findings, log)
+                results = _adjudicate_batch(verifier, main_ct, findings, log, question)
             elif verify_conc > 1 and len(findings) > 1:
                 with ThreadPoolExecutor(max_workers=verify_conc) as _ex:
                     results = list(_ex.map(_adj_one, findings))

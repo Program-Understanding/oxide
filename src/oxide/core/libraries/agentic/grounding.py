@@ -219,6 +219,47 @@ def false_register_source(call_tool, finding):
     return ""
 
 
+# ------------------------------------------------ storage-identity consistency (entity grounding)
+# A finding that cites a DIFFERENT storage location for a queried variable than the question assigned
+# it has resolved the WRONG slot — its claim is about a different variable (e.g. a worker mapped V5's
+# -0x40 onto V7's -0x50 and inherited FILE*). This is deterministic ENTITY grounding, independent of
+# the model: it compares storage strings symbolically, encodes no architecture (whatever register /
+# stack notation the question uses) and no type knowledge, and self-gates (inert when the question
+# names no storage-addressed entities, so it is harmless on non-variable tasks).
+# Matches a variable id followed by its storage in EITHER the question's tab/space form
+# (`V5<TAB>stack -0x40`) or a finding's parenthesized prose (`V5 (stack -0x50)`); the trailing hex
+# offset is required, so plain mentions ("V5 is a stack variable") never match.
+_VID_STORAGE_RE = re.compile(r"\bV(\d+)\b[ \t(]*(register|stack)\s+(-?0x[0-9a-fA-F]+)")
+
+
+def _vid_storage_map(text):
+    """{'V5': ('stack', -64), 'V1': ('register', 56), ...} from `V5 (stack -0x40)` / `V1 (register
+    0x38)` mentions; first mention of each id wins (the question lists each variable once)."""
+    out = {}
+    for m in _VID_STORAGE_RE.finditer(text or ""):
+        vid = f"V{m.group(1)}"
+        if vid not in out:
+            out[vid] = (m.group(2), int(m.group(3), 16))
+    return out
+
+
+def storage_consistency_violation(question, finding):
+    """Deterministic entity-identity check. Return a violation string when the finding places a queried
+    variable at a storage location that CONTRADICTS the one the question assigned it — the finding
+    resolved the wrong slot, so its type claim describes a different variable — else ''. Generic:
+    symbolic string comparison, no arch/type knowledge, no-ops when no storage-addressed ids are named."""
+    declared = _vid_storage_map(question)
+    if not declared:
+        return ""
+    for vid, claimed in _vid_storage_map(finding.get("claim") or "").items():
+        want = declared.get(vid)
+        if want and want != claimed:
+            return (f"{vid} is declared at {want[0]} {hex(want[1])}, but this finding places it at "
+                    f"{claimed[0]} {hex(claimed[1])} — it resolved the wrong storage slot, so its "
+                    f"type claim describes a different variable")
+    return ""
+
+
 # --------------------------------------------------------------- R4: coordinate recall
 _ADDR_TOK = re.compile(r"0x[0-9a-fA-F]{3,}")
 
