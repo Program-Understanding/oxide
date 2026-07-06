@@ -12,61 +12,21 @@ import time
 import json
 from dotenv import load_dotenv
 from datetime import datetime
+import asyncio
+from deepagents import create_deep_agent
+from langchain_ollama import ChatOllama
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from pathlib import Path
+from pydantic import BaseModel, Field
+from typing import Literal
 
 NAME = "agent_compare"
 
 logger = logging.getLogger(NAME)
+# For printing
+width = 80
 
-
-
-def agent_compare(args, opts):
-    '''
-    This is a tool where you can choose an AI-powered reverse engineering tool
-    to compare backdoored files to determine if an LLM is able to identify the backdoor.
-
-    These are the following tools you can choose from (more to be added in the future):
-    - 'oghidra'
-
-    When inputting files, label which ones are clean and which ones are not using the
-    following flags: 
-    - 'clean'
-    - 'backdoored'
-
-    There are 4 evaluation techniques, each with a respective flag:
-    - 'e1': Tool found the malicious function being deployed.
-    - 'e2': Tool found the insertion point of the backdoor.
-    - 'e3': Tool found the backdoor's trigger.
-    - 'e4': Tool found the backdoor's technique.
-    If you don't specify any of these flags, it will default to e1.
-
-    You can also specify the amount of runs you want to do per binary. The default is 1. 
-    To change it, add this flag to your command:
-        '--runs=5'
-    This must be an integer.
-
-    You can also choose to have an llm parse the output and return the shortened summary
-    for quicker review. To do this, simply add '--llm_outprocess=True'
-
-    This plugin outputs to a file, which you can specify a different place for it with
-    the following flag: '--outdir=/custom/path'
-
-    When using this plugin, provide the tool you want to use first, then the evaluation 
-    level, number of queries you want sent to each file, and then clean file(s) followed by 
-    the backdoored file(s). 
-
-    For example: 
-        
-        tool_compare --tool=oghidra --eval=e3 --runs=5  &safe_files &backdoored_files
-
-    Disclaimer:
-        - For OGhidra to work correctly, you need to have all of its dependencies. The best 
-        way to do this is to get a .venv in your oxide with all of the requirements for OGhidra.
-        These can be found in OGhidra's requirements.txt file. OGhidra also by default only allows 
-        10 ports to be open at once but this can be raised by going into the source code. 
-    '''
-    from oxide.core import api
-    llm_responses = {}
-    eval_strats = {
+eval_strats = {
         "e1": """
         If there is a backdoor, provide the specific malicious function that it comes from.
         Explain what caused you to think that it is a malicious function, citing what it does
@@ -109,6 +69,96 @@ def agent_compare(args, opts):
         """
     }
 
+class DecisionSchema(BaseModel):
+    label: Literal["safe", "backdoored"] = Field(
+        description="Final decision for analysis. Must be safe or backdoored.",
+    )
+    condition: str = Field(
+        default="",
+        description="Exact condition found representing the malicious behavior, or an empty string if safe.",
+    )
+    why: str = Field(
+        description="Short explanation of the decision and supporting security reasoning.",
+    )
+
+class E1Decision(DecisionSchema):
+    condition: str = Field(
+        default="",
+        description=f"""Exact function name (or names if there is more than one malicious function) or
+        an empty string if there is no backdoor.""",
+    )
+
+class E2Decision(DecisionSchema):
+    condition: str = Field(
+        default="",
+        description="""The insertion point of the backdoor. Like where backdoor capability enters pre-existing code.
+        Give the exact location (function, address range) or an empty string if there is no backdoor.""",
+    )
+
+class E3Decision(DecisionSchema):
+    condition: str = Field(
+        default="",
+        description="""Exact condition or mechanism that triggers the backdoor to activate, or an empty string
+        if there is no backdoor.""",
+    )
+
+class E4Decision(DecisionSchema):
+    condition: str = Field(
+        default="",
+        description="""Exact technique the backdoor is implementing or an empty string if there is no backdoor.""",
+    )
+
+
+def oghidra_compare(args, opts):
+    '''
+    This is a tool where you can use OGhidra to compare backdoored files to determine 
+    if an LLM is able to identify the backdoor using the OGhidra harness.
+
+    There are 4 evaluation techniques, each with a respective flag:
+    - 'e1': Tool found the malicious function being deployed.
+    - 'e2': Tool found the insertion point of the backdoor.
+    - 'e3': Tool found the backdoor's trigger.
+    - 'e4': Tool found the backdoor's technique.
+    If you don't specify any of these flags, it will default to e1.
+
+    You can also specify the amount of runs you want to do per binary. The default is 1. 
+    To change it, add this flag to your command:
+        '--runs=5'
+    This must be an integer.
+
+    You can also choose to have an llm parse the output and return the shortened summary
+    for quicker review. To do this, simply add '--llm_outprocess=True'
+
+    This plugin outputs to a file, which you can specify a different place for it with
+    the following flag: '--outdir=/custom/path'. The default is what is in your oxide
+    config file under 'scratch_dir'.
+
+    By default, this plugin creates a generic project called "project_name" that is 
+    overwritten each time it is run for storage purposes. If you want to rerun the 
+    most recent binaries without analyzing each one again, add this flag: 
+    '--keep_project=True'. 
+
+    When using this tool, the safe files MUST be put first in order for correct labeling
+    to be done. 
+
+    Here is an example of how to use the tool:
+        
+        oghidra_compare --eval=e3 --runs=5  &safe_files &backdoored_files
+
+    Disclaimer:
+        - For OGhidra to work correctly, you need to have all of its dependencies. The best 
+        way to do this is to get a .venv in your oxide with all of the requirements for OGhidra.
+        These can be found in OGhidra's requirements.txt file. 
+        - OGhidra by default only allows 10 ports to be open at once but this can be 
+        raised by going into the source code in the following files: 
+        src/ghidra_client.py, change the variable "ports_to_scan";
+        OGhidraMCP/src/main/java/com/lauriewired/GhidraMCPPlugin.java, change the constant
+        "MAX_PORT_ATTEMPTS".
+
+    '''
+    from oxide.core import api
+    llm_responses = {}
+
     # Ensure oids are valid and two are provided
     if len(args) != 2:
         logger.critical("You must provide two arguments: one clean, either a file or collection, and one backdoored, either a file or collection.")
@@ -139,173 +189,372 @@ def agent_compare(args, opts):
         logger.warning("The amount of runs is invalid. Defaulting to 1.")
         run_amt = 1
 
-    # Using Ghidra    
-    if "oghidra" in opts.get("tool", ""):
-        print("\n\tDon't forget to activate the venv before running!\n")
-        ghidra_path = getattr(api, "ghidra_path", None)
-        print(f"Ghidra path: {ghidra_path}")
-        if not ghidra_path:
-            logger.critical("Ghidra path not found. Please ensure it is in your config file.")
-            return
-        ghidra_projects_path = api.scratch_dir
-        print(f"Ghidra projects path: {ghidra_projects_path}")
-        if not ghidra_projects_path:
-            logger.critical("Ghidra project path not found. Please ensure it is in your config file.")
-            return
-        oghidra_path = getattr(api, "oghidra_path", None)
-        print(f"OGhidra path: {oghidra_path}")
-        if not oghidra_path:
-            logger.critical("OGhidra path not found. Please ensure it is in your config file.")
-            return
-        # Get OGhidra's .env file for Ollama info
-        oghidra_env = os.path.join(oghidra_path, ".env")
-        load_dotenv(dotenv_path=oghidra_env)
+    print("\n\tDon't forget to activate the venv before running!\n")
+    ghidra_path = getattr(api, "ghidra_path", None)
+    print(f"Ghidra path: {ghidra_path}")
+    if not ghidra_path:
+        logger.critical("Ghidra path not found. Please ensure it is in your config file.")
+        return
+    ghidra_projects_path = api.scratch_dir
+    print(f"Ghidra projects path: {ghidra_projects_path}")
+    if not ghidra_projects_path:
+        logger.critical("Ghidra project path not found. Please ensure it is in your config file.")
+        return
+    oghidra_path = getattr(api, "oghidra_path", None)
+    print(f"OGhidra path: {oghidra_path}")
+    if not oghidra_path:
+        logger.critical("OGhidra path not found. Please ensure it is in your config file.")
+        return
+    # Get OGhidra's .env file for Ollama info
+    oghidra_env = os.path.join(oghidra_path, ".env")
+    load_dotenv(dotenv_path=oghidra_env)
 
-        # Set up the generic project to be used
-        project_dir = os.path.join(ghidra_projects_path, "project_name")
-        project_file = project_dir + ".gpr"
-        project_repo = project_dir + ".rep"
+    # Set up the generic project to be used
+    project_dir = os.path.join(ghidra_projects_path, "project_name")
+    project_file = project_dir + ".gpr"
+    project_repo = project_dir + ".rep"
 
-        # Gives user the option to rerun the most recent project
-        keep_project = opts.get("keep_project", False)
+    # Gives user the option to rerun the most recent project
+    keep_project = opts.get("keep_project", False)
 
-        # Normal functionality for new files
-        if not keep_project:
-            # Remove previous execution of Ghidra on generic projects 
-            if (os.path.exists(project_file)):
-                os.remove(project_file)
-                shutil.rmtree(project_repo)
+    # Normal functionality for new files
+    if not keep_project:
+        # Remove previous execution of Ghidra on generic projects 
+        if (os.path.exists(project_file)):
+            os.remove(project_file)
+            shutil.rmtree(project_repo)
 
-            # Make tmp files for each of the clean files
-            clean_tmp_files = []
-            for i, oid in enumerate(clean_oids):
-                file_name = api.get_field("file_meta", oid, "names").pop()
-                clean_tmp_files.append(os.path.splitext(os.path.basename(file_name))[0])
-                data = api.get_field(api.source(oid), oid, "data", {})
-                if not data:
-                    logger.warning(f"No data in {file_name}")
-                    continue
-                tmp_file = api.tmp_file(file_name, data)
-                # Analyze the clean binary to create the clean analysis in Ghidra. Uses enumerate to label each of them.
-                result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/clean{i + 1}", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
-                if result.returncode != 0:
-                    print(f"Error running headless analysis on clean: {result.stderr}")
-                    logger.critical("analyzeHeadless failed")
-                    return
-                else:
-                    print(f"Analysis on clean file {i + 1} succeeded.{result.stdout}")
-
-            # Make tmp files for each of the backdoored files
-            backdoored_tmp_files = []
-            for i, oid in enumerate(backdoored_oids):
-                file_name = api.get_field("file_meta", oid, "names").pop()
-                backdoored_tmp_files.append(os.path.splitext(os.path.basename(file_name))[0])
-                data = api.get_field(api.source(oid), oid, "data", {})
-                if not data:
-                    logger.warning(f"No data in {file_name}")
-                    continue
-                tmp_file = api.tmp_file(file_name, data)
-                # Analyze all of the backdoored programs entered. Uses enumerate to label each of them as well.
-                result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/backdoored{i + 1}", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
-                if result.returncode != 0:
-                    print(f"Error running headless analysis on backdoored: {result.stderr}")
-                    logger.critical("analyzeHeadless failed")
-                    return
-                else:
-                    print(f"Analysis on backdoored file {i + 1} succeeded.{result.stdout}")
-        # Option to reuse files from previous run
-        else:
-            print("Skipping project deletion and import. Using most recent project files.")
-            # Builds temp file lists with the names that are loaded
-            # in Ghidra already. Uses list comprehension to make it easier to understand 
-            # because without it, using .append() adds more parentheses.
-            clean_tmp_files = [os.path.splitext(os.path.basename(api.get_field("file_meta", oid, "names").pop()))[0] for oid in clean_oids]
-            backdoored_tmp_files = [os.path.splitext(os.path.basename(api.get_field("file_meta", oid, "names").pop()))[0] for oid in backdoored_oids]
-        # Open Ghidra
-        result = subprocess.run([ghidra_path + "/ghidraRun", project_file] , capture_output=True, text=True)
-        if result.returncode != 0:
-            logger.critical("Ghidra failed to open.")
-            return
-        # Quick pause to let user open the files in Ghidra to allow OGhidra to connect.
-        # Maybe add ability to be able to distinguish between what is being opened regardless of the order.
-        input("Open new testing files. Open clean first then open the backdoored ones after. Press enter to continue when ready.\n")
-
-        # Using sys to import necessary OGhidra modules
-        sys.path.insert(0, oghidra_path)
-
-        from src.bridge import Bridge
-        from src.config import get_config
-
-        # Use config in Bridge and using include_capabilities to ensure ability for tool use.
-        config = get_config()
-        bridge = Bridge(config=config, include_capabilities=True)
-
-        # Get all ports open and ensure there are the right amount open before continuing
-        total_instances = bridge.ghidra.active_instances
-        if not total_instances:
-            logger.critical("There are no active Ghidra instances open. Open the ones you want to test.")
-            return
-        ports = sorted(total_instances.keys())
-        all_oids = clean_oids + backdoored_oids
-        # Give the opportunity to correct mismatched ports
-        while not len(ports) == len(all_oids):
-            total_instances = bridge.ghidra.active_instances
-            ports = sorted(total_instances.keys())
-            mismatch = len(all_oids) - len(ports)
-            logger.warning(f"Error. Mismatched amount of ports vs files desired. Please open {mismatch} more file(s) in Ghidra. Press any key when ready.")
-            input()
-        # Getting the file type for each file to ensure correct tool usage
-        file_info = {}
-        for i, oid in enumerate(all_oids):
-            file_info[oid] = api.get_field("src_type", oid, "type")
-
-        prompt = f"""
-        You are an experienced reverse engineer and binary security analyst. 
-        Determine if this binary has a backdoor.
-
-        {eval_strats[eval_strat]}
-
-        File type: 
-        """
-        # Getting the output directory if one is specified or not
-        out_dir = opts.get("out_dir", os.path.join(api.scratch_dir, "agent_compare_output"))
-        os.makedirs(out_dir, exist_ok=True)
-
-        # Loop to use OGhidra on each open instance ensuring each output is stored into the llm_responses dict.
-        for n, port in enumerate(ports):
-            if reset_bridge_state(bridge) != 1:
-                logger.warning("This port will be skipped due to issues clearing the bridge. Will continue in 5 seconds.")
-                time.sleep(5)
+        # Make tmp files for each of the clean files
+        clean_tmp_files = []
+        for i, oid in enumerate(clean_oids):
+            file_name = api.get_field("file_meta", oid, "names").pop()
+            clean_tmp_files.append(os.path.splitext(os.path.basename(file_name))[0])
+            data = api.get_field(api.source(oid), oid, "data", {})
+            if not data:
+                logger.warning(f"No data in {file_name}")
                 continue
-            bridge.ghidra.instances_use(port)
-            # 'malware' mode allows OGhidra to use malware pattern detection and severity matching for different
-            # malicious techniques that make it useful for determining backdoor existence over other modes
-            bridge.set_task_mode(enabled=True, mode="malware")
-            # Since we are using all_oids, the clean files will be at the beginning
-            clean = n < len(clean_oids)
-            file_name = os.path.basename(api.get_field("file_meta", all_oids[n], "names").pop())
-            if clean:
-                file_label = f"clean_{file_name}"
+            tmp_file = api.tmp_file(file_name, data)
+            # Analyze the clean binary to create the clean analysis in Ghidra. Uses enumerate to label each of them.
+            result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/clean{i + 1}", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"Error running headless analysis on clean: {result.stderr}")
+                logger.critical("analyzeHeadless failed")
+                return
             else:
-                file_label = f"backdoored_{file_name}"
+                print(f"Analysis on clean file {i + 1} succeeded.{result.stdout}")
+
+        # Make tmp files for each of the backdoored files
+        backdoored_tmp_files = []
+        for i, oid in enumerate(backdoored_oids):
+            file_name = api.get_field("file_meta", oid, "names").pop()
+            backdoored_tmp_files.append(os.path.splitext(os.path.basename(file_name))[0])
+            data = api.get_field(api.source(oid), oid, "data", {})
+            if not data:
+                logger.warning(f"No data in {file_name}")
+                continue
+            tmp_file = api.tmp_file(file_name, data)
+            # Analyze all of the backdoored programs entered. Uses enumerate to label each of them as well.
+            result = subprocess.run(["bash", ghidra_path + "/support/analyzeHeadless", ghidra_projects_path, f"project_name/backdoored{i + 1}", "-overwrite", "-import", tmp_file] , capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"Error running headless analysis on backdoored: {result.stderr}")
+                logger.critical("analyzeHeadless failed")
+                return
+            else:
+                print(f"Analysis on backdoored file {i + 1} succeeded.{result.stdout}")
+    # Option to reuse files from previous run
+    else:
+        print("Skipping project deletion and import. Using most recent project files.")
+        # Builds temp file lists with the names that are loaded
+        # in Ghidra already. Uses list comprehension to make it easier to understand 
+        # because without it, using .append() adds more parentheses.
+        clean_tmp_files = [os.path.splitext(os.path.basename(api.get_field("file_meta", oid, "names").pop()))[0] for oid in clean_oids]
+        backdoored_tmp_files = [os.path.splitext(os.path.basename(api.get_field("file_meta", oid, "names").pop()))[0] for oid in backdoored_oids]
+    # Open Ghidra
+    result = subprocess.run([ghidra_path + "/ghidraRun", project_file] , capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.critical("Ghidra failed to open.")
+        return
+    # Quick pause to let user open the files in Ghidra to allow OGhidra to connect.
+    # Maybe add ability to be able to distinguish between what is being opened regardless of the order.
+    input("Open new testing files. Open clean first then open the backdoored ones after. Press enter to continue when ready.\n")
+
+    # Using sys to import necessary OGhidra modules
+    sys.path.insert(0, oghidra_path)
+
+    from src.bridge import Bridge
+    from src.config import get_config
+
+    # Use config in Bridge and using include_capabilities to ensure ability for tool use.
+    config = get_config()
+    bridge = Bridge(config=config, include_capabilities=True)
+
+    # Get all ports open and ensure there are the right amount open before continuing
+    total_instances = bridge.ghidra.active_instances
+    if not total_instances:
+        logger.critical("There are no active Ghidra instances open. Open the ones you want to test.")
+        return
+    ports = sorted(total_instances.keys())
+    all_oids = clean_oids + backdoored_oids
+    # Give the opportunity to correct mismatched ports
+    while not len(ports) == len(all_oids):
+        total_instances = bridge.ghidra.active_instances
+        ports = sorted(total_instances.keys())
+        mismatch = len(all_oids) - len(ports)
+        logger.warning(f"Error. Mismatched amount of ports vs files desired. Please open {mismatch} more file(s) in Ghidra. Press any key when ready.")
+        input()
+    # Getting the file type for each file to ensure correct tool usage
+    file_info = {}
+    for i, oid in enumerate(all_oids):
+        file_info[oid] = api.get_field("src_type", oid, "type")
+
+    prompt = f"""
+    You are an experienced reverse engineer and binary security analyst. 
+    Determine if this binary has a backdoor.
+
+    {eval_strats[eval_strat]}
+
+    File type: 
+    """
+    # Getting the output directory if one is specified or not
+    out_dir = opts.get("out_dir", os.path.join(api.scratch_dir, "agent_compare_output"))
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Loop to use OGhidra on each open instance ensuring each output is stored into the llm_responses dict.
+    for n, port in enumerate(ports):
+        if reset_bridge_state(bridge) != 1:
+            logger.warning("This port will be skipped due to issues clearing the bridge. Will continue in 5 seconds.")
+            time.sleep(5)
+            continue
+        bridge.ghidra.instances_use(port)
+        # 'malware' mode allows OGhidra to use malware pattern detection and severity matching for different
+        # malicious techniques that make it useful for determining backdoor existence over other modes
+        bridge.set_task_mode(enabled=True, mode="malware")
+        # Since we are using all_oids, the clean files will be at the beginning
+        clean = n < len(clean_oids)
+        file_name = os.path.basename(api.get_field("file_meta", all_oids[n], "names").pop())
+        if clean:
+            file_label = f"clean_{file_name}"
+        else:
+            file_label = f"backdoored_{file_name}"
             
-            # Creating a dict of dicts in order to keep files and runs straight
+        # Creating a dict of dicts in order to keep files and runs straight
+        llm_responses[file_label] = {}
+        # Allows multiple runs on the same file
+        for run in range(run_amt):
+            # Gives the user a visual of where the program is at
+            print("=" * width)
+            print(f"\t{file_name} run #{run + 1}")
+            print("=" * width)
+            # Queries the model with the prompt and file info before returning to llm_responses
+            response = bridge.process_query(prompt + str(file_info[all_oids[n]]))
+            llm_responses[file_label][f"Run {run + 1}"] = response
+    if opts.get("llm_outprocess", False) is True:
+        _llm_outprocessing(llm_responses, eval_strat, out_dir)
+    else:
+        _get_results(llm_responses, eval_strat, out_dir)
+    return llm_responses
+
+def deep_agent_compare(args, opts):
+    '''
+    This is a tool that creates a deep agent that uses the oxide_mcp_server
+    in order to replicate OGhidra's binary analysis using tools in oxide.
+
+    To choose the model for the deep agent, fill in the provider and the model
+    using the following flag:
+    '--model=[provider]:[model]'
+    
+    Available providers:
+    - Ollama
+
+    There are 4 evaluation techniques, each with a respective flag:
+    - 'e1': Tool found the malicious function being deployed.
+    - 'e2': Tool found the insertion point of the backdoor.
+    - 'e3': Tool found the backdoor's trigger.
+    - 'e4': Tool found the backdoor's technique.
+    If you don't specify any of these flags, it will default to e1.
+
+    You can also specify the amount of runs you want to do per binary. The default is 1. 
+    To change it, add this flag to your command:
+        '--runs=5'
+    This must be an integer.
+
+    When using this tool, the safe files MUST be put first in order for correct labeling
+    to be done.
+
+    You can also choose to have an llm parse the output and return the shortened summary
+    for quicker review. To do this, simply add '--llm_outprocess=True'
+
+    This plugin outputs to a file, which you can specify a different place for it with
+    the following flag: '--outdir=/custom/path'. The default is what is in your oxide
+    config file under 'scratch_dir'.
+
+    
+    '''
+    llm_responses = {}
+    start_time = time.time()
+    from oxide.core import api
+    from oxide.core import oxide
+
+     # Ensure oids are valid and two are provided
+    if len(args) != 2:
+        logger.critical("You must provide two arguments: one clean, either a file or collection, and one backdoored, either a file or collection.")
+        return
+    # Get clean files vs backdoored files
+    clean_args = args[0]
+    backdoored_args = args[1]
+
+    valid_clean, invalid = api.valid_oids([clean_args])
+    valid_backdoored, invalid = api.valid_oids([backdoored_args])
+
+    clean_oids = api.expand_oids(valid_clean)
+    backdoored_oids = api.expand_oids(valid_backdoored)
+
+    all_oids = clean_oids + backdoored_oids
+
+    oxide_path = Path(api.scripts_dir).parent
+    out_dir = opts.get("out_dir", os.path.join(api.scratch_dir, "agent_compare_output"))
+
+    model_to_use = opts.get("model", None)
+    if not model_to_use:
+        logger.critical("You must provide a model for the deep agent to be able to work.")
+        return
+    model_to_use = str(model_to_use).lower()
+    try:
+        model_list = model_to_use.split(":", 1)
+        provider = model_list[0]
+        model = model_list[1]
+    except Exception as e:
+        logger.critical(f"Error getting the model: {e}")
+
+    try: 
+        run_amt = int(opts.get("runs", 1))
+        if run_amt <= 0:
+            logger.warning("The amount of runs cannot be 0 or less than 0. Defaulting to 1.")
+            run_amt = 1
+    except:
+        logger.warning("The amount of runs is invalid. Defaulting to 1.")
+        run_amt = 1
+
+    if provider == "ollama":
+        LLM = ChatOllama(
+            model=model,
+            base_url="http://localhost:11434"
+        )
+    else:
+        logger.critical(f"Unable to currently support models from {provider}. Will fix this in future.")
+        return
+    eval_strat = opts.get("eval", "e1")
+    if eval_strat not in eval_strats:
+        logger.warning(f"Invalid evaluation given: {eval_strat}. Using e1 instead.")
+        eval_strat = "e1"
+    SYSTEM_PROMPT = f"""
+                    You are an experienced binary reverse engineer. You have been given access to Oxide,
+                    a framework that is used for binary analysis, and all of its tools. 
+                    All tools are READ-ONLY, you cannot modify anything about the binaries.
+                    You can inspect them, decompile functions, search symbols and strings, and
+                    trace call graphs. Your goal is to determine if the binary being examined contains
+                    a backdoor. You are evaluating based on the following strategy:
+                    {eval_strats[eval_strat]}
+
+                    """
+    RESPONSE_SCHEMA = {
+        "e1": E1Decision,
+        "e2": E2Decision,
+        "e3": E3Decision,
+        "e4": E4Decision,
+    }
+    async def run_analysis(agent, oid):
+        
+        file_name = os.path.basename(api.get_field("file_meta", oid, "names").pop())
+        if oid in clean_oids:
+            print("=" * width)
+            print(f"Beginning analysis on clean {file_name}")
+            print("=" * width)
+        else:
+            print("=" * width)
+            print(f"Beginning analysis on backdoored {file_name}")
+            print("=" * width)
+
+        ai_message = ""
+        structured = ""
+
+        async for chunk in agent.astream(
+            {"messages": [{"role": "user", "content": f"Is there a backdoor in this binary with the following oid in oxide: {oid}?"}]}, 
+            stream_mode="updates"
+        ):
+            elapsed = time.time() - start_time
+            for node_name, update in chunk.items():
+                if not update:
+                    continue
+                if "structured_response" in update:
+                    structured = update["structured_response"]
+                for msg in update.get("messages", []):
+                    if node_name == "model":
+                        if msg.tool_calls:
+                               for tool_call in msg.tool_calls:
+                                print(f"[{elapsed:.1f}s] LLM using tool: {tool_call['name']}({tool_call['args']})")
+                        if msg.content:
+                            ai_message = msg.content
+                    elif node_name == "tools":
+                        print(f"[{elapsed:.1f}s] Used {msg.name} to get the following:\n{msg.content}")
+                    else:
+                        print(f"[{elapsed:.1f}s] [{node_name}] {msg.content}")
+
+        if structured:
+            print(f"Verdict for {file_name}:\n- Label: {structured.label}\n- Condition: {structured.condition}\n- Why: {structured.why}")
+            response = structured.model_dump()
+        else:
+            print(f"No structured output for {file_name}. Here is what the LLM said most recently:\n{ai_message}")
+            response = {"label": "unknown", "condition": "", "why":ai_message or "no response"}
+        response["file_name"] = file_name
+        return response
+    async def main():
+        try:
+            client = MultiServerMCPClient(
+                {
+                    "oxide": {
+                        "command": "python",
+                        "args": [f"{oxide_path}/oxide_mcp_server.py", f"--oxidepath={oxide_path}/"],
+                        "transport": "stdio",
+                    }
+                }
+            )
+        except Exception as e:
+            logger.critical(f"Error opening client: {e}")
+            return
+        tools = await client.get_tools()
+        print("Tool options: \n", [tool for tool in tools])
+        agent = create_deep_agent(
+            model=LLM,
+            tools=tools,
+            system_prompt=SYSTEM_PROMPT,
+            response_format=RESPONSE_SCHEMA[eval_strat]
+        )
+        for oid in all_oids:
+            file_name = os.path.basename(api.get_field("file_meta", oid, "names").pop())
+            clean = oid in clean_oids
+            if clean:  
+                file_label = f"clean_{file_name}"  
+            else:  
+                file_label = f"backdoored_{file_name}"  
+            
             llm_responses[file_label] = {}
-            width = 80
-            # Allows multiple runs on the same file
+            
             for run in range(run_amt):
-                # Gives the user a visual of where the program is at
+                print("\n" + "=" * width)
+                print(f"{file_name} run #{run + 1}")
                 print("=" * width)
-                print(f"\t{file_name} run #{run + 1}")
-                print("=" * width)
-                # Queries the model with the prompt and file info before returning to llm_responses
-                response = bridge.process_query(prompt + str(file_info[all_oids[n]]))
-                llm_responses[file_label][f"Run {run + 1}"] = response
+                result = await run_analysis(agent, oid)
+                response_txt = f"Label: {result.get('label')}\nCondition: {result.get('condition')}\nWhy: {result.get('why')}"
+                llm_responses[file_label][f"Run {run + 1}"] = response_txt
+            
         if opts.get("llm_outprocess", False) is True:
             _llm_outprocessing(llm_responses, eval_strat, out_dir)
         else:
             _get_results(llm_responses, eval_strat, out_dir)
+    asyncio.run(main())
     return llm_responses
+
 
 # Gets results using programatic pattern matching
 def _get_results(llm_responses, eval_strat, out_dir):
@@ -580,4 +829,4 @@ def _llm_outprocessing(llm_responses, eval_strat, out_dir):
     print(f"Results written to {out_dir}")
     print(f"\nFiles created: {report_file}, \n{summary_file}, \n{responses_file}")
 
-exports = [agent_compare]
+exports = [oghidra_compare, deep_agent_compare]
