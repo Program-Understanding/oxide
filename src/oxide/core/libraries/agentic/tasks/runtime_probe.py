@@ -155,28 +155,208 @@ def _union_type(reprs) -> str:
 # =================================================================================================
 #  Section 4 — the emulation backend (behind call_tool, injected like OxideContext).
 # =================================================================================================
-class ExecProbe:
-    """Controlled-execution backend. ``observe(addr, slot_off, seeds)`` returns a list of per-run
-    observation dicts (schema above), or [] when the function is not drivable / the slot unreachable.
+# Ghidra stack-space offset -> rbp-relative offset. At -O0 gcc every function builds a standard
+# `push rbp; mov rbp,rsp` frame, so Ghidra frame-0 is the return-address slot at rbp+8; a Ghidra
+# stack offset G therefore addresses rbp+(G+FRAME_ADJ). Verified against close_stream's disassembly
+# (V5 ghidra -0x20 == mov %rdi,-0x18(%rbp)); holds for the -O0 rbp-framed benchmark.
+FRAME_ADJ = 0x8
 
-    Phase B (TODO, requires a validated emulator): Unicorn/Qiling for an isolated memory map with no
-    live syscalls, OR angr's engine for drive-to-slot when the slot is behind a branch; argument
-    bootstrap seeded from the static predictor and refined on execution feedback; observe frame_base+
-    offset accesses across synthesized inputs; discard def-before-use reads. Until then this returns
-    [] (unreachable) so the oracle ABSTAINS everywhere and disturbs nothing."""
+# Tier-A instruction signals, kept deliberately SOUND (bias-to-abstain, Section 5):
+#   * movsx/movsxd/idiv  -> signed      (compiler sign-extends signed narrow types)
+#   * div                -> unsigned     (a real unsigned division)  -- NOT movzx (gcc's default byte load)
+#   * movsd/movss/cvt*/xmm-> fp          (value lives in the FP register file)
+# A dereference (Tier-A pointer) is detected dynamically: a value loaded from the slot is later used
+# as a memory-access base and the access lands in mapped memory (not value-range plausibility).
+_SIGNED_MNEM = ("movsx", "movsxd", "idiv")
+_FP_MNEM = ("movsd", "movss", "cvtsi2sd", "cvtsi2ss", "cvttsd2si", "cvttss2si",
+            "addsd", "mulsd", "subsd", "divsd", "addss", "mulss", "subss", "divss")
+
+
+class ExecProbe:
+    """Controlled-execution backend (Phase B0: concrete angr).
+
+    ``observe(addr, slot_off, seeds)`` drives the function under angr with libc externs hooked to
+    concrete returns (no live syscalls), resolves the frame live, and watches how the stack slot's
+    bytes are actually used, returning one observation dict per seed (schema above). Returns [] when
+    angr is unavailable, the binary can't be loaded, or the run fails -- so the oracle ABSTAINS, the
+    same fallback the static oracles have. B0 covers concrete drive-from-entry; symbolic
+    drive-to-slot for branch-guarded slots is B1."""
 
     def __init__(self, binary_path: str):
         self.binary_path = binary_path
+        self._proj = None
+        self._raw = {}          # (addr, seed) -> {rbp_rel_offset: obs-fragment}  (per-run cache)
         try:
             import angr  # noqa: F401
             self.available = True
         except Exception:  # noqa: BLE001
             self.available = False
 
+    # -- lazy project load: stripped PIE at base 0, no libc, externs -> concrete scratch pointers ---
+    def _project(self):
+        if self._proj is not None:
+            return self._proj
+        import logging
+        for n in ("angr", "cle", "pyvex", "claripy"):
+            logging.getLogger(n).setLevel(logging.CRITICAL)
+        import angr
+        import claripy
+        proj = angr.Project(self.binary_path, auto_load_libs=False, main_opts={"base_addr": 0})
+        # hand every unresolved extern a distinct valid scratch pointer, so a genuine pointer
+        # returned by libc (e.g. nl_langinfo -> char*) can be dereferenced into mapped memory and
+        # observed, while an int-returning call just yields a large harmless value.
+        arena = {"next": 0x4100_0000}
+
+        class _RetPtr(angr.SimProcedure):
+            def run(self, *a):  # noqa: ANN001
+                p = arena["next"]; arena["next"] += 0x1000
+                return claripy.BVV(p, self.arch.bits)
+
+        for sym in proj.loader.symbols:
+            if sym.is_import or (sym.is_function and
+                                 not proj.loader.main_object.contains_addr(sym.rebased_addr)):
+                try:
+                    proj.hook_symbol(sym.name, _RetPtr())
+                except Exception:  # noqa: BLE001
+                    pass
+        self._proj = proj
+        self._arena_lo = 0x4100_0000
+        return proj
+
+    def _run_once(self, addr_i: int, seed: int) -> dict:
+        """Drive the function once; return {rbp_rel_off: fragment} for every stack slot touched."""
+        import angr
+        import claripy
+        proj = self._project()
+        opts = {angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+                angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
+        st = proj.factory.blank_state(addr=addr_i, add_options=opts)
+        scratch, retpage = 0x5000_0000, 0x6000_0000
+        st.memory.map_region(scratch, 0x10_0000, 3)
+        st.memory.map_region(retpage, 0x1000, 3)
+        # seed args into the mapped scratch region so pointer args are dereferenceable, but spaced
+        # 0x10000 apart -- far wider than the deref match window (0x1000) -- so one arg's dereference
+        # can never be mis-attributed to a neighbouring slot's value.
+        for i, reg in enumerate(("rdi", "rsi", "rdx", "rcx", "r8", "r9")):
+            setattr(st.regs, reg, claripy.BVV(scratch + 0x1_0000 * (i + 1) + 0x80 * seed, 64))
+        st.regs.rsp = 0x7fff_0000
+        st.stack_push(claripy.BVV(retpage, 64))          # sentinel return address
+
+        frame = {"rbp": None}
+        slot_map = {}                                    # concrete addr -> rbp_rel offset
+        acc = {}                                         # rbp_rel off -> fragment
+        loaded = {}                                      # concrete value loaded from a slot -> rbp_rel off
+
+        def frag(off):
+            return acc.setdefault(off, {"width": None, "fp_used": False, "dereferenced": False,
+                                        "signed_op": False, "unsigned_op": False,
+                                        "read": False, "written": False})
+
+        def cur_insn(state):
+            try:
+                return proj.factory.block(state.addr, num_inst=1).capstone.insns[0]
+            except Exception:  # noqa: BLE001
+                return None
+
+        def on_instr(state):
+            if frame["rbp"] is None:
+                try:
+                    rbp = state.solver.eval(state.regs.rbp)
+                    if 0x7ffe_0000 < rbp < 0x7fff_0000:  # rbp established by prologue
+                        frame["rbp"] = rbp
+                        for g in range(-0x100, 0x8):
+                            slot_map[rbp + g] = g
+                except Exception:  # noqa: BLE001
+                    pass
+
+        def on_read(state):
+            try:
+                a = state.solver.eval(state.inspect.mem_read_address)
+                sz = state.solver.eval(state.inspect.mem_read_length) if \
+                    state.inspect.mem_read_length is not None else 0
+            except Exception:  # noqa: BLE001
+                return
+            for pv, off in list(loaded.items()):          # deref: reusing a slot-loaded value as base
+                if pv and abs(a - pv) < 0x1000:
+                    frag(off)["dereferenced"] = True
+            if a in slot_map:
+                off = slot_map[a]; f = frag(off); f["read"] = True
+                if f["width"] is None:
+                    f["width"] = sz
+                ins = cur_insn(state)
+                if ins is not None:
+                    m, ops = ins.mnemonic, ins.op_str
+                    if m.startswith(_SIGNED_MNEM):
+                        f["signed_op"] = True
+                    if m == "div":
+                        f["unsigned_op"] = True
+                    if m.startswith(_FP_MNEM) or "xmm" in ops:
+                        f["fp_used"] = True
+                try:
+                    v = state.solver.eval(state.inspect.mem_read_expr) \
+                        if state.inspect.mem_read_expr is not None else None
+                    if v and v >= 0x1_0000:               # only address-like values are deref candidates;
+                        loaded[v] = off                   #   small ints (bool/flag/enum) can never match
+                except Exception:  # noqa: BLE001
+                    pass
+
+        def on_write(state):
+            try:
+                a = state.solver.eval(state.inspect.mem_write_address)
+            except Exception:  # noqa: BLE001
+                return
+            if a in slot_map:
+                f = frag(slot_map[a])
+                if not f["read"]:
+                    f["written"] = True                   # written before any read -> initialised
+
+        st.inspect.b("instruction", when=angr.BP_BEFORE, action=on_instr)
+        st.inspect.b("mem_read", when=angr.BP_AFTER, action=on_read)
+        st.inspect.b("mem_write", when=angr.BP_BEFORE, action=on_write)
+
+        simgr = proj.factory.simulation_manager(st)
+        for _ in range(600):
+            if not simgr.active:
+                break
+            if simgr.active[0].solver.eval(simgr.active[0].regs.rip) == retpage:
+                break
+            try:
+                simgr.step(num_inst=1)
+            except Exception:  # noqa: BLE001
+                break
+            if len(simgr.active) > 1:                      # stay on one path (determinism)
+                simgr.active[:] = simgr.active[:1]
+        return acc
+
     def observe(self, addr: str, slot_off: str, seeds) -> list:
-        # Phase-B backend not yet built -> conservatively report "unreachable" (empty observations).
-        # This makes classify_observations abstain, preserving all measured behavior.
-        return []
+        if not self.available:
+            return []
+        try:
+            addr_i = int(addr, 16)
+            rbp_rel = int(slot_off, 16) + FRAME_ADJ        # Ghidra offset -> rbp-relative
+        except Exception:  # noqa: BLE001
+            return []
+        obs = []
+        for si, seed in enumerate(seeds):
+            key = (addr_i, si)
+            if key not in self._raw:
+                try:
+                    self._raw[key] = self._run_once(addr_i, si)
+                except Exception:  # noqa: BLE001
+                    self._raw[key] = {}
+            frag = self._raw[key].get(rbp_rel)
+            if frag is None:
+                obs.append({"uninitialized": True})        # slot never touched this run -> discard
+                continue
+            obs.append({
+                "width": frag["width"],
+                "fp_used": frag["fp_used"],
+                "dereferenced": frag["dereferenced"],
+                "signed_op": frag["signed_op"],
+                "unsigned_op": frag["unsigned_op"],
+                "uninitialized": frag["read"] and not frag["written"],  # read before any write
+            })
+        return obs
 
 
 # small per-process cache: (binary, addr, slot, seed) -> observations (determinism, Section 6)
