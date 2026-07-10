@@ -41,6 +41,12 @@ _LIBC_SIG = {
     "free": ["void *"], "realloc": ["void *", "size_t"], "malloc": ["size_t"],
     "calloc": ["size_t", "size_t"], "close": ["int"], "read": ["int", "void *", "size_t"],
     "write": ["int", "void *", "size_t"],
+    # printf / error family: the FILE* stream and the char* format sit at fixed positions (the rest are
+    # varargs). Very common in wrapper/forwarder functions (version_etc, error reporters, quotearg).
+    "fprintf": ["FILE *", "char *"], "vfprintf": ["FILE *", "char *"], "printf": ["char *"],
+    "vprintf": ["char *"], "sprintf": ["char *", "char *"], "snprintf": ["char *", "size_t", "char *"],
+    "vsnprintf": ["char *", "size_t", "char *"], "error": ["int", "int", "char *"],
+    "dprintf": ["int", "char *"], "asprintf": ["char **", "char *"],
 }
 # Ghidra x86-64 register-space offsets -> SysV integer argument position (1-based): rdi,rsi,rdx,rcx,r8,r9.
 _REGOFF_TO_ARG = {0x38: 1, 0x30: 2, 0x10: 3, 0x08: 4, 0x80: 5, 0x88: 6}
@@ -98,6 +104,18 @@ def callee_type_recall_facts(call_tool, question) -> list:
     return facts
 
 
+def _decl_pointer_map(dec: str) -> dict:
+    """{'param_4': 'void **', 'local_30': 'char *', ...} — the decompiler's OWN declared pointer type
+    for each parameter / local identifier in the decompilation."""
+    decl = {}
+    for dm in re.finditer(r"\b([A-Za-z_][\w ]*?[A-Za-z_])\s+(\*+)\s*(param_\d+|local_[0-9a-f]+)\b", dec):
+        base = re.sub(r"\s+", " ", dm.group(1)).strip()
+        if base in ("return", "else", "goto", "case"):
+            continue
+        decl.setdefault(dm.group(3), f"{base} {dm.group(2)}")
+    return decl
+
+
 def decompiler_pointer_facts(call_tool, question) -> list:
     """Parse the decompiler's OWN declared type for each queried variable and, when it declared a
     POINTER (char*/FILE*/T**), emit it. Storage resolves deterministically — a register by the calling
@@ -122,13 +140,55 @@ def decompiler_pointer_facts(call_tool, question) -> list:
         return []
     if not isinstance(dec, str) or dec.startswith("(no"):
         return []
-    decl = {}
-    for dm in re.finditer(r"\b([A-Za-z_][\w ]*?[A-Za-z_])\s+(\*+)\s*(param_\d+|local_[0-9a-f]+)\b", dec):
-        base = re.sub(r"\s+", " ", dm.group(1)).strip()
-        if base in ("return", "else", "goto", "case"):
-            continue
-        decl.setdefault(dm.group(3), f"{base} {dm.group(2)}")
+    decl = _decl_pointer_map(dec)
     return [(vid, decl[nm]) for vid, nm in vid_name.items() if nm in decl]
+
+
+# x86-64 SysV: the register a spilled argument was moved from -> its 1-based parameter index.
+_REGNAME_TO_ARG = {"rdi": 1, "edi": 1, "rsi": 2, "esi": 2, "rdx": 3, "edx": 3,
+                   "rcx": 4, "ecx": 4, "r8": 5, "r8d": 5, "r9": 6, "r9d": 6}
+_SPILL_STORE = re.compile(r"mov\s+(?:[a-z]+\s+ptr\s+)?\[[^\]]+\]\s*,\s*([a-z][a-z0-9]+)")
+
+
+def spilled_param_facts(call_tool, question) -> list:
+    """A stack slot that the prologue spills an ARGUMENT REGISTER into is a copy of that parameter, so
+    it has that parameter's type. Resolve slot -> register (stack_var's first store) -> SysV parameter
+    -> the parameter's type (the decompiler's declared pointer type, else its library-ABI type). This
+    fixes the common failure where the model mis-maps a spilled local to the WRONG parameter and
+    inherits the wrong type. Returns (vid, ctype, param, register) tuples."""
+    m = re.search(r"at\s+(?:vaddr\s+)?(0x[0-9a-fA-F]+)", question or "")
+    if not m:
+        return []
+    addr = m.group(1)
+    slots = {}
+    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*stack\s+(-?0x[0-9a-fA-F]+)", question or ""):
+        slots[f"V{vm.group(1)}"] = vm.group(2)
+    if not slots:
+        return []
+    try:
+        dec = call_tool("decompile", {"addr": addr})
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(dec, str) or dec.startswith("(no"):
+        return []
+    decl = _decl_pointer_map(dec)
+    facts = []
+    for vid, off in slots.items():
+        try:
+            sv = call_tool("stack_var", {"addr": addr, "offset": off})
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(sv, str):
+            continue
+        sm = _SPILL_STORE.search(sv)                         # first store = the prologue spill
+        k = _REGNAME_TO_ARG.get(sm.group(1)) if sm else None
+        if not k:
+            continue
+        pname = f"param_{k}"
+        ctype = decl.get(pname) or (_libc_type_of_param(dec, pname) or (None,))[0]
+        if ctype:
+            facts.append((vid, ctype, pname, sm.group(1)))
+    return facts
 
 
 # Argument list allowing ONE level of nested parens, so a forwarded call with casts
@@ -163,12 +223,51 @@ def _libc_type_of_param(dec: str, pname: str):
     return None
 
 
+_MAX_HOPS = 3   # follow forwarder chains up to this depth (version_etc forwards 2-3 levels deep)
+
+
+def _resolve_forward_chain(call_tool, dec, pname, depth, seen):
+    """Follow `pname` through forwarder calls until it reaches a fixed-ABI libc position. Returns
+    (ctype, libc_fn, argpos) or None. Recurses into a user-function callee when `pname` is forwarded
+    to it (aliases followed one level), bounded by `depth` and a `seen` set of callee addresses."""
+    hit = _libc_type_of_param(dec, pname)          # does it reach a libc fn HERE?
+    if hit:
+        return hit
+    if depth <= 0:
+        return None
+    aliases = {pname}
+    for am in re.finditer(rf"\b([A-Za-z_]\w*)\s*=\s*{re.escape(pname)}\b(?![\w.\[])", dec):
+        aliases.add(am.group(1))
+    alt = "|".join(re.escape(a) for a in aliases)
+    for cm in _USERFN_CALL.finditer(dec):
+        args = [a.strip() for a in cm.group(2).split(",")]
+        pos = next((j for j, a in enumerate(args)
+                    if re.search(rf"(?<![\w])(?:{alt})(?![\w])", a)), None)
+        if pos is None:
+            continue
+        caddr = _callee_addr(cm.group(1))
+        if not caddr or caddr in seen:
+            continue
+        seen.add(caddr)
+        try:
+            cd = call_tool("decompile", {"addr": caddr})
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(cd, str) or cd.startswith("(no"):
+            continue
+        r = _resolve_forward_chain(call_tool, cd, f"param_{pos + 1}", depth - 1, seen)
+        if r:
+            return r
+    return None
+
+
 def interprocedural_param_usage_facts(call_tool, question) -> list:
-    """Recover a forwarded parameter's type ONE HOP away. When a queried register parameter has no
-    local usage but is passed straight into a user function `FUN_xxxx`, decompile that callee and, if
-    it hands the forwarded argument to a known libc function at a fixed-type position, pin that type.
-    This is the deterministic inter-procedural signal thin wrapper/forwarder functions need (they carry
-    no intra-procedural evidence). Returns (vid, ctype, callee, callee_param, libc_fn, argpos) tuples."""
+    """Recover a forwarded parameter's type across a chain of user-function forwarders (up to
+    `_MAX_HOPS` deep). When a queried register parameter has no local usage but is passed into a user
+    function `FUN_xxxx`, follow it through that callee (and its callees) until it reaches a known libc
+    function at a fixed-type position, then pin that type. This is the deterministic inter-procedural
+    signal thin wrapper/forwarder functions need (they carry no intra-procedural evidence). Returns
+    (vid, ctype, callee, callee_param, libc_fn, argpos) tuples."""
     m = re.search(r"at\s+(?:vaddr\s+)?(0x[0-9a-fA-F]+)", question or "")
     if not m:
         return []
@@ -213,7 +312,9 @@ def interprocedural_param_usage_facts(call_tool, question) -> list:
                 cdec = callee_cache[caddr]
                 if not cdec:
                     continue
-                res = _libc_type_of_param(cdec, f"param_{pos + 1}")
+                # follow the forwarded arg through this callee AND its own callees (multi-hop)
+                res = _resolve_forward_chain(call_tool, cdec, f"param_{pos + 1}",
+                                             _MAX_HOPS - 1, {caddr})
                 if res:
                     ctype, lc, apos = res
                     facts.append((vid, ctype, cm.group(1), f"param_{pos + 1}", lc, apos))
@@ -262,6 +363,20 @@ def _oracle_interprocedural_param_usage(call_tool, question) -> list:
     return out
 
 
+def _oracle_spilled_param(call_tool, question) -> list:
+    out = []
+    for vid, ctype, pname, reg in spilled_param_facts(call_tool, question):
+        out.append({
+            "vid": vid, "ctype": ctype, "source": "deterministic_spilled_param",
+            "claim": (f"{vid} has C type `{ctype}` — its stack slot is where the prologue spills "
+                      f"`{reg}` (`{pname}`), so it is a copy of that parameter and shares its type. "
+                      f"Treat as established; this overrides a guess that mis-maps the slot to another "
+                      f"parameter."),
+            "reason": f"prologue spills {reg} ({pname}) into this slot"})
+    return out
+
+
 register_domain_oracle("callee_signature", _oracle_callee_signature)
 register_domain_oracle("decompiler_pointer", _oracle_decompiler_pointer)
 register_domain_oracle("interprocedural_param_usage", _oracle_interprocedural_param_usage)
+register_domain_oracle("spilled_param", _oracle_spilled_param)
