@@ -30,9 +30,36 @@ default AGENTIC_DOMAIN_ORACLES set — so it never runs in the current benchmark
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import tempfile
 
 from oxide.core.libraries.agentic.grounding import register_domain_oracle
+
+# oid -> on-disk path of the materialised binary (angr needs a file; Oxide stores bytes by oid).
+_BIN_PATHS: dict = {}
+
+
+def _materialize_binary(oid: str):
+    """Write the oid's raw bytes to a temp file so angr can load it. Task-agnostic: the oracle gets
+    only the oid from the `info` tool (there is no file path in the pipeline), so it retrieves the
+    stored bytes through the Oxide API and caches the path per oid."""
+    if oid in _BIN_PATHS:
+        return _BIN_PATHS[oid]
+    try:
+        from oxide.core.oxide import api
+        data = api.get_field("files", oid, "data")
+        if not data:
+            return None
+        p = os.path.join(tempfile.gettempdir(), f"agentic_runtime_probe_{oid}.bin")
+        if not os.path.exists(p):
+            with open(p, "wb") as fh:
+                fh.write(data)
+        _BIN_PATHS[oid] = p
+        return p
+    except Exception:  # noqa: BLE001
+        return None
 
 # --- tuning constants -----------------------------------------------------------------------------
 CERT_MIN_OBS = 3          # k: distinct clean observations required to certify a Tier-A verdict
@@ -228,6 +255,12 @@ class ExecProbe:
         import angr
         import claripy
         proj = self._project()
+        # rebase Ghidra vaddr -> ELF vaddr: the oracle receives Ghidra addresses (image base 0x100000)
+        # but the project is loaded at base 0. If the address falls outside the loaded object, drop the
+        # Ghidra base so drive-from-entry starts at the real function.
+        mo = proj.loader.main_object
+        if not (mo.min_addr <= addr_i <= mo.max_addr):
+            addr_i -= 0x10_0000
         opts = {angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
                 angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS}
         st = proj.factory.blank_state(addr=addr_i, add_options=opts)
@@ -404,23 +437,27 @@ def runtime_type_probe_facts(call_tool, question) -> list:
     residual = [(vid, off) for vid, off in slots.items() if vid not in anchored][:_MAX_PROBE_SLOTS]
     if not residual:
         return []
-    # the binary path is needed to drive execution; call_tool exposes it via open_binary/info.
+    # the binary must be on disk for angr; the pipeline exposes only the oid (via the info tool), so
+    # resolve oid -> materialised temp file.
     try:
         binfo = call_tool("info", {})
-        bpath = re.search(r"(/[^\s\"]+\.(?:ndbg-bin|bin|elf)|/[^\s\"]+)", str(binfo))
-        bpath = bpath.group(1) if bpath else None
+        info = binfo if isinstance(binfo, dict) else json.loads(str(binfo))
+        oid = info.get("oid")
     except Exception:  # noqa: BLE001
-        bpath = None
+        oid = None
+    bpath = _materialize_binary(oid) if oid else None
     if not bpath:
         return []
     probe = ExecProbe(bpath)
     facts = []
     for vid, off in residual:
-        key = (bpath, addr, off, "seed0")
+        key = (bpath, addr, off)
         if key in _TRACE_CACHE:
             obs = _TRACE_CACHE[key]
         else:
-            obs = probe.observe(addr, off, seeds=["seed0"])       # firing predicate (3): drivable?
+            # drive CERT_MIN_OBS distinct seeds: the certification gate needs >=k clean Tier-A
+            # observations that agree, so a single run can never certify (firing predicate 3: drivable).
+            obs = probe.observe(addr, off, seeds=list(range(CERT_MIN_OBS)))
             _TRACE_CACHE[key] = obs
         verdict = classify_observations(obs)                      # Section 5 rules (pure)
         if verdict["certified"] and verdict["ctype"]:             # certification gate
@@ -431,12 +468,21 @@ def runtime_type_probe_facts(call_tool, question) -> list:
 def _oracle_runtime_type_probe(call_tool, question) -> list:
     out = []
     for vid, ctype, tier, reason in runtime_type_probe_facts(call_tool, question):
+        is_ptr = ctype.strip().endswith("*")          # a representational pointer -> a FLOOR, not the pointee
+        if is_ptr:
+            # Floor: assert only the lower bound (it IS a pointer). Never flatten a well-supported
+            # specific pointer type; the pipeline defers the certified pin to synthesis when it already
+            # produced a more specific pointer, and pins the floor only to correct a NON-pointer answer.
+            claim = (f"{vid} is AT LEAST a pointer — controlled execution dereferenced its bytes as a "
+                     f"memory address (Tier-{tier} runtime evidence). If a more specific pointer type "
+                     f"(e.g. `T *`) is well-supported by the code, PREFER it; otherwise `{ctype}`.")
+        else:
+            claim = (f"{vid} has C type `{ctype}` — controlled execution observed its bytes used as "
+                     f"{ctype} (Tier-{tier} runtime evidence). Treat as established; this dynamic "
+                     f"evidence overrides a static guess for {vid}.")
         out.append({
             "vid": vid, "ctype": ctype, "source": "deterministic_runtime_type_probe",
-            "claim": (f"{vid} has C type `{ctype}` — controlled execution observed its bytes used as "
-                      f"{ctype} (Tier-{tier} runtime evidence). Treat as established; this dynamic "
-                      f"evidence overrides a static guess for {vid}."),
-            "reason": f"runtime probe, {reason}"})
+            "claim": claim, "reason": f"runtime probe, {reason}", "floor": is_ptr})
     return out
 
 

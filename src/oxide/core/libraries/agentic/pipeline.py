@@ -672,7 +672,7 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
                 vid = f["vid"]
                 if vid in oracle_facts:           # an earlier (stronger) oracle already pinned it
                     continue
-                oracle_facts[vid] = (f["ctype"], _oname, 0)
+                oracle_facts[vid] = (f["ctype"], _oname, bool(f.get("floor", False)))
                 records.append({"finding": {
                     "claim": f["claim"], "confidence": 1.0, "source": f["source"],
                     "evidence_refs": [{"tool": "decompile", "args": {}}]},
@@ -710,11 +710,31 @@ def _analyze_oid_impl(oid: str, question: str, cfg: dict, max_rounds: int, max_s
     # task assessment). Append a machine-readable, oracle-certified trailer that a consumer treats as
     # the top-priority answer for those entities. Task-agnostic: (entity, value) pairs only.
     if oracle_facts:
-        lines = "\n".join(f"- {vid}: {ctype}" for vid, (ctype, _c, _a) in sorted(
-            oracle_facts.items(), key=lambda kv: kv[0]))
-        answer = (answer.rstrip()
-                  + "\n\nORACLE-CERTIFIED (deterministic, authoritative — overrides the above):\n"
-                  + lines + "\n")
+        # Floor semantics: a "floor" oracle fact (e.g. the runtime probe's representational `void *`)
+        # asserts only a lower bound — the entity IS a pointer, pointee unknown. If synthesis already
+        # produced a MORE SPECIFIC pointer for that entity, defer to it instead of flattening it; pin
+        # the floor only to CORRECT a non-pointer answer. Non-floor facts (precise ABI types) always
+        # override, exactly as before. Keeps the mechanism generic — any oracle may mark a fact floor.
+        def _synth_ty(vid):
+            for _j in reversed(re.findall(r"\{[^{}]*\}", answer)):
+                try:
+                    _o = json.loads(_j)
+                    if vid in _o:
+                        return str(_o[vid])
+                except Exception:  # noqa: BLE001
+                    pass
+            _m = re.search(rf"(?mi)^\s*-?\s*{re.escape(vid)}\s*:\s*(.+?)\s*$", answer)
+            return _m.group(1) if _m else ""
+        lines = []
+        for vid, (ctype, _c, _floor) in sorted(oracle_facts.items(), key=lambda kv: kv[0]):
+            if _floor and "*" in _synth_ty(vid):     # synthesis has a more specific pointer -> keep it
+                print(f"  · floor deferral: {vid} keeps synthesized '{_synth_ty(vid)}' over {ctype}")
+                continue
+            lines.append(f"- {vid}: {ctype}")
+        if lines:
+            answer = (answer.rstrip()
+                      + "\n\nORACLE-CERTIFIED (deterministic, authoritative — overrides the above):\n"
+                      + "\n".join(lines) + "\n")
     TR.note("ANSWER", answer)
     print(f"── TOKENS: {L.USAGE['completion']:,} out / {L.USAGE['prompt']:,} in across "
           f"{L.USAGE['calls']} model calls ──")
