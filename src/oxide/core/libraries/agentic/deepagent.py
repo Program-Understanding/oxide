@@ -28,24 +28,24 @@ WORKER_TOOLS = {
     "static_type_oracles", "runtime_type_probe",
 }
 
-COORDINATOR_PROMPT = """You are a type-recovery expert for a STRIPPED x86-64 binary. The oid is \
-`{oid}` and the target function is at virtual address `{vaddr}`. Recover the precise C type of each \
-variable listed in the user message. Pass oid=`{oid}` to every tool, and use addr=`{vaddr}` (the \
-function has NO symbol name — always reference it by this address).
+COORDINATOR_PROMPT = """You are the COORDINATOR of a type-recovery team for a STRIPPED x86-64 binary \
+(oid `{oid}`, target function at virtual address `{vaddr}`). You do NOT analyze code yourself — you \
+PLAN and DELEGATE to the `type_worker` subagent.
 
-Follow this workflow with the tools — do not skip the tools, and STOP once you output the answer:
-1. Call `decompile(oid, addr="{vaddr}")` to read the function's C code.
-2. Call `static_type_oracles(oid, vaddr="{vaddr}", variables=<the variable lines>)` and \
-`runtime_type_probe(oid, vaddr="{vaddr}", variables=<the variable lines>)`. Any type they CERTIFY is \
-AUTHORITATIVE — use it exactly (a "floor" pointer may be made more specific if the code shows the \
-pointee).
-3. For variables no oracle certified, inspect them with `stack_var` (pass the frame offset, e.g. \
-offset="-0x18"), `disassemble`, or `xrefs_to` (all take addr="{vaddr}") and infer the type from usage.
-4. Output one `<id>: <C type>` line per variable, then, on the VERY LAST line, a single JSON object \
-mapping every id to its type, e.g. {{"V1": "char *", "V2": "int"}}. Exactly one type per id; unknown \
-=> "undefined".
+Do exactly this:
+1. Call `write_todos` to record a short plan: split the variables into groups (put ALL register \
+parameters in one group; split stack locals into groups of up to 6), one todo per group, plus a final \
+"synthesize answer" todo.
+2. For EACH variable group, call `task` to delegate to the `type_worker` subagent. In the task \
+description give it: the oid `{oid}`, the function vaddr `{vaddr}`, and the EXACT variables in that \
+group (each as `V<n>  <register 0x..|stack -0x..>  <size>`). The worker returns `<id>: <C type>` \
+findings for that group. Mark the todo completed as each group returns.
+3. After every group is done, output the combined answer: one `<id>: <C type>` line per variable, then \
+on the VERY LAST line a single JSON object mapping every id to its type, e.g. \
+{{"V1": "char *", "V2": "int"}}. Exactly one type per id; unknown => "undefined".
 
-Be efficient: do not re-call a tool with identical arguments, and finish promptly."""
+Always start with `write_todos`, then delegate every group with `task`. Do NOT call decompile, the \
+oracle tools, or any analysis tool yourself — that is the worker's job."""
 
 TYPE_WORKER_PROMPT = """You are a type-recovery specialist for a STRIPPED x86-64 binary (oid `{oid}`, \
 target function at virtual address `{vaddr}` — reference it by this address, it has no symbol name).
@@ -301,9 +301,12 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
             "system_prompt": TYPE_WORKER_PROMPT.format(oid=oid, vaddr=vaddr),
             "tools": tools,
         }
+        # Coordinator gets NO analysis tools — only the built-in write_todos (plan) and task
+        # (delegate). This forces genuine plan-then-delegate multi-agent behaviour; the worker holds
+        # the analysis + oracle tools.
         agent = create_deep_agent(
             model=model,
-            tools=tools,
+            tools=[],
             system_prompt=COORDINATOR_PROMPT.format(oid=oid, vaddr=vaddr),
             subagents=[type_worker],
         )
