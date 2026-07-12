@@ -108,21 +108,31 @@ def note(tag, data):
             pass
 
 
-def setup_phoenix(endpoint: str = "http://localhost:6006/v1/traces") -> bool:
-    """Register a LOCAL Phoenix OTel exporter and auto-instrument litellm. Returns True on
-    success. Safe to call more than once."""
+def setup_phoenix(endpoint: str = "http://localhost:6006/v1/traces",
+                  project_name: str | None = None) -> bool:
+    """Register a LOCAL Phoenix OTel exporter and auto-instrument every installed OpenInference
+    instrumentor. Returns True on success. Safe to call more than once.
+
+    `auto_instrument=True` patches whatever instrumentors are importable — litellm for the retired
+    custom loop, `openinference-instrumentation-langchain` for the deepagents/langgraph driver (so
+    the coordinator -> worker -> verifier graph, LLM calls, and tool calls all appear as spans).
+    Pass `project_name` to keep the deepagents traces in their own Phoenix project."""
     global _ENABLED, _tracer
     os.environ["OTEL_SDK_DISABLED"] = "false"
     try:
         from phoenix.otel import register
-        register(endpoint=endpoint, auto_instrument=True)  # patches installed OpenInference instrumentors
+        kw = {"endpoint": endpoint, "auto_instrument": True}
+        if project_name:
+            kw["project_name"] = project_name
+        register(**kw)  # patches installed OpenInference instrumentors
         _tracer = _otel.get_tracer("oxide-agentic-re") if _otel else None
         _ENABLED = _tracer is not None
-        print(f"[phoenix] local tracing -> {endpoint}  (open http://localhost:6006)")
+        proj = f"  project={project_name}" if project_name else ""
+        print(f"[phoenix] local tracing -> {endpoint}{proj}  (open http://localhost:6006)")
         return _ENABLED
     except Exception as e:  # noqa: BLE001
         print(f"[phoenix] disabled — {str(e)[:140]}\n"
-              "  install: pip install arize-phoenix openinference-instrumentation-litellm ; "
+              "  install: pip install arize-phoenix openinference-instrumentation-langchain ; "
               "then run `phoenix serve`")
         return False
 

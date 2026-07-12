@@ -24,8 +24,7 @@ from oxide.core.libraries.agentic import config as C
 # guessing function names for name-based tools like disasm_and_info_for_func). Includes the two
 # deterministic oracle tools (the hybrid trust layer).
 WORKER_TOOLS = {
-    "decompile", "disassemble", "stack_var", "xrefs_to", "read_values", "compute",
-    "static_type_oracles", "runtime_type_probe",
+    "disassemble", "stack_var", "xrefs_to", "read_values", "compute",
 }
 
 COORDINATOR_PROMPT = """You are the COORDINATOR of a type-recovery team for a STRIPPED x86-64 binary \
@@ -34,27 +33,32 @@ PLAN and DELEGATE to the `type_worker` subagent.
 
 Do exactly this:
 1. Call `write_todos` to record a short plan: split the variables into groups (put ALL register \
-parameters in one group; split stack locals into groups of up to 6), one todo per group, plus a final \
-"synthesize answer" todo.
+parameters in one group; split stack locals into groups of up to 6), one todo per group, then a \
+"verify all findings" todo and a final "synthesize answer" todo.
 2. For EACH variable group, call `task` to delegate to the `type_worker` subagent. In the task \
 description give it: the oid `{oid}`, the function vaddr `{vaddr}`, and the EXACT variables in that \
 group (each as `V<n>  <register 0x..|stack -0x..>  <size>`). The worker returns `<id>: <C type>` \
 findings for that group. Mark the todo completed as each group returns.
-3. After every group is done, output the combined answer: one `<id>: <C type>` line per variable, then \
-on the VERY LAST line a single JSON object mapping every id to its type, e.g. \
+3. After every group is done, call `task` ONCE to delegate to the `verifier` subagent. Give it the \
+oid `{oid}`, the vaddr `{vaddr}`, the FULL list of candidate `<id>: <C type>` claims from the workers, \
+AND the original variable list (each `V<n>  <register 0x..|stack -0x..>  <size>`, copied verbatim). \
+The verifier returns the adjudicated types — prefer these over the raw worker claims.
+4. Output the combined answer using the verifier's adjudicated types: one `<id>: <C type>` line per \
+variable, then on the VERY LAST line a single JSON object mapping every id to its type, e.g. \
 {{"V1": "char *", "V2": "int"}}. Exactly one type per id; unknown => "undefined".
 
-Always start with `write_todos`, then delegate every group with `task`. Do NOT call decompile, the \
-oracle tools, or any analysis tool yourself — that is the worker's job."""
+Always start with `write_todos`, then delegate groups to `type_worker`, then the candidates to \
+`verifier`. Do NOT call decompile, the oracle tools, or any analysis tool yourself."""
 
-TYPE_WORKER_PROMPT = """You are a type-recovery specialist for a STRIPPED x86-64 binary (oid `{oid}`, \
-target function at virtual address `{vaddr}` — reference it by this address, it has no symbol name).
+TYPE_WORKER_PROMPT = """You are a type-recovery specialist working from the ASSEMBLY of a STRIPPED \
+x86-64 binary (oid `{oid}`, function at virtual address `{vaddr}`). You do NOT have the decompiled C \
+code — infer each variable's type from the machine code alone.
 
-For the variables you are assigned: `decompile(oid, addr="{vaddr}")` to read the code, call \
-`static_type_oracles`/`runtime_type_probe` (with vaddr="{vaddr}" and the variable lines) for certified \
-types, and inspect specifics with `stack_var`/`disassemble`/`xrefs_to` (addr="{vaddr}"). \
-Infer pointer levels, arrays, struct/FILE pointers, and integer width/signedness from the usage; the \
-byte size constrains the type. Certified oracle types are authoritative.
+For the variables you are assigned: use `disassemble(oid, addr="{vaddr}")` to read the instructions, \
+`stack_var(oid, addr="{vaddr}", offset="-0x..")` to see how a stack slot is accessed, and \
+`xrefs_to`/`read_values`/`compute` (addr="{vaddr}") as needed. From the instruction-level evidence — \
+operand widths, sign-extension (`movsx` vs `movzx`), dereferences (`mov reg,[reg]`), and the calls a \
+value flows into — infer the C type. The byte size constrains it (a pointer is 8 bytes).
 
 Report EXACTLY one `<id>: <C type>` line per assigned variable. Report ONLY your assigned ids. Do not \
 re-call a tool with identical arguments; finish promptly."""
@@ -62,23 +66,82 @@ re-call a tool with identical arguments; finish promptly."""
 # the deterministic oracle tools (the hybrid trust layer the worker may consult)
 ORACLE_TOOLS = {"static_type_oracles", "runtime_type_probe", "verify_finding"}
 
+# the verifier subagent's tools: the DECOMPILATION lens (the evidence the worker could not see) plus
+# the deterministic finding-checker. The oracles are DELIBERATELY excluded — an A/B showed that letting
+# the LLM verifier call static_type_oracles/runtime_type_probe cratered version_etc_ar 86.46->70.83
+# (the 12B mis-applies the runtime-probe `void *` floor and downgrades specific pointers, even with an
+# explicit "never downgrade" instruction). The oracles' *values* are still applied — but SOUNDLY, by
+# the deterministic ORACLE-CERTIFIED trailer (`_certified_trailer` / `_collect_oracle_facts`), which is
+# monotone and never corrupts a correct answer. The verifier's job is only its independent decomp lens.
+VERIFIER_TOOLS = {"decompile", "verify_finding"}
+
 # The MCP server exposes ~38 tools; handing all of them (plus deepagents' built-in todo/fs/task
 # tools) to a small model causes long, exploratory, non-converging loops. Curate to the type-recovery
 # essentials + the oracle tools. This is the single biggest lever on multi-agent latency.
 ALLOWED_TOOLS = WORKER_TOOLS | ORACLE_TOOLS
 
-VERIFIER_PROMPT = """You are a deterministic-verification specialist for a stripped x86-64 binary \
-with oid = `{oid}` (pass this oid to every tool call, and pass the full variable list as `question`).
+VERIFIER_PROMPT = """You are a type-recovery reviewer with access to the DECOMPILED C code of a \
+STRIPPED x86-64 binary (oid `{oid}`, function at virtual address `{vaddr}`). A first-pass worker typed \
+the variables from the ASSEMBLY only — WITHOUT the decompilation. Your job is to REFINE its candidate \
+types using the higher-level C code it could not see.
 
-Given candidate `<id>: <C type>` claims, adjudicate each variable:
-1. FIRST call `static_type_oracles` and `runtime_type_probe`. Any certified fact they return is \
-AUTHORITATIVE and settles that variable's type. A runtime `void *` is a lower-bound FLOOR: keep a \
-more specific pointer if one is well-supported, otherwise use `void *`.
-2. For variables no oracle certified, call `verify_finding` with the claim. AGREE keeps it; DISAGREE \
-means the claim is wrong — re-derive it; absence of supporting evidence is INCONCLUSIVE, NEVER a \
-refutation.
+1. Call `decompile(oid, addr="{vaddr}")` to read the function's C code — the signature (parameter \
+types) and the declared locals.
+2. For each candidate `<id>: <C type>`: map the id to the decompiler parameter/local at its storage \
+slot, and CORRECT the type when the decompilation shows a more accurate one (pointer levels, a \
+specific pointee like `char *`/`FILE *`/`T *`, struct pointers, integer width/signedness). KEEP the \
+worker's candidate when the C code agrees with it or is silent — do not change a type without \
+evidence. Use `verify_finding` for a claim that cites concrete evidence.
 
-Report the adjudicated `<id>: <C type>` for every variable."""
+Report the final adjudicated `<id>: <C type>` line for EVERY variable you were given. Do not re-call a \
+tool with identical arguments; finish promptly."""
+
+# Enhanced verifier prompt (opt-in via AGENTIC_VERIFIER_ABI=1). Adds two deterministic rules that
+# tracing showed the plain verifier getting wrong on register-heavy functions (do_encode 55.88):
+#   (1) an explicit register-slot -> System V AMD64 ABI argument-position map, so a variable located in
+#       `register 0x38` is recognised as RDI = the 1st parameter and takes the decompiler's param_1
+#       type. The plain verifier had the correct C signature in hand (it decompiled) but still emitted
+#       `size_t` for `FILE *`/pointer params because it never aligned the register slot to a param slot.
+#   (2) a `void *` guard: never widen a value with no dereference to a pointer — an index/counter used
+#       only in arithmetic/comparison is an integer, not `void *`.
+VERIFIER_PROMPT_ABI = """You are a type-recovery reviewer with access to the DECOMPILED C code of a \
+STRIPPED x86-64 binary (oid `{oid}`, function at virtual address `{vaddr}`). A first-pass worker typed \
+the variables from the ASSEMBLY only — WITHOUT the decompilation. Your job is to REFINE its candidate \
+types using the higher-level C code it could not see.
+
+1. Call `decompile(oid, addr="{vaddr}")` to read the function's C signature (parameter types) and the \
+declared locals.
+2. MAP REGISTER PARAMETERS TO ABI POSITIONS. A variable whose location is `register <off>` is an \
+incoming argument passed in a System V AMD64 integer register. Translate the register slot to the \
+parameter position, then assign it the decompiler's type for THAT parameter:
+     register 0x38 = RDI = 1st parameter (param_1)
+     register 0x30 = RSI = 2nd parameter (param_2)
+     register 0x10 = RDX = 3rd parameter (param_3)
+     register 0x8  = RCX = 4th parameter (param_4)
+     register 0x80 = R8  = 5th parameter (param_5)
+     register 0x88 = R9  = 6th parameter (param_6)
+   e.g. if the signature is `f(FILE *param_1, char *param_2, ...)` then the `register 0x38` variable is \
+`FILE *` and the `register 0x30` variable is `char *`. A decompiler `undefined8 *`/`void *`/`long *` \
+param is still a POINTER — keep it a pointer (prefer the worker's specific pointee if it had one); \
+never collapse a pointer parameter to `size_t`/`int`.
+3. For every remaining variable (stack locals), map the id to the decompiler local at its slot and \
+CORRECT the type when the C code shows a more accurate one (pointer level, specific pointee like \
+`char *`/`FILE *`/`T *`, integer width/signedness). KEEP the worker's candidate when the C code agrees \
+or is silent. Use `verify_finding` for a claim that cites concrete evidence.
+4. NEVER emit `void *` for a value that is not dereferenced. A variable used only in arithmetic, \
+counting, or comparison (an index, length, column, sum) is an INTEGER (`int`/`long`/`size_t`/`idx_t`), \
+NOT a pointer — type it as the integer the code shows, never `void *`.
+
+Report the final adjudicated `<id>: <C type>` line for EVERY variable you were given. Do not re-call a \
+tool with identical arguments; finish promptly."""
+
+
+def _verifier_prompt() -> str:
+    """Pick the verifier prompt: the ABI-mapping variant when AGENTIC_VERIFIER_ABI is truthy, else the
+    plain reviewer prompt (the validated two-lens baseline)."""
+    if str(C.cfg_get("verifier_abi", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return VERIFIER_PROMPT_ABI
+    return VERIFIER_PROMPT
 
 
 def _repo_root() -> str:
@@ -256,6 +319,16 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     then append the deterministic ORACLE-CERTIFIED trailer. Returns the final per-variable answer."""
     from deepagents import create_deep_agent
 
+    # Phoenix tracing (opt-in): enable via `phoenix` opt / AGENTIC_PHOENIX=1 / `[agentic]` config.
+    # Endpoint via phoenix_endpoint / AGENTIC_PHOENIX_ENDPOINT / config. Must run BEFORE the model and
+    # agent graph are built so the LangChain instrumentor patches langgraph's callback manager — that
+    # is what makes the coordinator -> worker -> verifier delegation, LLM turns, and tool calls show
+    # up as nested spans in the local Phoenix UI (http://localhost:6006).
+    if str(C._opt(opts, "phoenix") or "").strip().lower() in ("1", "true", "yes", "on"):
+        from oxide.core.libraries.agentic import trace as _TR
+        _ep = C._opt(opts, "phoenix_endpoint") or "http://localhost:6006/v1/traces"
+        _TR.setup_phoenix(_ep, project_name="oxide-agentic-deepagents")
+
     # Warm the on-disk analysis cache in THIS process first, so the MCP subprocess (which shares the
     # datastore) reads cached Ghidra results on its first tool call instead of re-running analysis.
     from oxide.core.oxide import api as _api
@@ -301,14 +374,49 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
             "system_prompt": TYPE_WORKER_PROMPT.format(oid=oid, vaddr=vaddr),
             "tools": tools,
         }
+        # A genuine verifier AGENT: adjudicates the workers' candidate claims against the deterministic
+        # oracles and verify_finding, correcting any that conflict with a certified type. The
+        # ORACLE-CERTIFIED trailer still runs afterward as the final deterministic guarantee.
+        verifier = {
+            "name": "verifier",
+            "description": "Adjudicates candidate variable-type claims against the deterministic "
+                           "oracles and verify_finding; corrects claims that conflict with certified types.",
+            "system_prompt": _verifier_prompt().format(oid=oid, vaddr=vaddr),
+            "tools": [t for t in all_tools if getattr(t, "name", "") in VERIFIER_TOOLS],
+        }
+        # Neuter the auto-added general-purpose subagent. deepagents injects a `general-purpose`
+        # subagent that has ALL of the main agent's tools (every MCP analysis tool + the built-in
+        # filesystem tools ls/read_file/write_file/glob/grep/execute). Tracing showed the coordinator
+        # occasionally delegates a vague "map the variables" task to it, and it then thrashes —
+        # re-running decompile/stack_var and calling `ls /` — because it is the ONLY agent holding all
+        # of those tools at once. Providing our own subagent NAMED `general-purpose` overrides the
+        # default (deepagents only auto-adds one when none is supplied); ours has NO tools, so the
+        # coordinator is forced down the intended type_worker -> verifier path instead of a
+        # do-everything escape hatch. The two-lens split (worker=assembly, verifier=decompilation) and
+        # the deterministic trailer are unaffected.
+        general_purpose = {
+            "name": "general-purpose",
+            "description": "Disabled. Do NOT delegate to this agent — use type_worker and verifier.",
+            "system_prompt": "You have no tools and no role in this pipeline. Immediately reply "
+                             "'delegate to type_worker or verifier instead' and return control.",
+            "tools": [],
+        }
         # Coordinator gets NO analysis tools — only the built-in write_todos (plan) and task
         # (delegate). This forces genuine plan-then-delegate multi-agent behaviour; the worker holds
-        # the analysis + oracle tools.
+        # the analysis + oracle tools, and the verifier adjudicates the results.
+        # AGENTIC_NEUTER_GP=1 overrides deepagents' default all-tools general-purpose subagent with a
+        # no-tool stub. DEFAULT OFF: an A/B showed the stub HELPS some functions (do_decode +3.17) but
+        # HANGS others (version_etc_ar spun 18+ min) — the coordinator re-delegates in a loop when the
+        # stub replies "delegate elsewhere". Off by default is the safe behaviour (all functions
+        # converge); leave it as an opt-in experiment until the re-delegation loop is guarded.
+        _subagents = [type_worker, verifier]
+        if str(C._opt(opts, "neuter_gp") or "0").strip().lower() in ("1", "true", "yes", "on"):
+            _subagents.append(general_purpose)
         agent = create_deep_agent(
             model=model,
             tools=[],
             system_prompt=COORDINATOR_PROMPT.format(oid=oid, vaddr=vaddr),
-            subagents=[type_worker],
+            subagents=_subagents,
         )
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": user}]},
