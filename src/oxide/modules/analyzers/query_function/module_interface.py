@@ -3,12 +3,8 @@ NAME = "query_function"
 
 import logging
 import re
-<<<<<<< Updated upstream
 import time
-from typing import Any, Dict, List, Optional, Tuple
-=======
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
->>>>>>> Stashed changes
 
 import numpy as np
 
@@ -16,39 +12,6 @@ from oxide.core import api
 
 logger = logging.getLogger(NAME)
 
-<<<<<<< Updated upstream
-# -----------------------------------------------------------------------------
-# Options
-# -----------------------------------------------------------------------------
-opts_doc = {
-    "query": {"type": str, "mangle": True, "default": ""},
-    "query_path": {"type": str, "mangle": True, "default": ""},
-    "top_k": {"type": int, "mangle": False, "default": 10},
-    # affects indexed text, must fork caching
-    "max_chars": {"type": int, "mangle": True, "default": 20000},
-    # perf knobs, do not fork caching
-    "batch_size": {"type": int, "mangle": False, "default": 64},
-    "use_cache": {"type": bool, "mangle": False, "default": True},
-    "rebuild": {"type": bool, "mangle": False, "default": False},
-    # embedding space changes, must fork caching
-    "model_id": {
-        "type": str,
-        "mangle": True,
-        "default": "sentence-transformers/all-MiniLM-L6-v2",
-    },
-    # timing + live progress, do not fork caching
-    "timing": {"type": bool, "mangle": False, "default": True},
-    "timing_topn": {"type": int, "mangle": False, "default": 5},
-    "progress": {"type": bool, "mangle": False, "default": True},
-    "progress_every": {"type": int, "mangle": False, "default": 50},
-    # optional: file-level embedding aggregation
-    "return_file_embeddings": {"type": bool, "mangle": False, "default": False},
-    "file_agg": {"type": str, "mangle": False, "default": "attn"},
-    "attn_tau": {"type": float, "mangle": False, "default": 0.07},
-    # search mode: "semantic" (default), "literal" (substring), or "both"
-    "search_mode": {"type": str, "mangle": False, "default": "semantic"},
-    "similarity_threshold": {"type": float, "mangle": False, "default": 0.0},
-=======
 opts_doc = {
     "query": {"type": str, "mangle": True, "default": ""},
     "query_path": {"type": str, "mangle": True, "default": ""},
@@ -73,7 +36,13 @@ opts_doc = {
     "device": {"type": str, "mangle": False, "default": "auto"},
     "temperature": {"type": float, "mangle": False, "default": 0.07},
     "normalize_embeddings": {"type": bool, "mangle": True, "default": False},
->>>>>>> Stashed changes
+    "timing": {"type": bool, "mangle": False, "default": True},
+    "timing_topn": {"type": int, "mangle": False, "default": 5},
+    "progress": {"type": bool, "mangle": False, "default": True},
+    "progress_every": {"type": int, "mangle": False, "default": 50},
+    "return_file_embeddings": {"type": bool, "mangle": False, "default": False},
+    "file_agg": {"type": str, "mangle": False, "default": "attn"},
+    "attn_tau": {"type": float, "mangle": False, "default": 0.07},
 }
 
 
@@ -87,23 +56,8 @@ def documentation() -> Dict[str, Any]:
     }
 
 
-<<<<<<< Updated upstream
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
-=======
->>>>>>> Stashed changes
 def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
-    t_total0 = time.perf_counter()
-
-    timing = _as_bool(opts.get("timing", True))
-    topn = _as_int(opts.get("timing_topn", 5), 5)
-
-    progress = _as_bool(opts.get("progress", True))
-    progress_every = _as_int(opts.get("progress_every", 50), 50)
-
     oids = _expand_oids_best_effort(oid_list)
-
     backend = (opts.get("backend") or "decomp_minilm").strip().lower()
     if backend in ("decomp", "decompiler", "minilm", "decomp_minilm"):
         return _decomp_minilm_results(oids, opts)
@@ -116,19 +70,33 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
 
 
 def _decomp_minilm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
+    t_total0 = time.perf_counter()
     query = _load_text_option(opts, "query", "query_path")
     if not query:
         return {"error": "Please provide a query via 'query' or 'query_path'."}
 
-<<<<<<< Updated upstream
-    top_k = _as_int(opts.get("top_k", 10), 10)
+    limit = _result_limit(opts)
+    offset = max(0, _as_int(opts.get("offset", 0), 0))
+    top_k = limit
+    search_mode = (opts.get("search_mode") or "semantic").strip().lower()
+    if search_mode not in ("semantic", "literal", "both"):
+        return {
+            "error": f"Unsupported search_mode: {search_mode}",
+            "supported_search_modes": ["semantic", "literal", "both"],
+        }
+
+    include_full_code = _as_bool(opts.get("include_full_code", True))
+    preview_length = max(0, _as_int(opts.get("preview_length", 500), 500))
+    similarity_threshold = _as_float(opts.get("similarity_threshold", 0.0), 0.0)
     max_chars = _as_int(opts.get("max_chars", 20000), 20000)
-    batch_size = _as_int(opts.get("batch_size", 64), 64)
+    batch_size = max(1, _as_int(opts.get("batch_size", 64), 64))
     use_cache = _as_bool(opts.get("use_cache", True))
     rebuild = _as_bool(opts.get("rebuild", False))
-    model_id = (
-        opts.get("model_id") or "sentence-transformers/all-MiniLM-L6-v2"
-    ).strip()
+    timing = _as_bool(opts.get("timing", True))
+    progress = _as_bool(opts.get("progress", True))
+    progress_every = _as_int(opts.get("progress_every", 50), 50)
+    timing_topn = _as_int(opts.get("timing_topn", 5), 5)
+    model_id = (opts.get("model_id") or "sentence-transformers/all-MiniLM-L6-v2").strip()
     return_file_embeddings = _as_bool(opts.get("return_file_embeddings", False))
     file_agg = (opts.get("file_agg") or "attn").strip().lower()
     if file_agg not in ("top1", "mean", "attn"):
@@ -136,84 +104,49 @@ def _decomp_minilm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
     attn_tau = _as_float(opts.get("attn_tau", 0.07), 0.07)
     if attn_tau <= 0:
         attn_tau = 0.07
-    search_mode = (opts.get("search_mode") or "semantic").strip().lower()
-    if search_mode not in ("semantic", "literal", "both"):
-        search_mode = "semantic"
-    similarity_threshold = _as_float(opts.get("similarity_threshold", 0.0), 0.0)
-
-    t0 = time.perf_counter()
-    model = _get_model(model_id)
-    t_model = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
-    q_text = _truncate_text_for_model(query, model)
-    qvec = model.encode(q_text, normalize_embeddings=True).astype(np.float32)
-    t_qemb = time.perf_counter() - t0
-
-    if timing and progress:
-        logger.info(
-            "query_function start oids=%d model_load_s=%.3f query_embed_s=%.3f model_id=%s",
-            len(oids),
-            t_model,
-            t_qemb,
-            model_id,
-        )
-=======
-    limit = _result_limit(opts)
-    offset = max(0, int(opts.get("offset", 0) or 0))
-    search_mode = (opts.get("search_mode") or "semantic").strip().lower()
-    include_full_code = bool(opts.get("include_full_code", True))
-    preview_length = max(0, int(opts.get("preview_length", 500) or 500))
-    similarity_threshold = float(opts.get("similarity_threshold", 0.0) or 0.0)
-    max_chars = int(opts.get("max_chars", 20000) or 20000)
-    batch_size = max(1, int(opts.get("batch_size", 64) or 64))
-    model_id = (opts.get("model_id") or "sentence-transformers/all-MiniLM-L6-v2").strip()
-    use_cache = bool(opts.get("use_cache", True))
-    rebuild = bool(opts.get("rebuild", False))
-
-    if search_mode not in ("semantic", "literal"):
-        return {"error": f"Unsupported search_mode: {search_mode}", "supported_search_modes": ["semantic", "literal"]}
->>>>>>> Stashed changes
 
     model = None
     qvec = None
-    if search_mode == "semantic":
+    t_model = 0.0
+    t_qemb = 0.0
+    needs_embeddings = search_mode in ("semantic", "both") or return_file_embeddings
+    if needs_embeddings:
         try:
+            t0 = time.perf_counter()
             model = _get_sentence_model(model_id)
+            t_model = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            qvec = model.encode(_truncate_text_for_model(query, model), normalize_embeddings=True).astype(np.float32)
+            t_qemb = time.perf_counter() - t0
         except ImportError as err:
             return {
                 "error": str(err),
-                "hint": "Install sentence-transformers to use backend='decomp_minilm' search_mode='semantic'.",
+                "hint": "Install sentence-transformers to use backend='decomp_minilm' semantic search.",
             }
         except Exception as err:
-            logger.exception("Failed to load sentence-transformer model")
+            logger.exception("Failed to load or run sentence-transformer model")
             return {"error": f"Failed to load model '{model_id}': {err}"}
-        qvec = model.encode(query, normalize_embeddings=True).astype(np.float32)
+
+    if timing and progress:
+        logger.info(
+            "query_function start backend=decomp_minilm oids=%d mode=%s model_load_s=%.3f query_embed_s=%.3f",
+            len(oids), search_mode, t_model, t_qemb,
+        )
+
     counts: Dict[str, Dict[str, Any]] = {}
-<<<<<<< Updated upstream
-    candidates: List[Dict[str, Any]] = []
+    semantic_candidates: List[Dict[str, Any]] = []
     literal_candidates: List[Dict[str, Any]] = []
     oid_times: List[Dict[str, Any]] = []
     file_embeddings: Dict[str, List[float]] = {}
     file_scores: Dict[str, float] = {}
-    total_semantic: int = 0
-    total_literal: int = 0
+    total_functions = 0
 
     for idx_oid, oid in enumerate(oids, start=1):
         t_oid0 = time.perf_counter()
-
         if timing and progress:
             logger.info("oid %d/%d start oid=%s", idx_oid, len(oids), oid)
 
-        idx, tinfo = _load_or_build_index(
-=======
-    semantic_candidates: List[Dict[str, Any]] = []
-    literal_candidates: List[Dict[str, Any]] = []
-    total_functions = 0
-
-    for oid in oids:
-        idx = _load_or_build_decomp_index(
->>>>>>> Stashed changes
+        idx, tinfo = _load_or_build_decomp_index(
             oid=oid,
             model_id=model_id,
             max_chars=max_chars,
@@ -226,123 +159,45 @@ def _decomp_minilm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
             progress=progress,
             progress_every=progress_every,
         )
+        if not idx:
+            continue
 
-<<<<<<< Updated upstream
-        t_search0 = time.perf_counter()
-        if idx and idx.get("emb") is not None and idx["emb"].size > 0:
-            # Always run semantic search for file embeddings and counts
-            loc, loc_sims = _topk_indices_and_sims(idx["emb"], qvec, top_k)
-            sem_cands: List[Dict[str, Any]] = []
-            _append_topk_candidates(
-                candidates=sem_cands,
-                oid=oid,
-                idx=idx,
-                qvec=qvec,
-                top_k=top_k,
-                loc=loc,
-                loc_sims=loc_sims,
-            )
-            # Apply similarity threshold and tag match type
-            for c in sem_cands:
-                c["match_type"] = "semantic"
-                if c["score"] >= similarity_threshold:
-                    candidates.append(c)
-                    total_semantic += 1
+        total_functions += int(idx.get("num_indexed", 0) or 0)
+        literal_candidates.extend(_literal_decomp_results(
+            idx, oid, query, include_full_code, preview_length,
+        ))
 
+        if qvec is not None and idx.get("emb") is not None and idx["emb"].size > 0:
+            sims = idx["emb"].dot(qvec)
+            semantic_candidates.extend(_semantic_decomp_results(
+                idx, oid, sims, similarity_threshold, include_full_code, preview_length,
+            ))
             if return_file_embeddings:
-                file_emb = _aggregate_file_embedding(
-                    idx["emb"], loc, loc_sims, file_agg, attn_tau
-                )
+                loc, loc_sims = _topk_indices_and_sims(idx["emb"], qvec, top_k)
+                file_emb = _aggregate_file_embedding(idx["emb"], loc, loc_sims, file_agg, attn_tau)
                 if file_emb is not None:
                     file_embeddings[oid] = file_emb.astype(np.float32).tolist()
                     file_scores[oid] = float(file_emb.dot(qvec))
 
-        # Always run literal search for count reporting
-        lit_cands = _literal_matches(oid, idx, query, top_k)
-        total_literal += len(lit_cands)
-        for c in lit_cands:
-            literal_candidates.append(c)
-
-        t_search = time.perf_counter() - t_search0
-
-        t_oid_total = time.perf_counter() - t_oid0
-
         if timing:
-            entry = {
-                "oid": oid,
-                "total_s": t_oid_total,
-                "search_s": t_search,
-            }
+            entry = {"oid": oid, "total_s": time.perf_counter() - t_oid0}
             if tinfo:
                 entry.update(tinfo)
             oid_times.append(entry)
-
         if timing and progress:
-            cache_state = (tinfo or {}).get("cache_hit")
             logger.info(
-                "oid %d/%d done oid=%s total_s=%.3f search_s=%.3f cache_hit=%s indexed=%s",
-                idx_oid,
-                len(oids),
-                oid,
-                t_oid_total,
-                t_search,
-                cache_state,
+                "oid %d/%d done oid=%s total_s=%.3f cache=%s indexed=%s",
+                idx_oid, len(oids), oid, time.perf_counter() - t_oid0,
+                (counts.get(oid) or {}).get("cache"),
                 (counts.get(oid) or {}).get("num_indexed"),
             )
 
-    # Select final candidates based on search_mode
-    if search_mode == "literal":
-        final_candidates = sorted(literal_candidates, key=lambda x: x["score"], reverse=True)
-    elif search_mode == "both":
-        # Merge: literal matches first, then semantic results not already matched literally
-        lit_keys = {(c["oid"], c["func_addr"]) for c in literal_candidates}
-        sem_only = [c for c in candidates if (c["oid"], c["func_addr"]) not in lit_keys]
-        final_candidates = literal_candidates + sorted(sem_only, key=lambda x: x["score"], reverse=True)
-    else:
-        final_candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
-
-=======
-        total_functions += int(idx.get("num_indexed", 0) or 0)
-        literal_candidates.extend(_literal_decomp_results(
-            idx,
-            oid,
-            query=query,
-            include_full_code=include_full_code,
-            preview_length=preview_length,
-        ))
-        if search_mode == "semantic" and qvec is not None:
-            semantic_candidates.extend(_semantic_decomp_results(
-                idx,
-                oid,
-                sims=idx["emb"].dot(qvec),
-                similarity_threshold=similarity_threshold,
-                include_full_code=include_full_code,
-                preview_length=preview_length,
-            ))
-
     semantic_candidates.sort(key=lambda x: x["similarity"], reverse=True)
     literal_candidates.sort(key=lambda x: (x["oid"], x["function_name"]))
-    semantic_total = len(semantic_candidates) if search_mode == "semantic" else total_functions
-    selected = literal_candidates if search_mode == "literal" else semantic_candidates
+    selected = _select_decomp_candidates(search_mode, semantic_candidates, literal_candidates)
     page = selected[offset:offset + limit] if limit > 0 else selected[offset:]
 
-    if not page:
-        return {
-            "query": query,
-            "backend": "decomp_minilm",
-            "search_mode": search_mode,
-            "returned_count": 0,
-            "offset": offset,
-            "limit": limit,
-            "literal_total": len(literal_candidates),
-            "semantic_total": semantic_total,
-            "total_functions": total_functions,
-            "counts": counts,
-            "results": {"best_match": None, "candidates": []},
-            "warning": "No indexed functions available (no decomp output or no functions found).",
-        }
-
-    return {
+    out: Dict[str, Any] = {
         "query": query,
         "backend": "decomp_minilm",
         "search_mode": search_mode,
@@ -350,16 +205,32 @@ def _decomp_minilm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
         "offset": offset,
         "limit": limit,
         "literal_total": len(literal_candidates),
-        "semantic_total": semantic_total,
+        "semantic_total": len(semantic_candidates) if needs_embeddings else total_functions,
         "total_functions": total_functions,
         "counts": counts,
-        "results": {"best_match": page[0], "candidates": page},
+        "results": {"best_match": page[0] if page else None, "candidates": page},
         "notes": {
             "model_id": model_id,
             "similarity": "cosine (normalized dot product)",
-            "mimics": "pyghidra-mcp search_code/search_function result shape: semantic/literal modes, pagination, full-code toggle, and dual-mode counts.",
+            "file_agg": file_agg,
+            "attn_tau": attn_tau,
+            "mimics": "pyghidra-mcp search_code/search_function style: semantic/literal modes, pagination, full-code toggle, and mode counts.",
         },
     }
+    if not page:
+        out["warning"] = "No indexed functions available (no decomp output or no functions found)."
+    if return_file_embeddings:
+        out["file_embeddings"] = file_embeddings
+        out["file_scores"] = file_scores
+    if timing:
+        out["timing"] = _timing_summary(
+            total_s=time.perf_counter() - t_total0,
+            model_load_s=t_model,
+            query_embed_s=t_qemb,
+            oid_times=oid_times,
+            topn=timing_topn,
+        )
+    return out
 
 
 def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
@@ -367,13 +238,13 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
     if not prompts:
         return {"error": "Please provide 'query', 'query_path', 'prompts', or 'prompts_path'."}
 
-    top_k = int(opts.get("top_k", 10) or 10)
-    max_instructions = int(opts.get("max_instructions", 512) or 512)
-    batch_size = max(1, int(opts.get("batch_size", 16) or 16))
-    use_cache = bool(opts.get("use_cache", True))
-    rebuild = bool(opts.get("rebuild", False))
-    normalize = bool(opts.get("normalize_embeddings", False))
-    temperature = float(opts.get("temperature", 0.07) or 0.07)
+    top_k = _as_int(opts.get("top_k", 10), 10)
+    max_instructions = _as_int(opts.get("max_instructions", 512), 512)
+    batch_size = max(1, _as_int(opts.get("batch_size", 16), 16))
+    use_cache = _as_bool(opts.get("use_cache", True))
+    rebuild = _as_bool(opts.get("rebuild", False))
+    normalize = _as_bool(opts.get("normalize_embeddings", False))
+    temperature = _as_float(opts.get("temperature", 0.07), 0.07)
     asm_model_id = (opts.get("asm_model_id") or "hustcw/clap-asm").strip()
     text_model_id = (opts.get("text_model_id") or "hustcw/clap-text").strip()
 
@@ -384,10 +255,7 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
             device=(opts.get("device") or "auto").strip(),
         )
     except ImportError as err:
-        return {
-            "error": str(err),
-            "hint": "Install torch and transformers to use backend='clap_asm'.",
-        }
+        return {"error": str(err), "hint": "Install torch and transformers to use backend='clap_asm'."}
     except Exception as err:
         logger.exception("Failed to load CLAP models")
         return {"error": f"Failed to load CLAP models: {err}"}
@@ -414,7 +282,6 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
 
         logits = idx["emb"].dot(text_emb.T)
         scores = _softmax(logits / temperature, axis=1) if len(prompts) > 1 else logits
-
         if len(prompts) == 1:
             global_candidates.extend(_rank_single_prompt(idx, oid, scores[:, 0], top_k, prompt=prompts[0]))
             continue
@@ -431,32 +298,13 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
                 "score": float(confidence[i]),
                 "preview": idx["previews"][i],
             })
-
-        flat = []
         for i in range(scores.shape[0]):
             for j in range(scores.shape[1]):
-                flat.append((float(scores[i, j]), i, j))
-        flat.sort(key=lambda x: x[0], reverse=True)
-        for score, i, j in flat[:top_k if top_k > 0 else len(flat)]:
-            global_candidates.append(_candidate(idx, oid, i, score, prompts[j], prompt_index=j))
+                global_candidates.append(_candidate(idx, oid, i, float(scores[i, j]), prompts[j], prompt_index=j))
 
     global_candidates.sort(key=lambda x: x["score"], reverse=True)
->>>>>>> Stashed changes
     if top_k > 0:
-        final_candidates = final_candidates[:top_k]
-
-<<<<<<< Updated upstream
-    no_results = not final_candidates
-    out = {
-        "query": query,
-        "counts": counts,
-        "search_mode": search_mode,
-        "semantic_total": total_semantic,
-        "literal_total": total_literal,
-        "results": {
-            "best_match": final_candidates[0] if final_candidates else None,
-            "candidates": final_candidates,
-=======
+        global_candidates = global_candidates[:top_k]
     result: Dict[str, Any] = {
         "prompts": prompts,
         "backend": "clap_asm",
@@ -476,7 +324,6 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
                 "https://github.com/Hustcw/CLAP",
                 "https://huggingface.co/hustcw/clap-asm",
             ],
->>>>>>> Stashed changes
         },
     }
     if len(prompts) > 1:
@@ -485,51 +332,8 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
         result["warning"] = "No indexed functions available from ghidra_disasm."
     return result
 
-<<<<<<< Updated upstream
-    if no_results:
-        out["warning"] = "No indexed functions available (no decomp output or no functions found)."
-
-    out["notes"] = {
-        "model_id": model_id,
-        "similarity": "cosine (normalized dot product)",
-        "file_agg": file_agg,
-        "attn_tau": attn_tau,
-        "file_top_k": top_k,
-    }
-    if return_file_embeddings:
-        out["file_embeddings"] = file_embeddings
-        out["file_scores"] = file_scores
-        out["notes"].update({"file_agg": file_agg, "attn_tau": attn_tau})
-
-    if timing:
-        out["timing"] = _timing_summary(
-            total_s=time.perf_counter() - t_total0,
-            model_load_s=t_model,
-            query_embed_s=t_qemb,
-            oid_times=oid_times,
-            topn=topn,
-        )
-        if progress:
-            logger.info(
-                "query_function done total_s=%.3f oids=%d semantic=%d literal=%d mode=%s",
-                out["timing"]["total_s"],
-                len(oids),
-                total_semantic,
-                total_literal,
-                search_mode,
-            )
-
-    return out
-
-
-# -----------------------------------------------------------------------------
-# Index build + cache
-# -----------------------------------------------------------------------------
-def _load_or_build_index(
-=======
 
 def _load_or_build_decomp_index(
->>>>>>> Stashed changes
     *,
     oid: str,
     model_id: str,
@@ -537,78 +341,116 @@ def _load_or_build_decomp_index(
     batch_size: int,
     use_cache: bool,
     rebuild: bool,
-<<<<<<< Updated upstream
-    model: "SentenceTransformer",
+    model: Optional[Any],
     counts: Dict[str, Dict[str, Any]],
     timing: bool,
     progress: bool,
     progress_every: int,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     t0 = time.perf_counter()
-    key = _cache_key(oid, model_id, max_chars)
-=======
-    model: Optional[Any],
-    counts: Dict[str, Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
-    key = _decomp_cache_key(oid, model_id, max_chars, model is not None)
+    include_embeddings = model is not None
+    key = _decomp_cache_key(oid, model_id, max_chars, include_embeddings)
 
     if use_cache and (not rebuild) and api.local_exists(NAME, key):
         try:
             blob = api.local_retrieve(NAME, key) or {}
             idx = blob.get(oid)
-            if idx and ("codes" in idx) and ((model is None) or ("emb" in idx)):
+            if idx and ("codes" in idx) and ((not include_embeddings) or ("emb" in idx)):
                 counts[oid] = {
                     "cache": "hit",
                     "num_functions": idx.get("num_functions", 0),
                     "num_indexed": idx.get("num_indexed", 0),
                 }
-                return idx
+                return idx, _tinfo(timing, cache_hit=True, build_total_s=time.perf_counter() - t0)
         except Exception:
             logger.exception("Failed to load cached index for oid=%s", oid)
 
+    t_list0 = time.perf_counter()
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
     f_list = list(_iter_functions(funcs))
+    t_list = time.perf_counter() - t_list0
+
     addrs: List[str] = []
     names: List[str] = []
     texts: List[str] = []
     previews: List[str] = []
     codes: List[str] = []
+    decompile = _get_decompile_map(oid)
 
-    for addr, finfo in f_list:
-        text = _normalize_decomp_blob(_safe_decompile(oid, addr), max_chars=max_chars)
-        if not text:
-            continue
-        addrs.append(str(addr))
-        names.append(_extract_func_name(finfo, addr))
-        previews.append(_first_preview_line(text))
-        texts.append(text)
-        codes.append(text)
+    t_decomp0 = time.perf_counter()
+    last_report_t = t_decomp0
+    for count, (addr, finfo) in enumerate(f_list, start=1):
+        func_name = _extract_func_name(finfo, addr)
+        key_name = func_name if func_name in decompile else _resolve_decomp_key(decompile, func_name)
+        text = _normalize_decomp_blob(_decomp_text_from_blocks(decompile.get(key_name)), max_chars=max_chars) if key_name else ""
+        if text:
+            addrs.append(str(addr))
+            names.append(func_name)
+            texts.append(text)
+            codes.append(text)
+            previews.append(_first_preview_line(text))
+        if timing and progress and progress_every > 0 and count % progress_every == 0:
+            now = time.perf_counter()
+            elapsed = now - t_decomp0
+            rate = progress_every / (now - last_report_t) if now > last_report_t else 0.0
+            logger.info(
+                "oid=%s decomp progress calls=%d/%d indexed=%d elapsed_s=%.3f rate_fps=%.2f",
+                oid, count, len(f_list), len(texts), elapsed, rate,
+            )
+            last_report_t = now
+    t_decomp = time.perf_counter() - t_decomp0
 
     counts[oid] = {"cache": "miss", "num_functions": len(f_list), "num_indexed": len(texts)}
     if not texts:
-        return None
+        return None, _tinfo(
+            timing,
+            cache_hit=False,
+            list_funcs_s=t_list,
+            decomp_s=t_decomp,
+            embed_s=0.0,
+            store_s=0.0,
+            build_total_s=time.perf_counter() - t0,
+        )
 
-    idx = {
+    idx: Dict[str, Any] = {
         "num_functions": len(f_list),
         "num_indexed": len(texts),
         "addrs": addrs,
         "names": names,
         "previews": previews,
+        "texts": texts,
         "codes": codes,
     }
-    if model is not None:
+
+    t_embed = 0.0
+    if include_embeddings:
+        t_embed0 = time.perf_counter()
         idx["emb"] = model.encode(
-            texts,
+            _truncate_texts_for_model(texts, model),
             batch_size=batch_size,
             normalize_embeddings=True,
             show_progress_bar=False,
         ).astype(np.float32)
+        t_embed = time.perf_counter() - t_embed0
+
+    t_store = 0.0
     if use_cache:
+        t_store0 = time.perf_counter()
         try:
             api.local_store(NAME, key, {oid: idx})
         except Exception:
             logger.exception("Failed to cache index for oid=%s", oid)
-    return idx
+        t_store = time.perf_counter() - t_store0
+
+    return idx, _tinfo(
+        timing,
+        cache_hit=False,
+        list_funcs_s=t_list,
+        decomp_s=t_decomp,
+        embed_s=t_embed,
+        store_s=t_store,
+        build_total_s=time.perf_counter() - t0,
+    )
 
 
 def _load_or_build_clap_index(
@@ -624,8 +466,6 @@ def _load_or_build_clap_index(
     counts: Dict[str, Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
     key = _clap_cache_key(oid, asm_model_id, max_instructions, normalize)
->>>>>>> Stashed changes
-
     if use_cache and (not rebuild) and api.local_exists(NAME, key):
         try:
             blob = api.local_retrieve(NAME, key) or {}
@@ -636,110 +476,17 @@ def _load_or_build_clap_index(
                     "num_functions": idx.get("num_functions", 0),
                     "num_indexed": idx.get("num_indexed", 0),
                 }
-                if timing and progress:
-                    logger.info(
-                        "oid=%s cache hit num_functions=%d num_indexed=%d",
-                        oid,
-                        counts[oid]["num_functions"],
-                        counts[oid]["num_indexed"],
-                    )
-                return idx, _tinfo(
-                    timing,
-                    cache_hit=True,
-                    list_funcs_s=0.0,
-                    decomp_s=0.0,
-                    embed_s=0.0,
-                    store_s=0.0,
-                    num_decomp_calls=0,
-                    build_total_s=time.perf_counter() - t0,
-                )
+                return idx
         except Exception:
             logger.exception("Failed to load cached CLAP index for oid=%s", oid)
 
-    # list functions
-    t_list0 = time.perf_counter()
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
     blocks = api.get_field("ghidra_disasm", oid, "original_blocks") or {}
     f_list = list(_iter_functions(funcs))
-<<<<<<< Updated upstream
-    t_list = time.perf_counter() - t_list0
-
-    if timing and progress:
-        logger.info(
-            "oid=%s list funcs done num_functions=%d list_funcs_s=%.3f",
-            oid,
-            len(f_list),
-            t_list,
-        )
-
-=======
->>>>>>> Stashed changes
     addrs: List[str] = []
     names: List[str] = []
-    previews: List[str] = []
     texts: List[str] = []
-
-<<<<<<< Updated upstream
-    decompile = _get_decompile_map(oid)
-
-    # decompile loop
-    num_decomp_calls = 0
-    t_decomp0 = time.perf_counter()
-    last_report_t = t_decomp0
-
-    for addr, finfo in f_list:
-        num_decomp_calls += 1
-        func_name = _name_from_finfo(finfo)
-        raw_text = ""
-        if func_name:
-            key = func_name if func_name in decompile else _resolve_decomp_key(decompile, func_name)
-            if key is not None:
-                raw_text = _decomp_text_from_blocks(decompile.get(key))
-        text = _normalize_decomp_blob(raw_text, max_chars=max_chars)
-        if text:
-            addrs.append(str(addr))
-            names.append(func_name)
-            previews.append(_first_preview_line(text))
-            texts.append(text)
-
-        if (
-            timing
-            and progress
-            and progress_every > 0
-            and (num_decomp_calls % progress_every == 0)
-        ):
-            now = time.perf_counter()
-            dt = now - last_report_t
-            elapsed = now - t_decomp0
-            rate = (progress_every / dt) if dt > 0 else 0.0
-            logger.info(
-                "oid=%s decomp progress calls=%d/%d indexed=%d elapsed_s=%.3f rate_fps=%.2f",
-                oid,
-                num_decomp_calls,
-                len(f_list),
-                len(texts),
-                elapsed,
-                rate,
-            )
-            last_report_t = now
-
-    t_decomp = time.perf_counter() - t_decomp0
-
-    counts[oid] = {
-        "cache": "miss",
-        "num_functions": len(f_list),
-        "num_indexed": len(texts),
-    }
-
-    if timing and progress:
-        logger.info(
-            "oid=%s decomp done decomp_s=%.3f num_decomp_calls=%d num_indexed=%d",
-            oid,
-            t_decomp,
-            num_decomp_calls,
-            len(texts),
-        )
-=======
+    previews: List[str] = []
     for addr, finfo in f_list:
         asm = _function_assembly(finfo, blocks, max_instructions=max_instructions)
         if not asm:
@@ -748,296 +495,38 @@ def _load_or_build_clap_index(
         names.append(_extract_func_name(finfo, addr))
         texts.append(asm)
         previews.append(_first_preview_line(asm))
->>>>>>> Stashed changes
 
     counts[oid] = {"cache": "miss", "num_functions": len(f_list), "num_indexed": len(texts)}
     if not texts:
-        return None, _tinfo(
-            timing,
-            cache_hit=False,
-            list_funcs_s=t_list,
-            decomp_s=t_decomp,
-            embed_s=0.0,
-            store_s=0.0,
-            num_decomp_calls=num_decomp_calls,
-            build_total_s=time.perf_counter() - t0,
-        )
-
-<<<<<<< Updated upstream
-    # embed
-    t_embed0 = time.perf_counter()
-    text_batch = _truncate_texts_for_model(texts, model)
-    emb = model.encode(
-        text_batch,
-        batch_size=max(1, batch_size),
-        normalize_embeddings=True,
-        show_progress_bar=False,
-    ).astype(np.float32)
-    t_embed = time.perf_counter() - t_embed0
-
-    if timing and progress:
-        logger.info(
-            "oid=%s embed done embed_s=%.3f vectors=%d dim=%d",
-            oid,
-            t_embed,
-            emb.shape[0],
-            emb.shape[1] if emb.ndim == 2 else -1,
-        )
-
-=======
-    emb = _encode_clap_asm(encoders, texts, batch_size=batch_size, normalize=normalize)
->>>>>>> Stashed changes
+        return None
     idx = {
         "num_functions": len(f_list),
         "num_indexed": len(texts),
         "addrs": addrs,
         "names": names,
         "previews": previews,
-        "texts": texts,
-        "emb": emb,
+        "emb": _encode_clap_asm(encoders, texts, batch_size=batch_size, normalize=normalize),
     }
-<<<<<<< Updated upstream
-
-    # store
-    t_store = 0.0
-=======
->>>>>>> Stashed changes
     if use_cache:
-        t_store0 = time.perf_counter()
         try:
             api.local_store(NAME, key, {oid: idx})
         except Exception:
-<<<<<<< Updated upstream
-            logger.exception("Failed to cache index for oid=%s", oid)
-        t_store = time.perf_counter() - t_store0
-
-        if timing and progress:
-            logger.info(
-                "oid=%s cache store done store_s=%.3f key=%s", oid, t_store, key
-            )
-
-    return idx, _tinfo(
-        timing,
-        cache_hit=False,
-        list_funcs_s=t_list,
-        decomp_s=t_decomp,
-        embed_s=t_embed,
-        store_s=t_store,
-        num_decomp_calls=num_decomp_calls,
-        build_total_s=time.perf_counter() - t0,
-    )
-
-
-# -----------------------------------------------------------------------------
-# Candidate ranking
-# -----------------------------------------------------------------------------
-def _append_topk_candidates(
-    *,
-    candidates: List[Dict[str, Any]],
-    oid: str,
-    idx: Dict[str, Any],
-    qvec: np.ndarray,
-    top_k: int,
-    loc: Optional[np.ndarray] = None,
-    loc_sims: Optional[np.ndarray] = None,
-) -> None:
-    emb = idx["emb"]
-    if loc is None or loc_sims is None:
-        loc, loc_sims = _topk_indices_and_sims(emb, qvec, top_k)
-    if loc.size == 0:
-        return
-
-    addrs = idx["addrs"]
-    names = idx["names"]
-    previews = idx["previews"]
-
-    for i, score in zip(loc, loc_sims):
-        candidates.append(
-            {
-                "oid": oid,
-                "func_addr": addrs[i],
-                "func_name": names[i],
-                "score": float(score),
-                "preview": previews[i],
-            }
-        )
-
-
-def _literal_matches(
-    oid: str,
-    idx: Optional[Dict[str, Any]],
-    query: str,
-    top_k: int,
-) -> List[Dict[str, Any]]:
-    """Return functions whose decompiled text contains query as a substring."""
-    if not idx:
-        return []
-    texts = idx.get("texts") or []
-    addrs = idx.get("addrs") or []
-    names = idx.get("names") or []
-    previews = idx.get("previews") or []
-    q_lower = query.lower()
-    matches: List[Dict[str, Any]] = []
-    for i, text in enumerate(texts):
-        if q_lower in (text or "").lower():
-            matches.append({
-                "oid": oid,
-                "func_addr": addrs[i] if i < len(addrs) else None,
-                "func_name": names[i] if i < len(names) else None,
-                "score": 1.0,
-                "preview": previews[i] if i < len(previews) else "",
-                "match_type": "literal",
-            })
-    if top_k > 0:
-        return matches[:top_k]
-    return matches
-
-
-def _topk_indices_and_sims(
-    emb: np.ndarray, qvec: np.ndarray, top_k: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    sims = emb.dot(qvec)
-    if sims.size == 0:
-        return np.asarray([], dtype=int), np.asarray([], dtype=np.float32)
-
-    if top_k <= 0 or top_k >= sims.shape[0]:
-        loc = np.argsort(-sims)
-    else:
-        loc = np.argpartition(-sims, top_k - 1)[:top_k]
-        loc = loc[np.argsort(-sims[loc])]
-    return loc, sims[loc]
-
-
-def _aggregate_file_embedding(
-    emb: np.ndarray,
-    loc: np.ndarray,
-    sims: np.ndarray,
-    mode: str,
-    attn_tau: float,
-) -> Optional[np.ndarray]:
-    if loc is None or loc.size == 0:
-        return None
-
-    vecs = emb[loc]
-    if vecs.ndim != 2 or vecs.shape[0] == 0:
-        return None
-
-    if mode == "top1":
-        agg = vecs[0]
-    elif mode == "mean":
-        agg = np.mean(vecs, axis=0)
-    else:
-        tau = attn_tau if attn_tau > 0 else 0.07
-        logits = sims / tau
-        logits = logits - np.max(logits)
-        weights = np.exp(logits)
-        denom = float(weights.sum())
-        if denom <= 0:
-            agg = np.mean(vecs, axis=0)
-        else:
-            weights = weights / denom
-            agg = (vecs * weights[:, None]).sum(axis=0)
-
-    norm = float(np.linalg.norm(agg))
-    if norm > 0:
-        agg = agg / norm
-    return agg
-
-
-# -----------------------------------------------------------------------------
-# Timing helpers
-# -----------------------------------------------------------------------------
-def _tinfo(enabled: bool, **kw) -> Optional[Dict[str, Any]]:
-    return kw if enabled else None
-
-
-def _timing_summary(
-    *,
-    total_s: float,
-    model_load_s: float,
-    query_embed_s: float,
-    oid_times: List[Dict[str, Any]],
-    topn: int,
-) -> Dict[str, Any]:
-    def _top(key: str) -> List[Dict[str, Any]]:
-        return sorted(oid_times, key=lambda x: x.get(key, 0.0), reverse=True)[
-            : max(1, topn)
-        ]
-
-    return {
-        "total_s": float(f"{total_s:.6f}"),
-        "model_load_s": float(f"{model_load_s:.6f}"),
-        "query_embed_s": float(f"{query_embed_s:.6f}"),
-        "oids": len(oid_times),
-        "worst_oids_by_total_s": _top("total_s"),
-        "worst_oids_by_build_s": [
-            x for x in _top("build_total_s") if x.get("build_total_s") is not None
-        ],
-    }
-
-
-# -----------------------------------------------------------------------------
-# IO + utilities
-# -----------------------------------------------------------------------------
-def _expand_oids_best_effort(oid_list: List[str]) -> List[str]:
-    try:
-        return api.expand_oids(oid_list)
-    except Exception:
-        return oid_list
-
-
-def _load_query(opts: dict) -> str:
-    q = (opts.get("query") or "").strip()
-    qp = (opts.get("query_path") or "").strip()
-    if q:
-        return q
-    if not qp:
-        return ""
-    try:
-        with open(qp, "r", encoding="utf-8", errors="replace") as f:
-            return f.read().strip()
-    except OSError:
-        return ""
-
-
-def _as_int(v: Any, default: int) -> int:
-    try:
-        return int(v)
-    except Exception:
-        return default
-
-
-def _as_float(v: Any, default: float) -> float:
-    try:
-        return float(v)
-    except Exception:
-        return default
-
-
-def _as_bool(v: Any) -> bool:
-    return bool(v)
-
-
-def _cache_key(oid: str, model_id: str, max_chars: int) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{oid}_{model_id}_{max_chars}")
-=======
             logger.exception("Failed to cache CLAP index for oid=%s", oid)
     return idx
 
 
-def _rank_single_prompt(
-    idx: Dict[str, Any],
-    oid: str,
-    sims: np.ndarray,
-    top_k: int,
-    prompt: Optional[str] = None,
+def _select_decomp_candidates(
+    search_mode: str,
+    semantic_candidates: List[Dict[str, Any]],
+    literal_candidates: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    k_local = sims.shape[0] if top_k <= 0 else min(top_k, sims.shape[0])
-    if k_local <= 0:
-        return []
-    loc = np.argpartition(-sims, k_local - 1)[:k_local]
-    loc = loc[np.argsort(-sims[loc])]
-    return [_candidate(idx, oid, int(i), float(sims[i]), prompt) for i in loc]
+    if search_mode == "literal":
+        return literal_candidates
+    if search_mode == "both":
+        lit_keys = {(c["oid"], c["function_addr"]) for c in literal_candidates}
+        sem_only = [c for c in semantic_candidates if (c["oid"], c["function_addr"]) not in lit_keys]
+        return literal_candidates + sem_only
+    return semantic_candidates
 
 
 def _literal_decomp_results(
@@ -1053,14 +542,7 @@ def _literal_decomp_results(
         if query_lower not in str(code).lower():
             continue
         results.append(_decomp_search_candidate(
-            idx,
-            oid,
-            i,
-            code=code,
-            similarity=1.0,
-            search_mode="literal",
-            include_full_code=include_full_code,
-            preview_length=preview_length,
+            idx, oid, i, code, 1.0, "literal", include_full_code, preview_length,
         ))
     return results
 
@@ -1074,21 +556,14 @@ def _semantic_decomp_results(
     preview_length: int,
 ) -> List[Dict[str, Any]]:
     results = []
+    codes = idx.get("codes", [])
     for i in np.argsort(-sims):
         similarity = float(sims[i])
         if similarity < similarity_threshold:
             continue
-        codes = idx.get("codes", [])
         code = codes[int(i)] if int(i) < len(codes) else ""
         results.append(_decomp_search_candidate(
-            idx,
-            oid,
-            int(i),
-            code=code,
-            similarity=similarity,
-            search_mode="semantic",
-            include_full_code=include_full_code,
-            preview_length=preview_length,
+            idx, oid, int(i), code, similarity, "semantic", include_full_code, preview_length,
         ))
     return results
 
@@ -1104,23 +579,34 @@ def _decomp_search_candidate(
     preview_length: int,
 ) -> Dict[str, Any]:
     preview = _preview(code, preview_length)
-    result_code = code if include_full_code else preview
     return {
         "oid": oid,
         "function_addr": idx["addrs"][i],
         "function_name": idx["names"][i],
-        "code": result_code,
+        "func_addr": idx["addrs"][i],
+        "func_name": idx["names"][i],
+        "code": code if include_full_code else preview,
         "score": similarity,
         "similarity": similarity,
         "search_mode": search_mode,
+        "match_type": search_mode,
         "preview": None if include_full_code else preview,
     }
 
 
-def _preview(code: str, preview_length: int) -> str:
-    if preview_length <= 0:
-        return ""
-    return code[:preview_length] + "..." if len(code) > preview_length else code
+def _rank_single_prompt(
+    idx: Dict[str, Any],
+    oid: str,
+    sims: np.ndarray,
+    top_k: int,
+    prompt: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    k_local = sims.shape[0] if top_k <= 0 else min(top_k, sims.shape[0])
+    if k_local <= 0:
+        return []
+    loc = np.argpartition(-sims, k_local - 1)[:k_local]
+    loc = loc[np.argsort(-sims[loc])]
+    return [_candidate(idx, oid, int(i), float(sims[i]), prompt) for i in loc]
 
 
 def _candidate(
@@ -1143,7 +629,44 @@ def _candidate(
     if prompt_index is not None:
         out["prompt_index"] = prompt_index
     return out
->>>>>>> Stashed changes
+
+
+def _topk_indices_and_sims(emb: np.ndarray, qvec: np.ndarray, top_k: int) -> Tuple[np.ndarray, np.ndarray]:
+    sims = emb.dot(qvec)
+    if sims.size == 0:
+        return np.asarray([], dtype=int), np.asarray([], dtype=np.float32)
+    if top_k <= 0 or top_k >= sims.shape[0]:
+        loc = np.argsort(-sims)
+    else:
+        loc = np.argpartition(-sims, top_k - 1)[:top_k]
+        loc = loc[np.argsort(-sims[loc])]
+    return loc, sims[loc]
+
+
+def _aggregate_file_embedding(
+    emb: np.ndarray,
+    loc: np.ndarray,
+    sims: np.ndarray,
+    mode: str,
+    attn_tau: float,
+) -> Optional[np.ndarray]:
+    if loc is None or loc.size == 0:
+        return None
+    vecs = emb[loc]
+    if vecs.ndim != 2 or vecs.shape[0] == 0:
+        return None
+    if mode == "top1":
+        agg = vecs[0]
+    elif mode == "mean":
+        agg = np.mean(vecs, axis=0)
+    else:
+        logits = sims / (attn_tau if attn_tau > 0 else 0.07)
+        logits = logits - np.max(logits)
+        weights = np.exp(logits)
+        denom = float(weights.sum())
+        agg = np.mean(vecs, axis=0) if denom <= 0 else (vecs * (weights / denom)[:, None]).sum(axis=0)
+    norm = float(np.linalg.norm(agg))
+    return agg / norm if norm > 0 else agg
 
 
 def _iter_functions(funcs: Any):
@@ -1156,23 +679,8 @@ def _iter_functions(funcs: Any):
         for addr in funcs:
             yield addr, None
 
-<<<<<<< Updated upstream
-
-def _name_from_finfo(finfo: Any) -> Optional[str]:
-    """Extract a function name from a ghidra_disasm functions-dict entry."""
-    if isinstance(finfo, dict):
-        n = finfo.get("name")
-        return n if isinstance(n, str) and n else None
-    if isinstance(finfo, str) and finfo:
-        return finfo
-    return None
-
 
 def _get_decompile_map(oid: str) -> Dict[str, Any]:
-    """Fetch the whole ghidra_decmap once and return its {func_name: blocks} dict.
-
-    Done once per binary instead of once per function — see the build loop.
-    """
     decmap = api.retrieve("ghidra_decmap", [oid], {"org_by_func": True})
     if not isinstance(decmap, dict) or not decmap:
         return {}
@@ -1183,29 +691,19 @@ def _get_decompile_map(oid: str) -> Dict[str, Any]:
 
 
 def _resolve_decomp_key(decompile: Dict[str, Any], want: str) -> Optional[str]:
-    """Resolve a function name to a decompile key, tolerating C++ '::' qualifiers."""
     if want in decompile:
         return want
     want_short = want.split("::")[-1]
-    cands = [
-        k for k in decompile
-        if isinstance(k, str) and k.split("::")[-1] == want_short
-    ]
+    cands = [k for k in decompile if isinstance(k, str) and k.split("::")[-1] == want_short]
     return cands[0] if len(cands) == 1 else None
 
 
 def _decomp_text_from_blocks(func_blocks: Any) -> str:
-    """Reconstruct decompiled text from one function's ghidra_decmap blocks.
-
-    Mirrors function_decomp.retrieve_function_decomp_text so indexed text is
-    identical, but operates on an already-fetched block dict (no per-call I/O).
-    """
     if not isinstance(func_blocks, dict):
         return ""
     decomp_map: Dict[int, str] = {}
-    saw_any_tagged = False
     untagged_fallback: List[str] = []
-    for _block_id, block in func_blocks.items():
+    for block in func_blocks.values():
         if not isinstance(block, dict):
             continue
         lines = block.get("line") or []
@@ -1216,27 +714,12 @@ def _decomp_text_from_blocks(func_blocks: Any) -> str:
                 continue
             try:
                 left, right = raw.split(":", 1)
-                ln = int(left.strip())
-                decomp_map.setdefault(ln, right.rstrip("\r\n"))
-                saw_any_tagged = True
-                continue
+                decomp_map.setdefault(int(left.strip()), right.rstrip("\r\n"))
             except Exception:
-                pass
-            untagged_fallback.append(raw.rstrip("\r\n"))
-    if saw_any_tagged and decomp_map:
+                untagged_fallback.append(raw.rstrip("\r\n"))
+    if decomp_map:
         return "\n".join(decomp_map[ln] for ln in sorted(decomp_map))
-    if untagged_fallback:
-        return "\n".join(untagged_fallback)
-    return ""
-=======
-
-def _safe_decompile(oid: str, addr: Any) -> Any:
-    try:
-        res = api.retrieve("function_decomp", [oid], {"function_addr": str(addr)})
-        return res.get(oid, res) if isinstance(res, dict) else res
-    except Exception:
-        logger.debug("Decompile failed oid=%s addr=%s", oid, addr, exc_info=True)
-        return None
+    return "\n".join(untagged_fallback)
 
 
 def _function_assembly(finfo: Any, blocks: Dict[Any, Any], max_instructions: int) -> str:
@@ -1271,7 +754,6 @@ def _extract_func_name(finfo: Any, addr: Any) -> str:
     if isinstance(finfo, str) and finfo.strip():
         return finfo.strip()
     return f"sub_{addr}"
->>>>>>> Stashed changes
 
 
 def _first_preview_line(text: str) -> str:
@@ -1281,21 +763,19 @@ def _first_preview_line(text: str) -> str:
             return line[:200]
     return ""
 
-<<<<<<< Updated upstream
-=======
+
+def _preview(code: str, preview_length: int) -> str:
+    if preview_length <= 0:
+        return ""
+    return code[:preview_length] + "..." if len(code) > preview_length else code
+
 
 def _load_prompts(opts: dict) -> List[str]:
     query = _load_text_option(opts, "query", "query_path")
     if query:
         return [query]
-
     raw = _load_text_option(opts, "prompts", "prompts_path")
-    prompts = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if line:
-            prompts.append(line)
-    return prompts
+    return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
 def _load_text_option(opts: dict, value_key: str, path_key: str) -> str:
@@ -1311,12 +791,9 @@ def _load_text_option(opts: dict, value_key: str, path_key: str) -> str:
 
 
 def _result_limit(opts: dict) -> int:
-    limit = int(opts.get("limit", 0) or 0)
-    if limit > 0:
-        return limit
-    return int(opts.get("top_k", 10) or 10)
+    limit = _as_int(opts.get("limit", 0), 0)
+    return limit if limit > 0 else _as_int(opts.get("top_k", 10), 10)
 
->>>>>>> Stashed changes
 
 def _normalize_decomp_blob(f_decomp: Any, max_chars: int) -> str:
     if not f_decomp:
@@ -1326,97 +803,89 @@ def _normalize_decomp_blob(f_decomp: Any, max_chars: int) -> str:
     elif isinstance(f_decomp, str):
         text = f_decomp.strip()
     else:
-<<<<<<< Updated upstream
-        s = str(f_decomp).strip()
-    if max_chars and len(s) > max_chars:
-        return s[:max_chars]
-    return s
+        text = str(f_decomp).strip()
+    return text[:max_chars] if (max_chars and len(text) > max_chars) else text
 
 
-def _truncate_text_for_model(text: str, model: "SentenceTransformer") -> str:
-    """
-    Quietly cap text length to model token budget before embedding.
-    """
-    s = str(text or "").strip()
-    if not s:
-        return s
+def _truncate_text_for_model(text: str, model: Any) -> str:
+    text = str(text or "").strip()
     tokenizer = getattr(model, "tokenizer", None)
     max_tokens = int(getattr(model, "max_seq_length", 0) or 0)
-    if tokenizer is None or max_tokens <= 0:
-        return s
-
+    if not text or tokenizer is None or max_tokens <= 0:
+        return text
     try:
         enc = tokenizer(
-            s,
+            text,
             add_special_tokens=False,
             truncation=True,
             max_length=max_tokens,
             return_attention_mask=False,
             return_token_type_ids=False,
-            verbose=False,
         )
-    except TypeError:
-        # Some tokenizers do not support the `verbose` kwarg.
-        try:
-            enc = tokenizer(
-                s,
-                add_special_tokens=False,
-                truncation=True,
-                max_length=max_tokens,
-                return_attention_mask=False,
-                return_token_type_ids=False,
-            )
-        except Exception:
-            return s
+        ids = enc.get("input_ids") if isinstance(enc, dict) else None
+        if isinstance(ids, list) and ids and isinstance(ids[0], list):
+            ids = ids[0]
+        if isinstance(ids, list) and ids:
+            return tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=True).strip() or text
     except Exception:
-        return s
-
-    ids = enc.get("input_ids") if isinstance(enc, dict) else None
-    if ids is None:
-        return s
-    if isinstance(ids, list) and ids and isinstance(ids[0], list):
-        ids = ids[0]
-    if not isinstance(ids, list) or not ids:
-        return s
-
-    try:
-        out = str(
-            tokenizer.decode(
-                ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True,
-            )
-            or ""
-        ).strip()
-        return out or s
-    except Exception:
-        return s
+        return text
+    return text
 
 
-def _truncate_texts_for_model(
-    texts: List[str], model: "SentenceTransformer"
-) -> List[str]:
+def _truncate_texts_for_model(texts: List[str], model: Any) -> List[str]:
     return [_truncate_text_for_model(t, model) for t in texts]
 
 
-# -----------------------------------------------------------------------------
-# Model singleton
-# -----------------------------------------------------------------------------
-_MODEL: Optional["SentenceTransformer"] = None
-_MODEL_ID: Optional[str] = None
+def _tinfo(enabled: bool, **kw) -> Optional[Dict[str, Any]]:
+    return kw if enabled else None
 
 
-def _get_model(model_id: str) -> "SentenceTransformer":
-    from sentence_transformers import SentenceTransformer
+def _timing_summary(
+    *,
+    total_s: float,
+    model_load_s: float,
+    query_embed_s: float,
+    oid_times: List[Dict[str, Any]],
+    topn: int,
+) -> Dict[str, Any]:
+    def _top(key: str) -> List[Dict[str, Any]]:
+        return sorted(oid_times, key=lambda x: x.get(key, 0.0), reverse=True)[: max(1, topn)]
 
-    global _MODEL, _MODEL_ID
-    if _MODEL is None or _MODEL_ID != model_id:
-        _MODEL = SentenceTransformer(model_id)
-        _MODEL_ID = model_id
-    return _MODEL
-=======
-        text = str(f_decomp).strip()
-    return text[:max_chars] if (max_chars and len(text) > max_chars) else text
+    return {
+        "total_s": float(f"{total_s:.6f}"),
+        "model_load_s": float(f"{model_load_s:.6f}"),
+        "query_embed_s": float(f"{query_embed_s:.6f}"),
+        "oids": len(oid_times),
+        "worst_oids_by_total_s": _top("total_s"),
+        "worst_oids_by_build_s": [x for x in _top("build_total_s") if x.get("build_total_s") is not None],
+    }
+
+
+def _expand_oids_best_effort(oid_list: List[str]) -> List[str]:
+    try:
+        return api.expand_oids(oid_list)
+    except Exception:
+        return oid_list
+
+
+def _as_int(v: Any, default: int) -> int:
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+def _as_float(v: Any, default: float) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def _as_bool(v: Any) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(v)
 
 
 def _decomp_cache_key(oid: str, model_id: str, max_chars: int, include_embeddings: bool) -> str:
@@ -1468,7 +937,6 @@ def _get_clap_encoders(*, asm_model_id: str, text_model_id: str, device: str) ->
     key = (asm_model_id, text_model_id, device)
     if _CLAP_ENCODERS is not None and _CLAP_ENCODER_KEY == key:
         return _CLAP_ENCODERS
-
     try:
         import torch
         from transformers import AutoModel, AutoTokenizer
@@ -1478,14 +946,12 @@ def _get_clap_encoders(*, asm_model_id: str, text_model_id: str, device: str) ->
     actual_device = torch.device("cuda" if device == "auto" and torch.cuda.is_available() else "cpu")
     if device and device != "auto":
         actual_device = torch.device(device)
-
     asm_tokenizer = AutoTokenizer.from_pretrained(asm_model_id, trust_remote_code=True)
     text_tokenizer = AutoTokenizer.from_pretrained(text_model_id, trust_remote_code=True)
     asm_model = AutoModel.from_pretrained(asm_model_id, trust_remote_code=True).to(actual_device)
     text_model = AutoModel.from_pretrained(text_model_id, trust_remote_code=True).to(actual_device)
     asm_model.eval()
     text_model.eval()
-
     _CLAP_ENCODERS = _ClapEncoders(asm_tokenizer, asm_model, text_tokenizer, text_model, torch, actual_device)
     _CLAP_ENCODER_KEY = key
     return _CLAP_ENCODERS
@@ -1530,10 +996,8 @@ def _clap_output_embedding(output: Any, inputs: Dict[str, Any], torch: Any) -> A
         raise ValueError("CLAP model output did not include last_hidden_state")
     if len(emb.shape) == 2:
         return emb
-
     mask = inputs.get("attention_mask")
     if mask is None:
         return emb.mean(dim=1)
     mask = mask.unsqueeze(-1).expand(emb.size()).float()
     return torch.sum(emb * mask, dim=1) / torch.clamp(mask.sum(dim=1), min=1e-9)
->>>>>>> Stashed changes
