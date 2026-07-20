@@ -136,8 +136,22 @@ class FunctionSearchResult(BaseModel):
     oid: str
     function_name: str
     offset: int
-    score: float
-    match_type: str  # "semantic" or "literal"
+    code: str
+    similarity: float
+    search_mode: str  # "semantic" or "literal"
+    preview: Optional[str] = None
+
+
+class FunctionSearchResults(BaseModel):
+    results: list[FunctionSearchResult]
+    query: str
+    search_mode: str
+    returned_count: int
+    offset: int
+    limit: int
+    literal_total: int
+    semantic_total: int
+    total_functions: int
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -420,7 +434,7 @@ async def get_binary_metadata(oid_or_name: str) -> dict | str:
 
 @mcp.tool()
 async def get_function_list(oid_or_name: str,
-                            limit: int = 200, offset: int = 0) -> dict | str:
+                            limit: int = 200, start: int = 0) -> dict | str:
     """
     List functions in a binary with name, offset, instruction count, and cyclomatic complexity.
 
@@ -430,17 +444,21 @@ async def get_function_list(oid_or_name: str,
     Args:
         oid_or_name: OID or filename.
         limit: Maximum functions to return (default 200).
-        offset: Pagination offset into the offset-sorted list (default 0).
+        start: List index of the first result to return (default 0). This is NOT a byte
+            address — it is a position in the sorted function list (0 = first function,
+            200 = 201st function). To look up a function by byte address, call
+            decompile_function(oid, address) or disassemble(oid, address) directly.
 
     Returns:
         {items, offset, returned, total, has_more} where `items` is the sliced list
-        of {name, offset, num_insns, complexity, signature} dicts sorted by offset.
-        STOP paging when `has_more` is false.
+        of {name, offset, num_insns, complexity, signature} dicts sorted by byte offset.
+        The `offset` field in each item is a decimal byte address accepted as-is by
+        decompile_function() and disassemble(). STOP paging when `has_more` is false.
     """
     oid, err = _resolve_or_error(oid_or_name)
     if err:
         return err
-    err = _page_error(limit, offset)
+    err = _page_error(limit, start)
     if err:
         return err
 
@@ -459,7 +477,7 @@ async def get_function_list(oid_or_name: str,
         for name, info in result.items()
     ]
     funcs.sort(key=lambda f: f["offset"])
-    return _paginate(funcs, offset, limit)
+    return _paginate(funcs, start, limit)
 
 
 @mcp.tool()
@@ -485,14 +503,7 @@ async def search_symbols_by_name(oid_or_name: str, query: str,
     if err:
         return err
 
-    # Numeric or hex queries never match function names — redirect immediately.
     stripped_query = query.strip()
-    if re.fullmatch(r"0x[0-9a-fA-F]+|\d+", stripped_query):
-        return (
-            f"search_symbols_by_name searches by function name, not offset. "
-            f"To look up a function at numeric offset {stripped_query!r}, call "
-            f"decompile_function('{oid_or_name}', '{stripped_query}') directly."
-        )
 
     result = oxide.get_field("function_summary", [oid], oid) or {}
     if not result:
@@ -509,7 +520,15 @@ async def search_symbols_by_name(oid_or_name: str, query: str,
         if pattern.search(name)
     ]
     matches.sort(key=lambda s: s["name"])
-    return _paginate(matches, offset, limit)
+    paginated = _paginate(matches, offset, limit)
+    if not matches and re.fullmatch(r"0x[0-9a-fA-F]+|\d+", stripped_query):
+        paginated["note"] = (
+            f"Query {stripped_query!r} looks like a numeric offset; "
+            "search_symbols_by_name matches function names only. "
+            "Use decompile_function or disassemble with this offset directly. "
+            "If those also fail, verify the offset exists with get_function_list."
+        )
+    return paginated
 
 
 @mcp.tool()
@@ -671,8 +690,10 @@ async def decompile_function(oid_or_name: str, function_name_or_offset: str) -> 
             )
         else:
             error_msg = (
-                f"No decompilation for '{func_name}'. The Ghidra decompilation "
-                "analysis may not have run for this binary; run it first, then retry."
+                f"Function not found at offset '{function_name_or_offset}' in '{oid_or_name}'. "
+                "Verify the offset with get_function_list or search_symbols_by_name. "
+                "Note: disassembly listings show virtual addresses in hex (e.g. 0x1234); "
+                "pass the decimal function offset from get_function_list instead."
             )
         return DecompiledFunction(
             name=func_name, offset=target_offset, code=None, error=error_msg
@@ -1007,32 +1028,42 @@ async def search_functions(
     query: str,
     oid_or_name: str = "",
     collection_name: str = "",
-    top_k: int = 10,
+    limit: int = 5,
+    offset: int = 0,
     search_mode: str = "semantic",
+    include_full_code: bool = True,
+    preview_length: int = 500,
     similarity_threshold: float = 0.0,
-) -> list[dict] | str:
+) -> dict | str:
     """
-    Search for functions semantically using decompilation embeddings (MiniLM).
+    Search decompiled functions across one binary, one collection, or all binaries.
 
-    Searches over Ghidra-decompiled function code. The first call per binary is
-    slow while embeddings are built and cached; subsequent calls are fast.
+    Mirrors the `pyghidra-mcp` `search_code` tool shape, but scopes across Oxide
+    binaries instead of a single open program.
 
     Args:
-        query: Natural-language description of what the function does.
+        query: Natural-language description or literal snippet to search for.
         oid_or_name: Optional — scope search to one binary (OID or filename).
         collection_name: Optional — scope search to a named collection.
-        top_k: Number of results to return (default 10).
-        search_mode: "semantic" (embedding), "literal" (substring), or "both".
+        limit: Number of results to return (default 5).
+        offset: Pagination offset (default 0).
+        search_mode: "semantic" (embedding) or "literal" (substring).
+        include_full_code: Include full decompiled code in each result.
+        preview_length: Preview size when `include_full_code` is false.
         similarity_threshold: Minimum similarity score 0.0–1.0 (default 0.0).
 
     Returns:
-        List of {oid, function_name, offset, score, match_type} dicts, ordered
-        by score descending. Returns an error string if no analysis is available.
+        A paginated dict matching the `pyghidra-mcp` `search_code` result shape,
+        with Oxide-specific `oid` and `offset` fields per result.
     """
-    if top_k <= 0:
-        return "Invalid 'top_k': must be a positive integer."
-    if search_mode not in {"semantic", "literal", "both"}:
-        return "Invalid 'search_mode': use 'semantic', 'literal', or 'both'."
+    if limit <= 0:
+        return "Invalid 'limit': must be a positive integer."
+    if offset < 0:
+        return "Invalid 'offset': must be a non-negative integer."
+    if search_mode not in {"semantic", "literal"}:
+        return "Invalid 'search_mode': use 'semantic' or 'literal'."
+    if preview_length < 0:
+        return "Invalid 'preview_length': must be non-negative."
     if similarity_threshold < 0.0 or similarity_threshold > 1.0:
         return "Invalid 'similarity_threshold': must be between 0.0 and 1.0."
 
@@ -1056,8 +1087,11 @@ async def search_functions(
 
     result = oxide.retrieve("query_function", scope_oids, {
         "query": query,
-        "top_k": top_k,
+        "limit": limit,
+        "offset": offset,
         "search_mode": search_mode,
+        "include_full_code": include_full_code,
+        "preview_length": preview_length,
         "similarity_threshold": similarity_threshold,
     })
 
@@ -1065,20 +1099,34 @@ async def search_functions(
         return "No results. query_function analysis may not have run for these binaries."
 
     candidates = result.get("results", {}).get("candidates", [])
-    if not candidates:
-        return "No matching functions found."
-
     out = []
     for c in candidates:
-        offset = _to_offset(c.get("func_addr")) or 0
+        func_offset = (
+            _to_offset(c.get("function_addr"))
+            or _to_offset(c.get("func_addr"))
+            or 0
+        )
         out.append(FunctionSearchResult(
             oid=c.get("oid") or "",
-            function_name=c.get("func_name") or "",
-            offset=offset,
-            score=float(c.get("score", 0.0)),
-            match_type=c.get("match_type", "semantic"),
-        ).model_dump())
-    return out
+            function_name=c.get("function_name") or c.get("func_name") or "",
+            offset=func_offset,
+            code=c.get("code") or "",
+            similarity=float(c.get("similarity", c.get("score", 0.0))),
+            search_mode=c.get("search_mode") or c.get("match_type") or search_mode,
+            preview=c.get("preview"),
+        ))
+
+    return FunctionSearchResults(
+        results=out,
+        query=result.get("query", query),
+        search_mode=result.get("search_mode", search_mode),
+        returned_count=int(result.get("returned_count", len(out))),
+        offset=int(result.get("offset", offset)),
+        limit=int(result.get("limit", limit)),
+        literal_total=int(result.get("literal_total", 0)),
+        semantic_total=int(result.get("semantic_total", 0)),
+        total_functions=int(result.get("total_functions", 0)),
+    ).model_dump()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
