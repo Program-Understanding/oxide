@@ -29,7 +29,7 @@ def opts_fingerprint(opts: Dict[str, Any], prompt_bundle: Optional[Dict[str, Any
     tracked_opts = {
         key: opts.get(key)
         for key in (
-            "model", "stage3_model", "filter", "raw",
+            "model", "filter", "review_mode", "diff_mode", "raw",
             "stage1_only", "stage2_only", "no_triage", "include_added_callees",
         )
     }

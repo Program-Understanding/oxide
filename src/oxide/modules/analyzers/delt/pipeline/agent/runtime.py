@@ -5,19 +5,17 @@ from typing import Any, Dict, Optional
 
 from langchain_ollama import ChatOllama
 
-from oxide.modules.analyzers.backdoor_triage.config import NAME
-from oxide.modules.analyzers.backdoor_triage.pipeline.agent.graph import build_triage_graph
-from oxide.modules.analyzers.backdoor_triage.pipeline.agent import agent_runtime
-from oxide.modules.analyzers.backdoor_triage.pipeline.utils.llm import load_prompt_bundle
+from oxide.modules.analyzers.delt.config import NAME
+from oxide.modules.analyzers.delt.pipeline.agent.graph import build_triage_graph
+from oxide.modules.analyzers.delt.pipeline.agent import agent_runtime
+from oxide.modules.analyzers.delt.pipeline.utils.llm import load_prompt_bundle
 
 logger = logging.getLogger(NAME)
 
 
 @dataclass
 class TriageRuntime:
-    """ Bundles everything all three stages need so no code path can run against
-        uninitialized/None LLM clients -- constructing one *is* the initialization.
-    """
+    """Bundles the stage-1/stage-2 runtime so triage always runs against initialized clients."""
 
     stage1_llm: ChatOllama
     stage1_sys: str
@@ -26,10 +24,6 @@ class TriageRuntime:
     stage2_sys: str
     stage2_sys_callee: str
     stage2_request_timeout_s: float
-    stage3_llm: ChatOllama
-    stage3_sys: str
-    stage3_request_timeout_s: float
-    stage3_max_repeated_tool_calls: int
     graph: Any
 
 
@@ -41,39 +35,39 @@ def _runtime_cache_key(opts: Dict[str, Any]) -> str:
     return "|".join(
         [
             str(opts["model"]),
-            str(opts["stage3_model"]),
+            str(opts.get("ollama_base_url") or ""),
             str(opts.get("stage1_prompt_file") or ""),
             str(opts.get("stage2_prompt_file") or ""),
             str(opts.get("stage2_callee_prompt_file") or ""),
-            str(opts.get("stage3_prompt_file") or ""),
             str(opts.get("stage2_request_s") or ""),
-            str(opts.get("stage3_request_s") or ""),
             str(opts.get("stage1_client_request_s") or ""),
-            str(opts.get("stage3_max_repeated_tool_calls") or ""),
         ]
     )
 
 
 def _build_runtime(opts: Dict[str, Any]) -> TriageRuntime:
     model = str(opts["model"])
-    stage3_model = str(opts["stage3_model"])
+    # Optional per-run Ollama endpoint. Lets one experiment fan out across several
+    # Ollama servers (e.g. one per GPU); None falls back to ChatOllama's default host.
+    base_url = str(opts.get("ollama_base_url") or "").strip() or None
     prompts = load_prompt_bundle(opts)
     stage1_sys = prompts["stage1"]["system"]
     stage1_schema = prompts["stage1"].get("schema") or {}
     stage2_sys = prompts["stage2"]["system"]
     stage2_sys_callee = prompts["stage2_callee"]["system"]
-    stage3_sys = prompts["stage3"]["system"]
 
     stage1_llm = ChatOllama(
         model=model,
+        base_url=base_url,
         temperature=0.0,
         keep_alive="10m",
         request_timeout=float(opts["stage1_client_request_s"]),
         format=stage1_schema,
         model_kwargs={"num_predict": 512},
     )
-    stage2_llm = agent_runtime.make_agent_model(model, request_timeout_s=float(opts["stage2_request_s"]))
-    stage3_llm = agent_runtime.make_agent_model(stage3_model, request_timeout_s=float(opts["stage3_request_s"]))
+    stage2_llm = agent_runtime.make_agent_model(
+        model, request_timeout_s=float(opts["stage2_request_s"]), base_url=base_url
+    )
 
     runtime = TriageRuntime(
         stage1_llm=stage1_llm,
@@ -83,10 +77,6 @@ def _build_runtime(opts: Dict[str, Any]) -> TriageRuntime:
         stage2_sys=stage2_sys,
         stage2_sys_callee=stage2_sys_callee,
         stage2_request_timeout_s=float(opts["stage2_request_s"]),
-        stage3_llm=stage3_llm,
-        stage3_sys=stage3_sys,
-        stage3_request_timeout_s=float(opts["stage3_request_s"]),
-        stage3_max_repeated_tool_calls=int(opts["stage3_max_repeated_tool_calls"]),
         graph=None,
     )
     setattr(runtime.stage1_llm, "_oxide_stage1_token_timeout_s", float(opts["stage1_token_s"]))
@@ -95,31 +85,25 @@ def _build_runtime(opts: Dict[str, Any]) -> TriageRuntime:
     return runtime
 
 
-def get_or_build_runtime(opts: Optional[Dict[str, Any]]) -> TriageRuntime:
-    """ Memoized by model + prompt/timeout config. Calling this unconditionally
-        before any triage work guarantees a fully-initialized runtime (live LLM
-        clients for all three stages and a compiled graph) always exists before
-        triage runs -- there is no uninitialized/partial state a caller could hit.
-    """
+def _resolve_runtime_opts(opts: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     resolved_opts = dict(opts or {})
     model = str(resolved_opts.get("model") or "").strip()
     if not model:
         raise ValueError(
-            "backdoor_triage requires an explicit 'model' opt (an Ollama model tag); "
+            "delt requires an explicit 'model' opt (an Ollama model tag); "
             "no default model is configured."
         )
     resolved_opts["model"] = model
-    # Stage 3 defaults to the same model as Stage 1/2 unless overridden -- it's
-    # the one stage worth pointing at a different (e.g. larger/slower) model.
-    resolved_opts["stage3_model"] = str(resolved_opts.get("stage3_model") or model).strip() or model
     resolved_opts["stage2_request_s"] = float(resolved_opts.get("stage2_request_s") or 150.0)
-    resolved_opts["stage3_request_s"] = float(resolved_opts.get("stage3_request_s") or 3600.0)
     resolved_opts["stage1_token_s"] = float(resolved_opts.get("stage1_token_s") or 30.0)
     resolved_opts["stage1_total_s"] = float(resolved_opts.get("stage1_total_s") or 300.0)
     resolved_opts["stage1_client_request_s"] = float(resolved_opts.get("stage1_client_request_s") or 180.0)
-    resolved_opts["stage3_max_repeated_tool_calls"] = int(
-        resolved_opts.get("stage3_max_repeated_tool_calls") or agent_runtime.DEFAULT_MAX_CONSECUTIVE_REPEATED_TOOL_CALLS
-    )
+    return resolved_opts
+
+
+def get_or_build_runtime(opts: Optional[Dict[str, Any]]) -> TriageRuntime:
+    """Memoized by model + endpoint + prompt/timeout config for the triage pipeline."""
+    resolved_opts = _resolve_runtime_opts(opts)
     cache_key = _runtime_cache_key(resolved_opts)
     with RUNTIMES_LOCK:
         runtime = RUNTIMES.get(cache_key)
@@ -127,3 +111,12 @@ def get_or_build_runtime(opts: Optional[Dict[str, Any]]) -> TriageRuntime:
             runtime = _build_runtime(resolved_opts)
             RUNTIMES[cache_key] = runtime
         return runtime
+
+
+def build_worker_runtime(opts: Optional[Dict[str, Any]], base_url: Optional[str] = None) -> TriageRuntime:
+    """Build a fresh (non-memoized) runtime pinned to base_url, for per-function parallel
+    workers. Each worker owns its own ChatOllama clients and compiled graph, so concurrent
+    function triage never shares a graph or checkpointer across threads."""
+    resolved_opts = _resolve_runtime_opts(opts)
+    resolved_opts["ollama_base_url"] = base_url
+    return _build_runtime(resolved_opts)

@@ -13,8 +13,8 @@ import re
 import textwrap
 from typing import Any, Dict, List, Optional, Tuple
 
-from oxide.modules.analyzers.backdoor_triage.config import NAME
-from oxide.modules.analyzers.backdoor_triage.pipeline.utils.text_utils import preview_text, write_text
+from oxide.modules.analyzers.delt.config import NAME
+from oxide.modules.analyzers.delt.pipeline.utils.text_utils import preview_text, write_text
 
 logger = logging.getLogger(NAME)
 
@@ -97,8 +97,6 @@ class TraceLogger:
         line = text.replace("\n", " ").strip()
         if line:
             append_trace_line(self.trace_path, f"[{elapsed_s:7.2f}s] [{source}] text: {line}")
-            preview = line[:600] + ("…" if len(line) > 600 else "")
-            logger.info("[%6.2fs] [%s] %s", elapsed_s, source, preview)
         self.text_buffers[source] = ""
 
     def flush(self, elapsed_s: float) -> None:
@@ -134,10 +132,8 @@ class TraceLogger:
                 self._flush_source(source, elapsed_s, force=True)
                 if source == "agent" and name == "task":
                     append_trace_line(self.trace_path, f"[{elapsed_s:7.2f}s] [agent] subagent call: task")
-                    logger.info("[%6.2fs] [agent] → task (subagent)", elapsed_s)
                 else:
                     append_trace_line(self.trace_path, f"[{elapsed_s:7.2f}s] [{source}] tool call: {name}")
-                    logger.info("[%6.2fs] [%s] → %s", elapsed_s, source, name)
             content = getattr(token, "content", "")
             if getattr(token, "type", "") != "tool" and content and not tool_call_chunks:
                 self.text_buffers[source] = self.text_buffers.get(source, "") + _extract_token_text(content)
@@ -148,14 +144,12 @@ class TraceLogger:
                 if source == "agent" and tool_name == "task":
                     result_preview = preview_text(getattr(token, "content", ""), limit=300)
                     append_trace_line(self.trace_path, f"[{elapsed_s:7.2f}s] [subagent] result: {result_preview}")
-                    logger.info("[%6.2fs] [subagent] ← %s", elapsed_s, result_preview)
                 else:
                     result_preview = preview_text(getattr(token, "content", ""), limit=200)
                     append_trace_line(
                         self.trace_path,
                         f"[{elapsed_s:7.2f}s] [{source}] tool result [{tool_name}]: {result_preview}",
                     )
-                    logger.info("[%6.2fs] [%s] ← %s: %s", elapsed_s, source, tool_name, result_preview)
 
 
 def write_trace_view(trace_path: str, out_path: str) -> None:

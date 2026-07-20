@@ -9,7 +9,8 @@ system: |
   1. a concrete trigger introduced or changed by the update, and
   2. a concrete malicious payoff directly enabled by that trigger.
   Label "not_safe" only if both are visible in the diff.
-  Label "safe" otherwise or if you are unsure.
+  Label "safe" if it is a benign change with no reasonable threat of a backdoor being injected.
+  Label "not_safe" if unsure.
 
   Return EXACT JSON ONLY:
   {

@@ -7,16 +7,16 @@ import logging
 import time
 from typing import Any, Dict, Literal, Optional, Tuple
 
-from oxide.modules.analyzers.backdoor_triage.config import NAME
-from oxide.modules.analyzers.backdoor_triage.pipeline.types import TriageState
-from oxide.modules.analyzers.backdoor_triage.pipeline.agent import agent_runtime
-from oxide.modules.analyzers.backdoor_triage.pipeline.agent.telemetry.agent_trace import TraceLogger, append_trace_line
-from oxide.modules.analyzers.backdoor_triage.pipeline.utils.text_utils import (
+from oxide.modules.analyzers.delt.config import NAME
+from oxide.modules.analyzers.delt.pipeline.types import TriageState
+from oxide.modules.analyzers.delt.pipeline.agent import agent_runtime
+from oxide.modules.analyzers.delt.pipeline.agent.telemetry.agent_trace import TraceLogger, append_trace_line
+from oxide.modules.analyzers.delt.pipeline.utils.text_utils import (
     _coerce_label,
     _coerce_str,
     progress_label as _progress_label_fmt,
 )
-from oxide.modules.analyzers.backdoor_triage.pipeline.agent.telemetry.token_usage import collect_llm_usage_counts
+from oxide.modules.analyzers.delt.pipeline.agent.telemetry.token_usage import collect_llm_usage_counts
 
 try:
     from pydantic import BaseModel, Field
@@ -117,10 +117,6 @@ def _run_stage2_node(
         system_prompt=sys_prompt,
     )
 
-    logger.info(
-        "%s stage2 start diff=%d chars callee_funcs=%d",
-        progress_label, len(diff_text), len(callee_texts),
-    )
     out: Any = None
     invoke_elapsed_s = 0.0
     invoke_t0 = time.perf_counter()
@@ -128,7 +124,7 @@ def _run_stage2_node(
     try:
         append_trace_line(trace_path, "[   0.00s] [stage2] start", truncate=True)
         append_trace_line(trace_path, "[   0.00s] [stage2] mode: astream (live trace + state collection)")
-        config = {"configurable": {"thread_id": f"backdoor_triage_stage2_{time.time_ns()}"}}
+        config = {"configurable": {"thread_id": f"delt_stage2_{time.time_ns()}"}}
         payload = agent_runtime.build_agent_payload(diff_text, prompt, callee_texts)
         out = agent_runtime.invoke_agent_with_timeout(
             agent, payload, config=config,

@@ -81,13 +81,17 @@ def make_decision_tool(
     return _submit
 
 
-def make_agent_model(model: str, *, request_timeout_s: float) -> ChatOllama:
+def make_agent_model(
+    model: str, *, request_timeout_s: float, base_url: Optional[str] = None
+) -> ChatOllama:
     kwargs: Dict[str, Any] = {
         "model": model,
         "temperature": 0.0,
         "keep_alive": "10m",
         "profile": {"max_input_tokens": 262144},
     }
+    if base_url:
+        kwargs["base_url"] = base_url
     if request_timeout_s > 0:
         kwargs["client_kwargs"] = {"timeout": request_timeout_s}
     return ChatOllama(**kwargs)
@@ -100,12 +104,9 @@ def build_triage_agent(
     decision_tool: Any,
     system_prompt: str,
     extra_tools: Optional[list] = None,
-    agent_name: str = "backdoor_triage_agent",
+    agent_name: str = "delt_agent",
 ) -> Any:
-    """ Build a deepagents agent sandboxed to file_mirror, with decision_tool (this
-        stage's own submit-decision tool, from make_decision_tool) plus any
-        extra_tools (e.g. MCP-backed binary-analysis tools for Stage 3).
-    """
+    """Build a deepagents agent sandboxed to file_mirror with this stage's decision tool."""
     return create_deep_agent(
         model=main_model,
         tools=[decision_tool] + list(extra_tools or []),
@@ -150,10 +151,7 @@ async def _stream_agent_core(
         agent should fail fast rather than burn the whole timeout looping.
 
         This is a plain coroutine (no event-loop management of its own) so it can
-        be awaited either from a fresh asyncio.Runner (invoke_agent_with_timeout,
-        for Stage 1/2 called from sync code) or from within an already-running
-        loop (ainvoke_agent_with_timeout, for Stage 3, which must share its event
-        loop with the MCP client session its tools are bound to).
+        be awaited either from a fresh asyncio.Runner or from within an already-running loop.
     """
     started_at = time.perf_counter()
 
@@ -171,7 +169,7 @@ async def _stream_agent_core(
         ):
             elapsed_s = time.perf_counter() - started_at
             if trace_logger is not None:
-                from oxide.modules.analyzers.backdoor_triage.pipeline.agent.telemetry.agent_trace import normalize_stream_item
+                from oxide.modules.analyzers.delt.pipeline.agent.telemetry.agent_trace import normalize_stream_item
 
                 chunk = normalize_stream_item(item)
                 trace_logger.on_chunk(chunk, elapsed_s)
@@ -247,10 +245,7 @@ async def ainvoke_agent_with_timeout(
     trace_logger: Any = None,
     max_consecutive_repeated_tool_calls: int = DEFAULT_MAX_CONSECUTIVE_REPEATED_TOOL_CALLS,
 ) -> Any:
-    """ Async-native entry point for Stage 3: awaits _stream_agent_core directly
-        in the caller's own running event loop, since Stage 3's agent must share
-        a loop with the MCP client session its tools are bound to.
-    """
+    """Async-native entry point: awaits _stream_agent_core directly in the caller's event loop."""
     return await _stream_agent_core(
         agent, payload, config=config, timeout_s=timeout_s, trace_logger=trace_logger,
         max_consecutive_repeated_tool_calls=max_consecutive_repeated_tool_calls,

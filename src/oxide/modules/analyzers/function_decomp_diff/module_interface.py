@@ -18,13 +18,11 @@ from align import (
 )
 from annotate import annotate_with_tags, get_function_calls
 from emit import (
-    LLM_DIFF_CHAR_BUDGET,
     emit_unified_header,
     emit_unified_raw,
     lines_equal_canon,
     make_sequence_matcher,
     emit_refined,
-    maybe_compact_unified,
 )
 from ghidra import get_function_name, retrieve_function_decomp_lines, strip_decmap_prefix_if_present
 
@@ -35,9 +33,7 @@ opts_doc = {
     "target": {"type": str, "mangle": True, "default": "None"},
     "baseline": {"type": str, "mangle": True, "default": "None"},
     "annotate": {"type": bool, "mangle": True, "default": False},
-    "compact": {"type": bool, "mangle": True, "default": False},
     "raw": {"type": bool, "mangle": True, "default": False},
-    "max_chars": {"type": int, "mangle": True, "default": 0},
 }
 
 
@@ -170,13 +166,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
         if name_to_addr:
             unified = annotate_with_tags(unified, name_to_addr, target_oid)
 
-    unified_full = unified
-    char_budget = int(opts.get("max_chars") or 0) or LLM_DIFF_CHAR_BUDGET
-    unified_compact = maybe_compact_unified(unified_full, max_chars=char_budget)
-
-    if opts.get("compact", False):
-        unified = unified_compact
-
     output = {
         "unified": unified,
         "meta": {
@@ -184,9 +173,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
             "pipeline": "full",
             "normalized_alignment": True,
             "raw": False,
-            "unified_full_len": len(unified_full),
-            "unified_compact_len": len(unified_compact),
-            "unified_truncated": len(unified_compact) < len(unified_full),
+            "unified_len": len(unified),
         },
     }
 

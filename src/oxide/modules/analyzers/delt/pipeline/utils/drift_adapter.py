@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from oxide.core import api
 
-from oxide.modules.analyzers.backdoor_triage.pipeline.utils.text_utils import ensure_decimal_str
+from oxide.modules.analyzers.delt.pipeline.utils.text_utils import ensure_decimal_str
 
 
 def _normalize_unmatched_target_ref(raw_item: Any) -> Optional[Dict[str, str]]:

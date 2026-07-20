@@ -5,14 +5,30 @@ from typing import Any, Dict, Optional, Tuple
 
 from langgraph.graph import END, START, StateGraph
 
-from oxide.modules.analyzers.backdoor_triage.config import NAME
-from oxide.modules.analyzers.backdoor_triage.pipeline.agent.nodes.stage1 import build_stage1_node
-from oxide.modules.analyzers.backdoor_triage.pipeline.agent.nodes.stage2 import build_stage2_node
-from oxide.modules.analyzers.backdoor_triage.pipeline.agent.nodes.stage3 import build_stage3_node
-from oxide.modules.analyzers.backdoor_triage.pipeline.types import TriageState
-from oxide.modules.analyzers.backdoor_triage.pipeline.utils.text_utils import _coerce_str, preview_text, progress_label as _progress_label_fmt
+from oxide.modules.analyzers.delt.config import NAME
+from oxide.modules.analyzers.delt.pipeline.agent.nodes.stage1 import build_stage1_node
+from oxide.modules.analyzers.delt.pipeline.agent.nodes.stage2 import build_stage2_node
+from oxide.modules.analyzers.delt.pipeline.types import TriageState
+from oxide.modules.analyzers.delt.pipeline.utils.text_utils import _coerce_str, preview_text, progress_label as _progress_label_fmt
 
 logger = logging.getLogger(NAME)
+
+
+def _route_node(state: TriageState) -> Dict[str, Any]:
+    """Entry router node. Anchors the standalone routing decision in the graph;
+    the branch itself is computed by _route_entry. Makes no state change.
+    """
+    return {}
+
+
+def _route_entry(state: TriageState) -> str:
+    """Standalone entry decision: a new-callee candidate (stage2_only) skips
+    stage 1 and goes straight to stage 2; every other candidate runs stage 1
+    first.
+    """
+    if state.get("stage2_only"):
+        return "stage2"
+    return "stage1"
 
 
 def _route_after_stage1(state: TriageState) -> str:
@@ -20,13 +36,6 @@ def _route_after_stage1(state: TriageState) -> str:
         return END
     stage1_failure_reason = _coerce_str((state.get("stage1_meta") or {}).get("failure_reason"))
     if stage1_failure_reason == "timeout":
-        logger.info(
-            "%s stage1 timed out, escalating to stage2",
-            _progress_label_fmt(
-                fp_idx=state["fp_idx"], fp_total=state.get("fp_total", 0),
-                func_idx=state["func_idx"], func_total=state.get("func_total", 0),
-            ),
-        )
         return "stage2"
     label = (state.get("stage1_json") or {}).get("label", "safe")
     if label == "not_safe":
@@ -34,29 +43,17 @@ def _route_after_stage1(state: TriageState) -> str:
     return END
 
 
-def _route_after_stage2(state: TriageState) -> str:
-    """ Escalate to Stage 3 only when the combined Stage 1+2 verdict is not_safe.
-        final_json is always set by stage2's own node output whenever stage2 runs
-        (the only path that reaches this conditional edge at all), so it's safe
-        to read directly here -- no fallback/synthesis needed at this point.
-    """
-    label = (state.get("final_json") or {}).get("label", "safe")
-    if label == "not_safe":
-        return "stage3"
-    return END
-
-
 def build_triage_graph(runtime: Any) -> Any:
     from langgraph.checkpoint.memory import MemorySaver
 
     g: StateGraph = StateGraph(TriageState)
+    g.add_node("route", _route_node)
     g.add_node("stage1", build_stage1_node(runtime))
     g.add_node("stage2", build_stage2_node(runtime))
-    g.add_node("stage3", build_stage3_node(runtime))
-    g.add_edge(START, "stage1")
+    g.add_edge(START, "route")
+    g.add_conditional_edges("route", _route_entry, {"stage1": "stage1", "stage2": "stage2"})
     g.add_conditional_edges("stage1", _route_after_stage1, {"stage2": "stage2", END: END})
-    g.add_conditional_edges("stage2", _route_after_stage2, {"stage3": "stage3", END: END})
-    g.add_edge("stage3", END)
+    g.add_edge("stage2", END)
     return g.compile(checkpointer=MemorySaver())
 
 
@@ -99,7 +96,7 @@ def run_triage(
     func_total: int = 0,
 ) -> Dict[str, Any]:
     """Run the triage pipeline via runtime.graph and return a combined result dict."""
-    from oxide.modules.analyzers.backdoor_triage.pipeline.utils.text_utils import ascii_sanitize
+    from oxide.modules.analyzers.delt.pipeline.utils.text_utils import ascii_sanitize
 
     diff_text = ascii_sanitize(unified_diff)
 
@@ -137,7 +134,6 @@ def run_triage(
             "stage1_json": None,
             "stage1_meta": None,
             "stage2_result": None,
-            "stage3_result": None,
             "final_json": None,
         }
         triage_config = {"configurable": {"thread_id": f"triage_{time.time_ns()}"}}
@@ -150,7 +146,6 @@ def run_triage(
     stage1_json = final_state.get("stage1_json") or {}
     stage1_meta = final_state.get("stage1_meta") or {}
     stage2_result = final_state.get("stage2_result") or {}
-    stage3_result = final_state.get("stage3_result") or {}
     final_json = final_state.get("final_json")
 
     stage1_input_tokens = int(stage1_meta.get("input_tokens") or 0)
@@ -189,16 +184,4 @@ def run_triage(
         "llm_input_tokens": stage1_input_tokens + stage2_input_tokens,
         "llm_output_tokens": stage1_output_tokens + stage2_output_tokens,
         "llm_total_tokens": stage1_tokens + stage2_tokens,
-        "stage3_ran": bool(stage3_result),
-        "stage3_overall": stage3_result.get("overall") if stage3_result else None,
-        "stage3_confirmed_functions": stage3_result.get("confirmed_functions") or [],
-        "stage3_why": _coerce_str(stage3_result.get("why")),
-        "stage3_analysis_md": _coerce_str(stage3_result.get("analysis_md")),
-        "stage3_final_md": _coerce_str(stage3_result.get("final_md")),
-        "stage3_failure_reason": stage3_result.get("failure_reason") if stage3_result else None,
-        "stage3_failure_detail": _coerce_str(stage3_result.get("failure_detail")),
-        "stage3_elapsed_s": float(stage3_result.get("elapsed_s") or 0.0),
-        "stage3_input_tokens": int(stage3_result.get("llm_input_tokens") or 0),
-        "stage3_output_tokens": int(stage3_result.get("llm_output_tokens") or 0),
-        "stage3_total_tokens": int(stage3_result.get("llm_total_tokens") or 0),
     }

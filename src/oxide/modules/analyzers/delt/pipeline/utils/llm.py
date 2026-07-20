@@ -37,13 +37,11 @@ def _load_prompt_bundle_cached(
     stage1_file: str,
     stage2_file: str,
     stage2_callee_file: str,
-    stage3_file: str,
 ) -> Dict[str, Dict]:
     return {
         "stage1": load_prompt_file(stage1_file),
         "stage2": load_prompt_file(stage2_file),
         "stage2_callee": load_prompt_file(stage2_callee_file),
-        "stage3": load_prompt_file(stage3_file),
     }
 
 
@@ -54,5 +52,4 @@ def load_prompt_bundle(opts: Dict | None = None) -> Dict[str, Dict]:
     stage2_callee_file = str(
         resolved_opts.get("stage2_callee_prompt_file") or "stage2_with_callees.yaml"
     )
-    stage3_file = str(resolved_opts.get("stage3_prompt_file") or "stage3.yaml")
-    return _load_prompt_bundle_cached(stage1_file, stage2_file, stage2_callee_file, stage3_file)
+    return _load_prompt_bundle_cached(stage1_file, stage2_file, stage2_callee_file)

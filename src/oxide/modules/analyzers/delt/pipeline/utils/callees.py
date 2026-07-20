@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Optional
 
 from oxide.core import api
 
-from oxide.modules.analyzers.backdoor_triage.config import NAME
-from oxide.modules.analyzers.backdoor_triage.pipeline.utils.text_utils import ensure_decimal_str, write_text
+from oxide.modules.analyzers.delt.config import NAME
+from oxide.modules.analyzers.delt.pipeline.utils.text_utils import ensure_decimal_str, write_text
 
 logger = logging.getLogger(NAME)
 
@@ -84,24 +84,63 @@ def fetch_added_func_decomps(target_oid: str, added_functions: List[Dict[str, An
 
 
 def callee_added_funcs(diff_text: str, added_func_decomp: Dict[str, str], target_oid: str) -> Dict[str, str]:
-    """ Return the subset of added_func_decomp whose Ghidra names appear in the + lines of diff_text. """
+    """ Return the newly-added functions reachable from the changed function's diff,
+        following calls through newly-added functions transitively.
+
+        The seed set is the added functions whose Ghidra name appears in the + lines of
+        diff_text, i.e. the callees the update introduces directly in the changed function.
+        The closure then follows calls from those added functions into other added functions,
+        matching added-function names inside each added function's decompilation, until no
+        new added function is reached. Expansion never leaves the newly-added set, so it stops
+        at the boundary of pre-existing code, and every added function on a chain rooted at a
+        changed function's diff is attached and reviewed with that candidate.
+    """
     if not added_func_decomp or not diff_text:
         return {}
+
     plus_text = " ".join(
         line[1:] for line in diff_text.splitlines()
         if line.startswith("+") and not line.startswith("+++")
     )
+
     funcs = api.get_field("ghidra_disasm", target_oid, "functions") or {}
-    result: Dict[str, str] = {}
-    for addr, text in added_func_decomp.items():
+
+    # Map each added function we have decomp for to its Ghidra name.
+    addr_to_name: Dict[str, str] = {}
+    for addr in added_func_decomp:
         try:
             addr_int = int(addr)
         except (ValueError, TypeError):
             continue
         meta = funcs.get(addr_int) or {}
         name = meta.get("name") if isinstance(meta, dict) else (meta if isinstance(meta, str) else None)
-        if name and name in plus_text:
-            result[addr] = text
+        if name:
+            addr_to_name[addr] = name
+
+    # Seed: added functions the changed function's diff directly names.
+    frontier: List[str] = [addr for addr, name in addr_to_name.items() if name in plus_text]
+
+    # Transitive closure over added-only call edges, matched by name-in-decomp. Bounded by the
+    # finite added set, so the visited check guarantees termination.
+    result: Dict[str, str] = {}
+    while frontier:
+        addr = frontier.pop()
+        if addr in result:
+            continue
+        text = added_func_decomp.get(addr, "")
+        result[addr] = text
+        for cand_addr, cand_name in addr_to_name.items():
+            if cand_addr in result or cand_addr == addr:
+                continue
+            if cand_name and cand_name in text:
+                frontier.append(cand_addr)
+
+    if result:
+        logger.debug(
+            "callee closure for %s: %d added function(s) attached (%d seeded directly by the diff)",
+            target_oid, len(result),
+            sum(1 for a, n in addr_to_name.items() if n in plus_text),
+        )
     return result
 
 

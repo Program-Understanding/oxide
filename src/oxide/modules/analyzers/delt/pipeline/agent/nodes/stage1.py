@@ -8,9 +8,9 @@ from typing import Any, Dict, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from oxide.modules.analyzers.backdoor_triage.config import NAME
-from oxide.modules.analyzers.backdoor_triage.pipeline.types import TriageState
-from oxide.modules.analyzers.backdoor_triage.pipeline.utils.text_utils import (
+from oxide.modules.analyzers.delt.config import NAME
+from oxide.modules.analyzers.delt.pipeline.types import TriageState
+from oxide.modules.analyzers.delt.pipeline.utils.text_utils import (
     _coerce_label,
     _coerce_str,
     ascii_sanitize,
@@ -18,7 +18,7 @@ from oxide.modules.analyzers.backdoor_triage.pipeline.utils.text_utils import (
     preview_text,
     progress_label as _progress_label_fmt,
 )
-from oxide.modules.analyzers.backdoor_triage.pipeline.agent.telemetry.token_usage import extract_usage_counts_from_message
+from oxide.modules.analyzers.delt.pipeline.agent.telemetry.token_usage import extract_usage_counts_from_message
 
 logger = logging.getLogger(NAME)
 
@@ -198,19 +198,9 @@ def call_stage1_llm_json(
 
 def build_stage1_node(runtime: Any):
     def _stage1_node(state: TriageState) -> Dict[str, Any]:
-        if state.get("stage2_only"):
-            # Pass-through: always escalate without running Stage 1
-            return {"stage1_json": {"label": "not_safe", "trigger": "", "why": ""}}
+        # Only reached for candidates the entry router did not send straight to
+        # stage 2, so stage 1 always runs its LLM here.
         raw, result, meta = call_stage1_llm_json(runtime, state["diff"], state["notes"])
-        logger.info(
-            "%s stage1: label=%s trigger=%s",
-            _progress_label_fmt(
-                fp_idx=state["fp_idx"], fp_total=state.get("fp_total", 0),
-                func_idx=state["func_idx"], func_total=state.get("func_total", 0),
-            ),
-            result.get("label"),
-            preview_text(result.get("trigger", ""), limit=60),
-        )
         return {"stage1_raw": raw, "stage1_json": result, "stage1_meta": meta}
 
     return _stage1_node

@@ -3,14 +3,14 @@ from typing import Any, Dict, Iterable, Tuple
 
 from oxide.core import api, config
 
-from oxide.modules.analyzers.backdoor_triage.config import NAME
-from oxide.modules.analyzers.backdoor_triage.pipeline.utils.text_utils import comparison_dir_name
+from oxide.modules.analyzers.delt.config import NAME
+from oxide.modules.analyzers.delt.pipeline.utils.text_utils import comparison_dir_name
 
 
 def resolve_collection_pair(oid_list: Iterable[str]) -> Tuple[str, str]:
     pair = list(oid_list)
     if len(pair) < 2:
-        raise ValueError("backdoor_triage requires two collection OIDs: [target_oid, baseline_oid]")
+        raise ValueError("delt requires two collection OIDs: [target_oid, baseline_oid]")
 
     valid, invalid = api.valid_oids(pair[:2])
     if len(valid) < 2:
