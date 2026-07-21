@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from oxide.core import api, progress
 
 from oxide.modules.analyzers.delt.config import NAME
-from oxide.modules.analyzers.delt.pipeline.agent.graph import run_triage
+from oxide.modules.analyzers.delt.pipeline.agent.triage import run_triage
 from oxide.modules.analyzers.delt.pipeline.agent.telemetry.agent_trace import write_trace_view
 from oxide.modules.analyzers.delt.pipeline.agent.endpoints import resolve_function_endpoints
 from oxide.modules.analyzers.delt.pipeline.agent.runtime import build_worker_runtime, get_or_build_runtime
@@ -27,7 +27,6 @@ from oxide.modules.analyzers.delt.pipeline.utils.text_utils import (
     _coerce_str,
     ensure_decimal_str,
     normalize_filter_value,
-    progress_label as _progress_label_fmt,
     write_json,
     write_text,
 )
@@ -35,22 +34,8 @@ from oxide.modules.analyzers.delt.pipeline.utils.text_utils import (
 logger = logging.getLogger(NAME)
 
 
-def _resolve_review_mode(opts: Dict[str, Any]) -> str:
-    review_mode = _coerce_str(opts.get("review_mode")).lower()
-    if review_mode:
-        if review_mode not in {"analyst", "reviewer", "chained"}:
-            raise ValueError("review_mode must be one of: analyst, reviewer, chained")
-        return review_mode
-    if bool(opts.get("stage1_only")):
-        return "analyst"
-    if bool(opts.get("stage2_only")):
-        return "reviewer"
-    return "chained"
-
-
 def _normalize_run_opts(opts: Dict[str, Any]) -> Dict[str, Any]:
     run_opts = dict(opts)
-    review_mode = _resolve_review_mode(run_opts)
     diff_mode = _coerce_str(run_opts.get("diff_mode")).lower()
     if diff_mode:
         if diff_mode not in {"raw", "processed"}:
@@ -59,10 +44,7 @@ def _normalize_run_opts(opts: Dict[str, Any]) -> Dict[str, Any]:
     else:
         diff_mode = "raw" if _resolve_bool_override(run_opts, "raw", "_diff_raw") else "processed"
 
-    run_opts["review_mode"] = review_mode
     run_opts["diff_mode"] = diff_mode
-    run_opts["stage1_only"] = review_mode == "analyst"
-    run_opts["stage2_only"] = review_mode == "reviewer"
     return run_opts
 
 
@@ -177,8 +159,6 @@ def analyze_function_pair(
 ) -> AnalyzeFunctionResult:
     func_dir = _make_function_dir(outdir, fp_idx, func_idx, baddr, taddr)
     diff_raw = _resolve_bool_override(opts, "raw", "_diff_raw")
-    stage1_only = bool(opts.get("stage1_only"))
-    stage2_only = bool(opts.get("stage2_only"))
 
     os.makedirs(func_dir, exist_ok=True)
     notes_path = os.path.join(func_dir, "notes.json")
@@ -200,15 +180,7 @@ def analyze_function_pair(
         notes: Dict[str, Any],
         analysis_md: str = "",
         final_md: str = "",
-        trigger: str = "",
-        stage1_label: str = "",
-        stage1_why: str = "",
-        stage1_trigger: str = "",
-        stage1_input_tokens: int = 0,
-        stage1_output_tokens: int = 0,
-        stage1_tokens: int = 0,
-        stage2_ran: bool = False,
-        routing_mode: str = "normal",
+        callee_augmented: bool = False,
     ) -> Dict[str, Any]:
         label = _coerce_result_label(label, failure_reason)
         flagged = label == "not_safe"
@@ -217,31 +189,25 @@ def analyze_function_pair(
 
         if analysis_md.strip():
             write_text(os.path.join(func_dir, "analysis.md"), analysis_md)
-            notes["artifacts"].append({"kind": "stage2_analysis", "path": "analysis.md"})
+            notes["artifacts"].append({"kind": "agent_analysis", "path": "analysis.md"})
         if final_md.strip():
             write_text(os.path.join(func_dir, "final.md"), final_md)
-            notes["artifacts"].append({"kind": "stage2_final", "path": "final.md"})
+            notes["artifacts"].append({"kind": "agent_final", "path": "final.md"})
         if os.path.exists(trace_path) and os.path.getsize(trace_path) > 0:
-            notes["artifacts"].append({"kind": "stage_trace", "path": "agent_trace.log"})
+            notes["artifacts"].append({"kind": "agent_trace", "path": "agent_trace.log"})
 
         write_json(notes_path, notes)
         write_json(
             analysis_path,
             {
                 "label": label,
-                "stage1_label": stage1_label,
                 "why": why,
-                "trigger": trigger,
-                "stage1_why": stage1_why,
-                "stage1_trigger": stage1_trigger,
                 "flagged": flagged,
                 "verdict": verdict,
                 "triage_ran": triage_ran,
                 "failure_reason": failure_reason,
                 "failure_detail": failure_detail,
-                "stage1_only": stage1_only,
-                "stage2_only": stage2_only,
-                "routing_mode": routing_mode,
+                "callee_augmented": callee_augmented,
                 "artifacts": {
                     "analysis_md": bool(analysis_md.strip()),
                     "final_md": bool(final_md.strip()),
@@ -252,10 +218,6 @@ def analyze_function_pair(
                     "llm_input_tokens": llm_input_tokens,
                     "llm_output_tokens": llm_output_tokens,
                     "llm_total_tokens": llm_total_tokens,
-                    "stage1_input_tokens": stage1_input_tokens,
-                    "stage1_output_tokens": stage1_output_tokens,
-                    "stage1_tokens": stage1_tokens,
-                    "stage2_ran": stage2_ran,
                 },
             },
         )
@@ -263,7 +225,6 @@ def analyze_function_pair(
         return {
             "label": label,
             "why": why,
-            "trigger": trigger,
             "flagged": flagged,
             "verdict": verdict,
             "func_dir": func_dir,
@@ -275,14 +236,7 @@ def analyze_function_pair(
             "llm_input_tokens": llm_input_tokens,
             "llm_output_tokens": llm_output_tokens,
             "llm_total_tokens": llm_total_tokens,
-            "stage1_label": stage1_label,
-            "stage1_why": stage1_why,
-            "stage1_trigger": stage1_trigger,
-            "stage1_input_tokens": stage1_input_tokens,
-            "stage1_output_tokens": stage1_output_tokens,
-            "stage1_tokens": stage1_tokens,
-            "stage2_ran": stage2_ran,
-            "routing_mode": routing_mode,
+            "callee_augmented": callee_augmented,
         }
 
     def _run_fresh() -> Dict[str, Any]:
@@ -307,7 +261,6 @@ def analyze_function_pair(
                 label="failed", why="Triage disabled by configuration.", triage_ran=False,
                 failure_reason="triage_disabled", failure_detail="", diff_elapsed_s=diff_elapsed_s,
                 llm_elapsed_s=0.0, llm_input_tokens=0, llm_output_tokens=0, llm_total_tokens=0, notes=notes,
-                routing_mode="normal",
             )
 
         triage_ran = False
@@ -319,7 +272,6 @@ def analyze_function_pair(
                 label="failed", why="Diff generation failed before triage could run.", triage_ran=False,
                 failure_reason="diff_tool_error", failure_detail="", diff_elapsed_s=diff_elapsed_s,
                 llm_elapsed_s=0.0, llm_input_tokens=0, llm_output_tokens=0, llm_total_tokens=0, notes=notes,
-                routing_mode="normal",
             )
 
         empty_decomp_reason = diff_info.get("empty_decomp_reason")
@@ -331,27 +283,18 @@ def analyze_function_pair(
                 label="failed", why=messages["final_why"], triage_ran=False,
                 failure_reason=failure_reason, failure_detail="", diff_elapsed_s=diff_elapsed_s,
                 llm_elapsed_s=0.0, llm_input_tokens=0, llm_output_tokens=0, llm_total_tokens=0, notes=notes,
-                routing_mode="normal",
             )
 
         unified = diff_info["unified"] or ""
 
         callee_texts: Dict[str, str] = {}
-        routing_mode = "normal"
         if unified.strip() and added_func_decomp:
             callee_texts = callee_added_funcs(unified, added_func_decomp, target_oid)
-            if callee_texts:
-                routing_mode = "direct_to_stage2"
 
         llm_elapsed_s = 0.0
         llm_input_tokens = 0
         llm_output_tokens = 0
         llm_total_tokens = 0
-        stage1_label = ""
-        stage1_input_tokens = 0
-        stage1_output_tokens = 0
-        stage1_tokens = 0
-        stage2_ran = False
 
         if unified.strip():
             triage_ran = True
@@ -359,37 +302,23 @@ def analyze_function_pair(
                 runtime,
                 unified_diff=unified,
                 notes=notes,
-                target_oid=target_oid, baseline_oid=baseline_oid,
-                target_addr=taddr, baseline_addr=baddr,
-                stage1_only=stage1_only,
-                stage2_only=stage2_only,
                 callee_texts=callee_texts,
                 trace_path=trace_path,
-                fp_idx=fp_idx, fp_total=fp_total, func_idx=func_idx, func_total=func_total,
             )
             label = triage.get("label", "failed")
             why = (triage.get("why") or "").strip()
-            trigger = (triage.get("trigger") or "").strip()
-            stage1_why = (triage.get("stage1_why") or "").strip()
-            stage1_trigger = (triage.get("stage1_trigger") or "").strip()
             failure_reason = triage.get("failure_reason")
             failure_detail = (triage.get("failure_detail") or "").strip()
             llm_elapsed_s = float(triage.get("llm_elapsed_s") or 0.0)
             llm_input_tokens = int(triage.get("llm_input_tokens") or 0)
             llm_output_tokens = int(triage.get("llm_output_tokens") or 0)
             llm_total_tokens = int(triage.get("llm_total_tokens") or 0)
-            stage1_label = str(triage.get("stage1_label") or "")
-            stage1_input_tokens = int(triage.get("stage1_input_tokens") or 0)
-            stage1_output_tokens = int(triage.get("stage1_output_tokens") or 0)
-            stage1_tokens = int(triage.get("stage1_tokens") or 0)
-            stage2_ran = bool(triage.get("stage2_ran"))
         else:
             failure_reason = "empty_unified_diff"
             failure_detail = ""
             notes["observations"].append("empty unified diff; recorded as failed")
             label = "failed"
             why = "Triage did not run because the unified diff was empty."
-            trigger = stage1_why = stage1_trigger = ""
             triage = {"analysis_md": "", "final_md": ""}
 
         label = _coerce_result_label(label, failure_reason)
@@ -401,10 +330,7 @@ def analyze_function_pair(
             llm_input_tokens=llm_input_tokens, llm_output_tokens=llm_output_tokens,
             llm_total_tokens=llm_total_tokens, notes=notes,
             analysis_md=_coerce_str(triage.get("analysis_md")), final_md=_coerce_str(triage.get("final_md")),
-            trigger=trigger, stage1_label=stage1_label, stage1_why=stage1_why, stage1_trigger=stage1_trigger,
-            stage1_input_tokens=stage1_input_tokens,
-            stage1_output_tokens=stage1_output_tokens, stage1_tokens=stage1_tokens, stage2_ran=stage2_ran,
-            routing_mode=routing_mode,
+            callee_augmented=bool(callee_texts),
         )
         if os.path.exists(trace_path):
             write_trace_view(trace_path, os.path.join(func_dir, "trace_view.txt"))
@@ -511,7 +437,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         )
 
     filter_val = normalize_filter_value(opts.get("filter"))
-    review_mode = _coerce_str(opts.get("review_mode")) or "chained"
     diff_mode = _coerce_str(opts.get("diff_mode")) or ("raw" if diff_raw_for_stats else "processed")
     filter_mode = _display_filter_mode(filter_val)
     total_t0 = time.perf_counter()
@@ -545,7 +470,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     if not baseline_name:
         baseline_name = str(baseline)
 
-    report_lines.append(f"Review Mode:  {review_mode}")
     report_lines.append(f"Diff Mode:    {diff_mode}")
     report_lines.append(f"Filter:       {filter_mode}")
     report_lines.append("")
@@ -564,7 +488,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     sum_llm_input_tokens = 0
     sum_llm_output_tokens = 0
     sum_llm_total_tokens = 0
-    direct_to_stage2_count = 0
+    callee_augmented_count = 0
 
     if not file_pairs:
         report_lines.append("No file pairs or modifications were reported by drift.")
@@ -624,21 +548,15 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
             _llm_in = int(result.get("llm_input_tokens") or 0)
             _llm_out = int(result.get("llm_output_tokens") or 0)
             _llm_tot = int(result.get("llm_total_tokens") or 0)
-            _s1_in = int(result.get("stage1_input_tokens") or 0)
-            _s1_out = int(result.get("stage1_output_tokens") or 0)
-            _s1_tot = int(result.get("stage1_tokens") or 0)
-            _s2_in = _llm_in - _s1_in
-            _s2_out = _llm_out - _s1_out
-            _s2_tot = _llm_tot - _s1_tot
             sum_llm_input_tokens += _llm_in
             sum_llm_output_tokens += _llm_out
             sum_llm_total_tokens += _llm_tot
 
             final_label = _coerce_result_label(result.get("label"), result.get("failure_reason"))
             flagged_final = bool(final_label == "not_safe")
-            routing_mode = str(result.get("routing_mode") or "normal")
-            if routing_mode == "direct_to_stage2":
-                direct_to_stage2_count += 1
+            callee_augmented = bool(result.get("callee_augmented"))
+            if callee_augmented:
+                callee_augmented_count += 1
 
             per_function_results.append({
                 "filepair_index": fp_idx,
@@ -660,17 +578,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                 "triage_ran": bool(result.get("triage_ran")),
                 "failure_reason": result.get("failure_reason"),
                 "failure_detail": result.get("failure_detail", ""),
-                "stage1_label": result.get("stage1_label", ""),
-                "stage1_flagged": result.get("stage1_label") == "not_safe",
-                "stage1_input_tokens": _s1_in,
-                "stage1_output_tokens": _s1_out,
-                "stage1_tokens": _s1_tot,
-                "stage2_ran": bool(result.get("stage2_ran")),
-                "stage2_input_tokens": _s2_in,
-                "stage2_output_tokens": _s2_out,
-                "stage2_tokens": _s2_tot,
-                "routing_mode": routing_mode,
-                "direct_to_stage2": routing_mode == "direct_to_stage2",
+                "callee_augmented": callee_augmented,
             })
 
             if flagged_final:
@@ -735,7 +643,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         "baseline": baseline,
         "target_name": target_name,
         "baseline_name": baseline_name,
-        "review_mode": review_mode,
         "diff_mode": diff_mode,
         "filter_mode": filter_mode,
         "modified_files": len(file_pairs),
@@ -745,7 +652,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         "excluded_functions": total_excluded_functions,
         "flagged_functions": flagged_filtered,
         "failed_functions": failed_filtered,
-        "direct_to_stage2_count": direct_to_stage2_count,
+        "callee_augmented_count": callee_augmented_count,
         "gt_sample_key": gt_norm.get("sample_key") if gt_norm else None,
         "gt_target_count": gt_target_count,
         "gt_retained": gt_retained,

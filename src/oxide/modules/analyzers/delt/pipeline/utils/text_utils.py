@@ -146,12 +146,6 @@ def preview_text(value: Any, limit: int = 160) -> str:
     return text[: max(0, limit - 3)] + "..."
 
 
-def progress_label(*, fp_idx: int = 0, fp_total: int = 0, func_idx: int = 0, func_total: int = 0) -> str:
-    file_part = f"file {fp_idx}/{fp_total}" if fp_total else f"file {fp_idx}"
-    func_part = f"func {func_idx}/{func_total}" if func_total else f"func {func_idx}"
-    return f"[{file_part} {func_part}]"
-
-
 def comparison_dir_name(target_name: str, baseline_name: str) -> str:
     import os
 

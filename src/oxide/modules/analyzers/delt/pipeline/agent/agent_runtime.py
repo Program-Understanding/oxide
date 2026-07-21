@@ -3,11 +3,9 @@
 Validated against: deepagents==0.6.10, langgraph==1.2.5, langchain-ollama==1.1.0.
 If a future upstream release breaks GuardedStateBackend's constructor contract,
 create_deep_agent's kwargs, or agent.astream's stream_mode/version behavior,
-this file is the single, obvious place to fix it. graph.py builds the outer
-triage StateGraph using the stable, public langgraph.graph API (StateGraph,
-START, END, MemorySaver) -- that is not the fragile surface isolated here;
-this file owns everything deepagents-specific (create_deep_agent, the custom
-StateBackend, and driving agent.astream).
+this file is the single, obvious place to fix it. It owns everything
+deepagents-specific (create_deep_agent, the custom StateBackend, and driving
+agent.astream).
 """
 
 import asyncio
@@ -222,7 +220,7 @@ def invoke_agent_with_timeout(
     trace_logger: Any = None,
     max_consecutive_repeated_tool_calls: int = DEFAULT_MAX_CONSECUTIVE_REPEATED_TOOL_CALLS,
 ) -> Any:
-    """ Sync entry point for Stage 1/2 (called from plain sync code): runs
+    """ Sync entry point for the triage agent (called from plain sync code): runs
         _stream_agent_core in a dedicated, reused asyncio.Runner.
     """
     global _ASYNC_RUNNER

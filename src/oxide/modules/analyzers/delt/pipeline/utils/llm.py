@@ -33,23 +33,17 @@ def load_prompt_file(filename: str) -> Dict:
 
 
 @lru_cache(maxsize=None)
-def _load_prompt_bundle_cached(
-    stage1_file: str,
-    stage2_file: str,
-    stage2_callee_file: str,
-) -> Dict[str, Dict]:
+def _load_prompt_bundle_cached(agent_file: str, agent_callee_file: str) -> Dict[str, Dict]:
     return {
-        "stage1": load_prompt_file(stage1_file),
-        "stage2": load_prompt_file(stage2_file),
-        "stage2_callee": load_prompt_file(stage2_callee_file),
+        "agent": load_prompt_file(agent_file),
+        "agent_callee": load_prompt_file(agent_callee_file),
     }
 
 
 def load_prompt_bundle(opts: Dict | None = None) -> Dict[str, Dict]:
     resolved_opts = dict(opts or {})
-    stage1_file = str(resolved_opts.get("stage1_prompt_file") or "stage1.yaml")
-    stage2_file = str(resolved_opts.get("stage2_prompt_file") or "stage2.yaml")
-    stage2_callee_file = str(
-        resolved_opts.get("stage2_callee_prompt_file") or "stage2_with_callees.yaml"
+    agent_file = str(resolved_opts.get("agent_prompt_file") or "agent.yaml")
+    agent_callee_file = str(
+        resolved_opts.get("agent_callee_prompt_file") or "agent_with_callees.yaml"
     )
-    return _load_prompt_bundle_cached(stage1_file, stage2_file, stage2_callee_file)
+    return _load_prompt_bundle_cached(agent_file, agent_callee_file)

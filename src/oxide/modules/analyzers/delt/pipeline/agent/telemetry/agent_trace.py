@@ -3,7 +3,7 @@
 Validated against: deepagents==0.6.10, langgraph==1.2.5. If a future release
 renames stream event shapes or node names again (this file already carries one
 such compatibility shim -- "model" vs "model_request" node naming), this is the
-only file that needs a new branch added; graph.py/analyze.py never parse raw
+only file that needs a new branch added; triage.py/analyze.py never parse raw
 stream chunks themselves.
 """
 

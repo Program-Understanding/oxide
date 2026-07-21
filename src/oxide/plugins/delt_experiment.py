@@ -38,12 +38,14 @@ FILTER_CENSUS_CONFIGS: Tuple[Tuple[str, Optional[str]], ...] = (
 )
 
 
-EXPERIMENT_CONFIGS: Tuple[Tuple[str, str, Optional[str], str, Dict[str, Any]], ...] = (
-    ("processed_OR_chained", "processed", "Call_OR_Control_Modified", "chained", {}),
-    ("raw_OR_chained", "raw", "Call_OR_Control_Modified", "chained", {}),
-    ("processed_OR_chained_nocallee", "processed", "Call_OR_Control_Modified", "chained", {"include_added_callees": False}),
-    ("processed_OR_reviewer", "processed", "Call_OR_Control_Modified", "reviewer", {}),
-    ("processed_NONE_chained", "processed", None, "chained", {}),
+# Full DELT plus one config per ablated design element. Each config perturbs exactly
+# one element away from the deployed configuration and every config runs the single
+# triage agent, so the paper's Delta = Full - Ablated stays attributable.
+EXPERIMENT_CONFIGS: Tuple[Tuple[str, str, Optional[str], Dict[str, Any]], ...] = (
+    ("delt", "processed", "Call_OR_Control_Modified", {}),
+    ("no_added_callees", "processed", "Call_OR_Control_Modified", {"include_added_callees": False}),
+    ("no_diff_processing", "raw", "Call_OR_Control_Modified", {}),
+    ("no_filter", "processed", None, {}),
 )
 
 
@@ -143,15 +145,6 @@ def _resolve_model_specs(opts: Dict[str, Any]) -> Tuple[List[Tuple[str, int]], b
     if function_workers < 1:
         raise ValueError(f"--function_workers must be >= 1 (got {function_workers}).")
     return [(str(model), function_workers)], False
-
-
-def _review_mode_label(value: str) -> str:
-    mapping = {
-        "analyst": "analyst",
-        "reviewer": "reviewer",
-        "chained": "chained",
-    }
-    return mapping.get(str(value).strip().lower(), str(value))
 
 
 def _run_one_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]) -> Dict[str, Any]:
@@ -456,10 +449,9 @@ def _build_openwrt_rows(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return rows
 
 
-def _prepare_run_opts(opts: Dict[str, Any], *, diff_mode: str, filter_key: Optional[str], review_mode: str, gt_path: Optional[str], overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _prepare_run_opts(opts: Dict[str, Any], *, diff_mode: str, filter_key: Optional[str], gt_path: Optional[str], overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     run_opts = dict(opts)
     run_opts["diff_mode"] = diff_mode
-    run_opts["review_mode"] = review_mode
     run_opts["filter"] = filter_key
     run_opts["ground_truth"] = gt_path
     if overrides:
@@ -513,7 +505,7 @@ def _run_experiment_configs(
 ) -> Dict[str, Any]:
     """Run the LLM experiment configs for a single model into config_root."""
     config_summaries: Dict[str, Any] = {}
-    for config_name, diff_mode, filter_key, review_mode, overrides in EXPERIMENT_CONFIGS:
+    for config_name, diff_mode, filter_key, overrides in EXPERIMENT_CONFIGS:
         config_dir = os.path.join(config_root, config_name)
         os.makedirs(config_dir, exist_ok=True)
         include_added_callees = bool(
@@ -524,7 +516,6 @@ def _run_experiment_configs(
             "function_workers": int(base_opts.get("function_workers") or 1),
             "diff_mode": diff_mode,
             "filter_mode": "NONE" if not filter_key else filter_key,
-            "review_mode": _review_mode_label(review_mode),
             "include_added_callees": include_added_callees,
         }
 
@@ -533,7 +524,7 @@ def _run_experiment_configs(
             categories.append(("backdoored", backdoored_pairs, gt_path, gt))
         if safe_pairs:
             categories.append(("safe", safe_pairs, None, {}))
-        if openwrt_pairs and config_name == "processed_OR_chained":
+        if openwrt_pairs and config_name == "delt":
             categories.append(("openwrt", openwrt_pairs, None, {}))
 
         for category, pairs, category_gt_path, category_gt in categories:
@@ -542,7 +533,6 @@ def _run_experiment_configs(
                 base_opts,
                 diff_mode=diff_mode,
                 filter_key=filter_key,
-                review_mode=review_mode,
                 gt_path=category_gt_path,
                 overrides=overrides,
             )

@@ -1,4 +1,4 @@
-"""Shared LLM token-usage accounting, used by all three stages."""
+"""LLM token-usage accounting for the triage agent."""
 
 from typing import Any, Dict
 
