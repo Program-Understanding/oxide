@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from oxide.core import api
 
@@ -83,65 +83,116 @@ def fetch_added_func_decomps(target_oid: str, added_functions: List[Dict[str, An
     return result
 
 
-def callee_added_funcs(diff_text: str, added_func_decomp: Dict[str, str], target_oid: str) -> Dict[str, str]:
-    """ Return the newly-added functions reachable from the changed function's diff,
-        following calls through newly-added functions transitively.
+def _as_int(value: Any) -> Optional[int]:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 0) if value.lower().startswith("0x") else int(value)
+        except ValueError:
+            return None
+    return None
 
-        The seed set is the added functions whose Ghidra name appears in the + lines of
-        diff_text, i.e. the callees the update introduces directly in the changed function.
-        The closure then follows calls from those added functions into other added functions,
-        matching added-function names inside each added function's decompilation, until no
-        new added function is reached. Expansion never leaves the newly-added set, so it stops
-        at the boundary of pre-existing code, and every added function on a chain rooted at a
-        changed function's diff is attached and reviewed with that candidate.
+
+class AddedCalleeIndex(NamedTuple):
+    """ Per-binary index backing added-callee attachment.
+
+        edges maps a function address to the addresses of the added functions it calls,
+        so the whole-binary call map is filtered down to added-only edges once rather than
+        once per candidate. decomps maps an added function's address to its decompilation,
+        keyed as callee_added_funcs returns it.
     """
-    if not added_func_decomp or not diff_text:
+    edges: Dict[int, List[int]]
+    decomps: Dict[int, str]
+    keys: Dict[int, str]
+
+
+def build_added_callee_index(target_oid: str, added_func_decomp: Dict[str, str]) -> Optional[AddedCalleeIndex]:
+    """ Build the added-only call-edge index for one binary, or None when there is nothing
+        to attach or the call map is unavailable.
+
+        Call edges come from function_call_targets, which derives each function's outgoing
+        calls from the disassembled basic-block destinations, the same source
+        function_diff_features uses for its call-edge features.
+    """
+    if not added_func_decomp:
+        return None
+
+    call_targets = api.retrieve("function_call_targets", target_oid) or {}
+    if not call_targets:
+        logger.warning(
+            "function_call_targets unavailable for %s, no added callees will be attached",
+            target_oid,
+        )
+        return None
+
+    # The call map is keyed by ghidra_disasm function address, added_func_decomp by the
+    # decimal string form, so index the added set by address to join the two.
+    decomps: Dict[int, str] = {}
+    keys: Dict[int, str] = {}
+    for key, text in added_func_decomp.items():
+        as_int = _as_int(key)
+        if as_int is not None:
+            decomps[as_int] = text
+            keys[as_int] = key
+
+    edges: Dict[int, List[int]] = {}
+    for caller, callees in call_targets.items():
+        caller_int = _as_int(caller)
+        if caller_int is None:
+            continue
+        added_callees = [
+            callee_int for callee_int in (_as_int(c) for c in (callees or []))
+            if callee_int in decomps
+        ]
+        if added_callees:
+            edges[caller_int] = added_callees
+
+    return AddedCalleeIndex(edges=edges, decomps=decomps, keys=keys)
+
+
+def callee_added_funcs(target_func_addr: Any, index: Optional[AddedCalleeIndex]) -> Dict[str, str]:
+    """ Return the newly-added functions reachable from the changed function along call
+        edges, following calls through newly-added functions transitively.
+
+        The seed set is the added functions the changed function calls. The closure then
+        follows the call targets of each added function it reaches, until no new added
+        function is reached. Expansion never leaves the newly-added set, so it stops at the
+        boundary of pre-existing code, and every added function on a call chain rooted at
+        the changed function is attached and reviewed with that candidate.
+
+        Reachability is therefore control flow only. An added function the update reaches
+        without a recovered call edge, as when a modified function installs it into a
+        dispatch table for a later indirect call, is not attached.
+    """
+    if index is None:
         return {}
 
-    plus_text = " ".join(
-        line[1:] for line in diff_text.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
-    )
+    anchor = _as_int(target_func_addr)
+    if anchor is None:
+        return {}
 
-    funcs = api.get_field("ghidra_disasm", target_oid, "functions") or {}
+    # Seed: the added functions the changed function calls. Every address on the frontier
+    # comes from index.edges, so it is always an added function.
+    frontier: List[int] = list(index.edges.get(anchor, []))
+    called = len(frontier)
 
-    # Map each added function we have decomp for to its Ghidra name.
-    addr_to_name: Dict[str, str] = {}
-    for addr in added_func_decomp:
-        try:
-            addr_int = int(addr)
-        except (ValueError, TypeError):
-            continue
-        meta = funcs.get(addr_int) or {}
-        name = meta.get("name") if isinstance(meta, dict) else (meta if isinstance(meta, str) else None)
-        if name:
-            addr_to_name[addr] = name
-
-    # Seed: added functions the changed function's diff directly names.
-    frontier: List[str] = [addr for addr, name in addr_to_name.items() if name in plus_text]
-
-    # Transitive closure over added-only call edges, matched by name-in-decomp. Bounded by the
-    # finite added set, so the visited check guarantees termination.
-    result: Dict[str, str] = {}
+    # Transitive closure over added-only call edges. Bounded by the finite added set, so the
+    # visited check guarantees termination.
+    reached: Dict[int, str] = {}
     while frontier:
         addr = frontier.pop()
-        if addr in result:
+        if addr in reached:
             continue
-        text = added_func_decomp.get(addr, "")
-        result[addr] = text
-        for cand_addr, cand_name in addr_to_name.items():
-            if cand_addr in result or cand_addr == addr:
-                continue
-            if cand_name and cand_name in text:
-                frontier.append(cand_addr)
+        reached[addr] = index.decomps[addr]
+        frontier.extend(index.edges.get(addr, []))
 
-    if result:
+    if reached:
         logger.debug(
-            "callee closure for %s: %d added function(s) attached (%d seeded directly by the diff)",
-            target_oid, len(result),
-            sum(1 for a, n in addr_to_name.items() if n in plus_text),
+            "callee closure for function %s: %d added function(s) attached (%d called directly)",
+            target_func_addr, len(reached), called,
         )
-    return result
+    return {index.keys[addr]: text for addr, text in reached.items()}
 
 
 def save_added_function_artifacts(

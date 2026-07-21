@@ -21,7 +21,6 @@ class AnalyzerResult(TypedDict, total=False):
 
 class AgentResult(TypedDict, total=False):
     label: str
-    analysis_md: str
     final_md: str
     failure_reason: Optional[str]
     failure_detail: str

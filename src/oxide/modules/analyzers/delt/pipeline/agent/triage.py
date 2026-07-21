@@ -12,15 +12,12 @@ logger = logging.getLogger(NAME)
 def _derive_why(agent_result: Dict[str, Any]) -> str:
     """ The agent's final-answer schema is a single-field submit_decision(label) tool
         call, so agent_result doesn't carry structured reasoning -- but it still writes
-        free-text reasoning to /work/final.md and /work/analysis.md.
+        free-text reasoning to /work/final.md.
     """
     final_md = _coerce_str(agent_result.get("final_md"))
-    analysis_md = _coerce_str(agent_result.get("analysis_md"))
     if final_md:
         return preview_text(final_md, limit=400)
-    if analysis_md:
-        return preview_text(analysis_md, limit=400)
-    return "Agent completed triage; see analysis.md/final.md for reasoning."
+    return "Agent completed triage; see final.md for reasoning."
 
 
 def run_triage(
@@ -66,7 +63,6 @@ def run_triage(
     return {
         "label": result.get("label", "failed"),
         "why": _derive_why(result),
-        "analysis_md": _coerce_str(result.get("analysis_md")),
         "final_md": _coerce_str(result.get("final_md")),
         "failure_reason": result.get("failure_reason"),
         "failure_detail": _coerce_str(result.get("failure_detail")),

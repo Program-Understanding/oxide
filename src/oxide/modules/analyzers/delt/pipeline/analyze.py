@@ -15,6 +15,8 @@ from oxide.modules.analyzers.delt.pipeline.agent.runtime import build_worker_run
 from oxide.modules.analyzers.delt.pipeline.types import AnalyzeFunctionResult, ComparisonStats
 from oxide.modules.analyzers.delt.pipeline.utils import cache, ground_truth
 from oxide.modules.analyzers.delt.pipeline.utils.callees import (
+    AddedCalleeIndex,
+    build_added_callee_index,
     callee_added_funcs,
     fetch_added_func_decomps,
     save_added_function_artifacts,
@@ -155,7 +157,7 @@ def analyze_function_pair(
     fingerprint: str,
     fp_total: int = 0,
     func_total: int = 0,
-    added_func_decomp: Optional[Dict[str, str]] = None,
+    added_callee_index: Optional[AddedCalleeIndex] = None,
 ) -> AnalyzeFunctionResult:
     func_dir = _make_function_dir(outdir, fp_idx, func_idx, baddr, taddr)
     diff_raw = _resolve_bool_override(opts, "raw", "_diff_raw")
@@ -178,7 +180,6 @@ def analyze_function_pair(
         llm_output_tokens: int,
         llm_total_tokens: int,
         notes: Dict[str, Any],
-        analysis_md: str = "",
         final_md: str = "",
         callee_augmented: bool = False,
     ) -> Dict[str, Any]:
@@ -187,9 +188,6 @@ def analyze_function_pair(
         verdict_label = "needs further inspection" if flagged else ("safe" if label == "safe" else "failed")
         verdict = f"Label: {verdict_label} - {why or 'model provided no reason'}"
 
-        if analysis_md.strip():
-            write_text(os.path.join(func_dir, "analysis.md"), analysis_md)
-            notes["artifacts"].append({"kind": "agent_analysis", "path": "analysis.md"})
         if final_md.strip():
             write_text(os.path.join(func_dir, "final.md"), final_md)
             notes["artifacts"].append({"kind": "agent_final", "path": "final.md"})
@@ -209,7 +207,6 @@ def analyze_function_pair(
                 "failure_detail": failure_detail,
                 "callee_augmented": callee_augmented,
                 "artifacts": {
-                    "analysis_md": bool(analysis_md.strip()),
                     "final_md": bool(final_md.strip()),
                     "agent_trace": bool(os.path.exists(trace_path) and os.path.getsize(trace_path) > 0),
                 },
@@ -288,8 +285,8 @@ def analyze_function_pair(
         unified = diff_info["unified"] or ""
 
         callee_texts: Dict[str, str] = {}
-        if unified.strip() and added_func_decomp:
-            callee_texts = callee_added_funcs(unified, added_func_decomp, target_oid)
+        if unified.strip():
+            callee_texts = callee_added_funcs(taddr, added_callee_index)
 
         llm_elapsed_s = 0.0
         llm_input_tokens = 0
@@ -319,7 +316,7 @@ def analyze_function_pair(
             notes["observations"].append("empty unified diff; recorded as failed")
             label = "failed"
             why = "Triage did not run because the unified diff was empty."
-            triage = {"analysis_md": "", "final_md": ""}
+            triage = {"final_md": ""}
 
         label = _coerce_result_label(label, failure_reason)
         if failure_detail and label == "failed":
@@ -329,7 +326,7 @@ def analyze_function_pair(
             failure_detail=failure_detail, diff_elapsed_s=diff_elapsed_s, llm_elapsed_s=llm_elapsed_s,
             llm_input_tokens=llm_input_tokens, llm_output_tokens=llm_output_tokens,
             llm_total_tokens=llm_total_tokens, notes=notes,
-            analysis_md=_coerce_str(triage.get("analysis_md")), final_md=_coerce_str(triage.get("final_md")),
+            final_md=_coerce_str(triage.get("final_md")),
             callee_augmented=bool(callee_texts),
         )
         if os.path.exists(trace_path):
@@ -350,7 +347,7 @@ def _run_function_pairs(
     opts: Dict[str, Any],
     runtime: Any,
     fingerprint: str,
-    added_func_decomp: Dict[str, str],
+    added_callee_index: Optional[AddedCalleeIndex],
     function_workers: int,
     base_urls: List[str],
     prog: Any,
@@ -370,7 +367,7 @@ def _run_function_pairs(
             baseline_oid=baseline_oid, target_oid=target_oid, baddr=baseline_addr, taddr=target_addr,
             fp_idx=fp_idx, fp_total=fp_total, func_idx=func_idx, func_total=func_total,
             outdir=outdir, opts=opts, runtime=rt, fingerprint=fingerprint,
-            added_func_decomp=added_func_decomp,
+            added_callee_index=added_callee_index,
         )
 
     if function_workers <= 1 or func_total <= 1:
@@ -522,13 +519,16 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                 report_lines.append("- modified functions (excluded by filter): <unknown>")
         report_lines.append("")
 
-        added_func_decomp: Dict[str, str] = {}
+        added_callee_index: Optional[AddedCalleeIndex] = None
         if include_added_callees and added_funcs:
             added_func_decomp = fetch_added_func_decomps(target_oid, added_funcs)
             save_added_function_artifacts(
                 target_oid=target_oid, added_functions=added_funcs, fp_idx=fp_idx,
                 outdir=outdir, decomp_map=added_func_decomp,
             )
+            # Built once here: the call map covers the whole binary and every candidate in
+            # this file pair walks the same added-only edges.
+            added_callee_index = build_added_callee_index(target_oid, added_func_decomp)
 
         prog = progress.Progress(len(filtered_mods))
 
@@ -537,7 +537,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
             baseline_oid=baseline_oid, target_oid=target_oid,
             fp_idx=fp_idx, fp_total=len(file_pairs),
             outdir=outdir, opts=opts, runtime=runtime, fingerprint=fingerprint,
-            added_func_decomp=added_func_decomp,
+            added_callee_index=added_callee_index,
             function_workers=function_workers, base_urls=function_base_urls,
             prog=prog,
         )

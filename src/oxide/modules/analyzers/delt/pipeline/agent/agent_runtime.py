@@ -66,9 +66,14 @@ def make_decision_tool(
         back after the agent run completes. Each stage owns its own schema/normalize
         function -- this factory just wires the common "validate, record, confirm"
         pattern once instead of duplicating it per stage.
+
+        return_direct ends the agent run as soon as this tool is called, so the
+        verdict cannot be lost to a stuck loop after it has been recorded. The tool
+        result needs no further reasoning, and create_agent routes straight to the
+        graph's exit once every tool call in the turn is return_direct.
     """
 
-    @tool(tool_name, args_schema=schema_cls, description=doc)
+    @tool(tool_name, args_schema=schema_cls, description=doc, return_direct=True)
     def _submit(**kwargs: Any) -> str:
         final, ok = normalize(kwargs)
         if not ok or final is None:

@@ -1,6 +1,6 @@
 """The triage agent: a file-backed local agent that reviews one modified-function
-diff and decides whether the update inserted a backdoor. When the diff calls a
-newly-added function, the callee decompilations are attached as extra evidence.
+diff and decides whether the update inserted a backdoor. When the changed function
+calls a newly-added function, the callee decompilations are attached as extra evidence.
 """
 
 import logging
@@ -46,7 +46,6 @@ def _error_result(why: str, *, failure_reason: str, failure_detail: str = "") ->
     return {
         "label": "failed",
         "why": _coerce_str(why),
-        "analysis_md": "",
         "final_md": "",
         "failure_reason": failure_reason,
         "failure_detail": _coerce_str(failure_detail),
@@ -68,32 +67,11 @@ def run_agent(
     callee_texts = callee_texts or {}
     request_timeout_s = float(getattr(runtime, "agent_request_timeout_s", 150.0))
 
-    if callee_texts:
-        sys_prompt = runtime.agent_sys_callee
-        prompt = (
-            "Analyze /inputs/unified_diff.txt and the callee decompilations under /inputs/added_functions/.\n"
-            "Write a provisional analysis to /work/analysis.md.\n"
-            "Write your final decision to /work/final.md.\n"
-            "After writing /work/final.md, call submit_decision.\n"
-            "/work/final.md alone is not the final answer.\n"
-            "LAST STEP: call submit_decision.\n"
-            'Example final action: submit_decision(label="not_safe")\n'
-            "Do not write another explanatory assistant message after /work/final.md.\n"
-            "The run is not complete until submit_decision succeeds.\n"
-        )
-    else:
-        sys_prompt = runtime.agent_sys
-        prompt = (
-            "Analyze /inputs/unified_diff.txt.\n"
-            "Write a provisional analysis to /work/analysis.md.\n"
-            "Write your final decision to /work/final.md.\n"
-            "After writing /work/final.md, call submit_decision.\n"
-            "/work/final.md alone is not the final answer.\n"
-            "LAST STEP: call submit_decision.\n"
-            'Example final action: submit_decision(label="not_safe")\n'
-            "Do not write another explanatory assistant message after /work/final.md.\n"
-            "The run is not complete until submit_decision succeeds.\n"
-        )
+    # The system prompt owns the role, the criteria, and the workflow. The user turn only has
+    # to start the run, so it does not restate them. Repeating the workflow here stacked the
+    # same terminal instruction many times in context, which the model then got stuck on.
+    sys_prompt = runtime.agent_sys_callee if callee_texts else runtime.agent_sys
+    prompt = "Review the evidence under /inputs/ and decide whether this update inserts a backdoor."
 
     file_mirror: Dict[str, str] = {}
     final_holder: Dict[str, Any] = {}
@@ -147,7 +125,6 @@ def run_agent(
         append_trace_line(trace_path, f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] error: {failure_reason} {exc}")
         return _error_result(why, failure_reason=failure_reason, failure_detail=detail)
 
-    analysis_md = _coerce_str(file_mirror.get("/work/analysis.md"))
     final_md = _coerce_str(file_mirror.get("/work/final.md"))
     messages = out.get("messages") if isinstance(out, dict) else getattr(out, "messages", None)
     llm_usage = collect_llm_usage_counts(messages)
@@ -162,7 +139,6 @@ def run_agent(
         notes["observations"].append(why)
         append_trace_line(trace_path, f"[{invoke_elapsed_s:7.2f}s] [agent] error: missing_final_answer")
         result = _error_result(why, failure_reason="missing_final_answer")
-        result["analysis_md"] = analysis_md
         result["final_md"] = final_md
         result["llm_elapsed_s"] = invoke_elapsed_s
         result["llm_input_tokens"] = llm_input_tokens
@@ -173,14 +149,11 @@ def run_agent(
     label = _coerce_label(final.get("label"))
     label = label if label in {"safe", "not_safe"} else "failed"
     append_trace_line(trace_path, f"[{invoke_elapsed_s:7.2f}s] [agent] final: label={label}")
-    if analysis_md.strip():
-        append_trace_line(trace_path, f"[{invoke_elapsed_s:7.2f}s] [agent] wrote /work/analysis.md")
     if final_md.strip():
         append_trace_line(trace_path, f"[{invoke_elapsed_s:7.2f}s] [agent] wrote /work/final.md")
 
     return {
         "label": label,
-        "analysis_md": analysis_md,
         "final_md": final_md,
         "failure_reason": None,
         "failure_detail": "",
