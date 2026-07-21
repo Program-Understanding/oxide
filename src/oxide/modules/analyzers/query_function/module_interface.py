@@ -12,6 +12,9 @@ from oxide.core import api
 
 logger = logging.getLogger(NAME)
 
+CLAP_ASM_REVISION = "620f4beba2edce172e8f35e263399716494950c9"
+CLAP_TEXT_REVISION = "3c4bfe1a936fd9f9140892c4d1d813e4a23301f8"
+
 opts_doc = {
     "query": {"type": str, "mangle": True, "default": ""},
     "query_path": {"type": str, "mangle": True, "default": ""},
@@ -238,7 +241,9 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
     if not prompts:
         return {"error": "Please provide 'query', 'query_path', 'prompts', or 'prompts_path'."}
 
-    top_k = _as_int(opts.get("top_k", 10), 10)
+    limit = _result_limit(opts)
+    offset = max(0, _as_int(opts.get("offset", 0), 0))
+    top_k = limit
     max_instructions = _as_int(opts.get("max_instructions", 512), 512)
     batch_size = max(1, _as_int(opts.get("batch_size", 16), 16))
     use_cache = _as_bool(opts.get("use_cache", True))
@@ -264,6 +269,7 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
     counts: Dict[str, Dict[str, Any]] = {}
     global_candidates: List[Dict[str, Any]] = []
     per_function_labels: List[Dict[str, Any]] = []
+    total_functions = 0
 
     for oid in oids:
         idx = _load_or_build_clap_index(
@@ -279,6 +285,7 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
         )
         if not idx:
             continue
+        total_functions += int(idx.get("num_indexed", 0) or 0)
 
         logits = idx["emb"].dot(text_emb.T)
         scores = _softmax(logits / temperature, axis=1) if len(prompts) > 1 else logits
@@ -303,15 +310,18 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
                 global_candidates.append(_candidate(idx, oid, i, float(scores[i, j]), prompts[j], prompt_index=j))
 
     global_candidates.sort(key=lambda x: x["score"], reverse=True)
-    if top_k > 0:
-        global_candidates = global_candidates[:top_k]
+    page = global_candidates[offset:offset + limit] if limit > 0 else global_candidates[offset:]
     result: Dict[str, Any] = {
         "prompts": prompts,
         "backend": "clap_asm",
+        "returned_count": len(page),
+        "offset": offset,
+        "limit": limit,
+        "total_functions": total_functions,
         "counts": counts,
         "results": {
-            "best_match": global_candidates[0] if global_candidates else None,
-            "candidates": global_candidates,
+            "best_match": page[0] if page else None,
+            "candidates": page,
         },
         "notes": {
             "asm_model_id": asm_model_id,
@@ -328,7 +338,7 @@ def _clap_asm_results(oids: List[str], opts: dict) -> Dict[str, Any]:
     }
     if len(prompts) > 1:
         result["results"]["per_function_best_label"] = per_function_labels
-    if not global_candidates:
+    if not page:
         result["warning"] = "No indexed functions available from ghidra_disasm."
     return result
 
@@ -383,6 +393,8 @@ def _load_or_build_decomp_index(
         func_name = _extract_func_name(finfo, addr)
         key_name = func_name if func_name in decompile else _resolve_decomp_key(decompile, func_name)
         text = _normalize_decomp_blob(_decomp_text_from_blocks(decompile.get(key_name)), max_chars=max_chars) if key_name else ""
+        if not text:
+            text = _normalize_decomp_blob(_safe_decompile(oid, addr), max_chars=max_chars)
         if text:
             addrs.append(str(addr))
             names.append(func_name)
@@ -482,30 +494,36 @@ def _load_or_build_clap_index(
 
     funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
     blocks = api.get_field("ghidra_disasm", oid, "original_blocks") or {}
+    instructions = api.get_field("ghidra_disasm", oid, "instructions") or {}
     f_list = list(_iter_functions(funcs))
     addrs: List[str] = []
     names: List[str] = []
-    texts: List[str] = []
+    asm_functions: List[Dict[str, str]] = []
     previews: List[str] = []
     for addr, finfo in f_list:
-        asm = _function_assembly(finfo, blocks, max_instructions=max_instructions)
-        if not asm:
+        asm_items = _function_assembly(
+            finfo,
+            blocks,
+            instructions,
+            max_instructions=max_instructions,
+        )
+        if not asm_items:
             continue
         addrs.append(str(addr))
         names.append(_extract_func_name(finfo, addr))
-        texts.append(asm)
-        previews.append(_first_preview_line(asm))
+        asm_functions.append(_assembly_dict(asm_items))
+        previews.append(_first_preview_line("\n".join(text for _, text in asm_items)))
 
-    counts[oid] = {"cache": "miss", "num_functions": len(f_list), "num_indexed": len(texts)}
-    if not texts:
+    counts[oid] = {"cache": "miss", "num_functions": len(f_list), "num_indexed": len(asm_functions)}
+    if not asm_functions:
         return None
     idx = {
         "num_functions": len(f_list),
-        "num_indexed": len(texts),
+        "num_indexed": len(asm_functions),
         "addrs": addrs,
         "names": names,
         "previews": previews,
-        "emb": _encode_clap_asm(encoders, texts, batch_size=batch_size, normalize=normalize),
+        "emb": _encode_clap_asm(encoders, asm_functions, batch_size=batch_size, normalize=normalize),
     }
     if use_cache:
         try:
@@ -621,7 +639,12 @@ def _candidate(
         "oid": oid,
         "function_addr": idx["addrs"][i],
         "function_name": idx["names"][i],
+        "func_addr": idx["addrs"][i],
+        "func_name": idx["names"][i],
         "score": score,
+        "similarity": score,
+        "search_mode": "semantic",
+        "match_type": "semantic",
         "preview": idx["previews"][i],
     }
     if prompt is not None:
@@ -722,27 +745,83 @@ def _decomp_text_from_blocks(func_blocks: Any) -> str:
     return "\n".join(untagged_fallback)
 
 
-def _function_assembly(finfo: Any, blocks: Dict[Any, Any], max_instructions: int) -> str:
-    lines: List[str] = []
+def _safe_decompile(oid: str, addr: Any) -> Any:
+    try:
+        res = api.retrieve("function_decomp", [oid], {"function_addr": str(addr)})
+        return res.get(oid, res) if isinstance(res, dict) else res
+    except Exception:
+        logger.debug("Decompile fallback failed oid=%s addr=%s", oid, addr, exc_info=True)
+        return None
+
+
+def _function_assembly(
+    finfo: Any,
+    blocks: Dict[Any, Any],
+    instructions: Dict[Any, Any],
+    max_instructions: int,
+) -> List[Tuple[int, str]]:
+    rows: List[Tuple[int, str]] = []
     for block_addr in _block_addrs(finfo):
         block = blocks.get(block_addr) or blocks.get(str(block_addr))
         if not isinstance(block, dict):
             continue
-        for member in block.get("members", []) or []:
+        members = block.get("members", []) or []
+        for member in sorted(members, key=_member_sort_key):
             if not isinstance(member, (list, tuple)) or len(member) < 2:
                 continue
-            text = str(member[1]).strip()
+            text = _resolve_member_text(member, instructions)
+            addr = _as_int(member[0], -1)
             if text:
-                lines.append(text)
-            if max_instructions > 0 and len(lines) >= max_instructions:
-                return "\n".join(lines)
-    return "\n".join(lines)
+                rows.append((addr, text))
+            if max_instructions > 0 and len(rows) >= max_instructions:
+                return rows
+    return rows
 
 
 def _block_addrs(finfo: Any) -> Iterable[Any]:
     if isinstance(finfo, dict):
         return finfo.get("blocks", []) or []
     return []
+
+
+def _member_sort_key(member: Any) -> Tuple[int, str]:
+    if isinstance(member, (list, tuple)) and member:
+        addr = _as_int(member[0], -1)
+        return (addr, str(member[0]))
+    return (-1, "")
+
+
+def _resolve_member_text(member: Sequence[Any], instructions: Dict[Any, Any]) -> str:
+    addr = member[0] if len(member) > 0 else None
+    text = str(member[1]).strip() if len(member) > 1 else ""
+    if text and text.lower() != "null":
+        return text
+
+    candidates = []
+    if addr is not None:
+        candidates.extend([addr, str(addr)])
+        try:
+            addr_i = int(addr)
+        except Exception:
+            addr_i = None
+        if addr_i is not None:
+            candidates.extend([addr_i, f"{addr_i:x}", f"0x{addr_i:x}"])
+    for key in candidates:
+        if key in instructions:
+            resolved = str(instructions[key]).strip()
+            if resolved and resolved.lower() != "null":
+                return resolved
+    return ""
+
+
+def _assembly_dict(rows: Sequence[Tuple[int, str]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for idx, (addr, text) in enumerate(rows):
+        if not text:
+            continue
+        key = f"{idx}_{addr:x}" if isinstance(addr, int) and addr >= 0 else str(idx)
+        out[key] = text
+    return out
 
 
 def _extract_func_name(finfo: Any, addr: Any) -> str:
@@ -792,7 +871,12 @@ def _load_text_option(opts: dict, value_key: str, path_key: str) -> str:
 
 def _result_limit(opts: dict) -> int:
     limit = _as_int(opts.get("limit", 0), 0)
-    return limit if limit > 0 else _as_int(opts.get("top_k", 10), 10)
+    top_k = _as_int(opts.get("top_k", 10), 10)
+    if limit > 0:
+        return limit
+    if limit <= 0 and top_k <= 0:
+        return 0
+    return top_k
 
 
 def _normalize_decomp_blob(f_decomp: Any, max_chars: int) -> str:
@@ -946,10 +1030,26 @@ def _get_clap_encoders(*, asm_model_id: str, text_model_id: str, device: str) ->
     actual_device = torch.device("cuda" if device == "auto" and torch.cuda.is_available() else "cpu")
     if device and device != "auto":
         actual_device = torch.device(device)
-    asm_tokenizer = AutoTokenizer.from_pretrained(asm_model_id, trust_remote_code=True)
-    text_tokenizer = AutoTokenizer.from_pretrained(text_model_id, trust_remote_code=True)
-    asm_model = AutoModel.from_pretrained(asm_model_id, trust_remote_code=True).to(actual_device)
-    text_model = AutoModel.from_pretrained(text_model_id, trust_remote_code=True).to(actual_device)
+    asm_tokenizer = AutoTokenizer.from_pretrained(
+        asm_model_id,
+        revision=CLAP_ASM_REVISION,
+        trust_remote_code=True,
+    )
+    text_tokenizer = AutoTokenizer.from_pretrained(
+        text_model_id,
+        revision=CLAP_TEXT_REVISION,
+        trust_remote_code=True,
+    )
+    asm_model = AutoModel.from_pretrained(
+        asm_model_id,
+        revision=CLAP_ASM_REVISION,
+        trust_remote_code=True,
+    ).to(actual_device)
+    text_model = AutoModel.from_pretrained(
+        text_model_id,
+        revision=CLAP_TEXT_REVISION,
+        trust_remote_code=True,
+    ).to(actual_device)
     asm_model.eval()
     text_model.eval()
     _CLAP_ENCODERS = _ClapEncoders(asm_tokenizer, asm_model, text_tokenizer, text_model, torch, actual_device)
@@ -957,7 +1057,7 @@ def _get_clap_encoders(*, asm_model_id: str, text_model_id: str, device: str) ->
     return _CLAP_ENCODERS
 
 
-def _encode_clap_asm(encoders: _ClapEncoders, texts: Sequence[str], batch_size: int, normalize: bool) -> np.ndarray:
+def _encode_clap_asm(encoders: _ClapEncoders, texts: Sequence[Dict[str, str]], batch_size: int, normalize: bool) -> np.ndarray:
     return _encode_clap(encoders, encoders.asm_tokenizer, encoders.asm_model, texts, batch_size, normalize)
 
 
@@ -978,7 +1078,7 @@ def _encode_clap(
     with torch.no_grad():
         for start in range(0, len(texts), batch_size):
             batch = list(texts[start:start + batch_size])
-            inputs = tokenizer(batch, padding=True, truncation=True, return_tensors="pt")
+            inputs = _tokenize_clap_batch(tokenizer, batch)
             inputs = {key: value.to(encoders.device) for key, value in inputs.items()}
             output = model(**inputs)
             emb = _clap_output_embedding(output, inputs, torch)
@@ -989,11 +1089,19 @@ def _encode_clap(
 
 
 def _clap_output_embedding(output: Any, inputs: Dict[str, Any], torch: Any) -> Any:
+    if hasattr(output, "shape"):
+        return output
+    pooler_output = getattr(output, "pooler_output", None)
+    if pooler_output is not None and hasattr(pooler_output, "shape"):
+        return pooler_output
     emb = getattr(output, "last_hidden_state", None)
     if emb is None and isinstance(output, (tuple, list)) and output:
         emb = output[0]
     if emb is None:
-        raise ValueError("CLAP model output did not include last_hidden_state")
+        raise ValueError(
+            "CLAP model output did not expose a usable embedding tensor "
+            "(expected direct tensor, pooler_output, or last_hidden_state)."
+        )
     if len(emb.shape) == 2:
         return emb
     mask = inputs.get("attention_mask")
@@ -1001,3 +1109,14 @@ def _clap_output_embedding(output: Any, inputs: Dict[str, Any], torch: Any) -> A
         return emb.mean(dim=1)
     mask = mask.unsqueeze(-1).expand(emb.size()).float()
     return torch.sum(emb * mask, dim=1) / torch.clamp(mask.sum(dim=1), min=1e-9)
+
+
+def _tokenize_clap_batch(tokenizer: Any, batch: Sequence[Any]) -> Dict[str, Any]:
+    if batch and isinstance(batch[0], dict):
+        # Upstream AsmTokenizer expects structured per-function dicts and its
+        # custom __call__ forwards kwargs into pad(), which rejects truncation.
+        return tokenizer(batch, padding=True, return_tensors="pt")
+    try:
+        return tokenizer(batch, padding=True, truncation=True, return_tensors="pt")
+    except TypeError:
+        return tokenizer(batch, padding=True, return_tensors="pt")
