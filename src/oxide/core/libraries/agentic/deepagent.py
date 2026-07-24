@@ -12,6 +12,7 @@ ORACLE-CERTIFIED trailer are added in P3 (see deepagent_trailer / run below).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -314,6 +315,33 @@ def _certified_trailer(oid: str, question: str, answer: str, opts: dict) -> str:
     return answer
 
 
+@contextlib.contextmanager
+def _root_run_span_cm(oid: str, vaddr: str, name: str):
+    """One root OpenInference span. Tagging it AGENT + session.id makes Phoenix render a single connected
+    tree and group same-function runs under one session, instead of the dozens of orphan traces langgraph
+    emits by default. Two roots are used per run: `type_recovery` (the LLM agent graph) and
+    `oracle_certification` (the deterministic trailer) — mirroring the two layers of the architecture."""
+    try:
+        from opentelemetry import trace as _otel
+        tracer = _otel.get_tracer("oxide-agentic-deepagents")
+    except Exception:  # noqa: BLE001
+        yield None
+        return
+    with tracer.start_as_current_span(f"{name} {vaddr}") as sp:
+        try:
+            sp.set_attribute("openinference.span.kind", "AGENT")
+            sp.set_attribute("session.id", f"{oid[:12]}:{vaddr}")
+            sp.set_attribute("input.value", f"{name} for function {vaddr}")
+        except Exception:  # noqa: BLE001
+            pass
+        yield sp
+
+
+def _root_run_span(enabled: bool, oid: str, vaddr: str, name: str = "type_recovery"):
+    """Root-span context manager when tracing is on, else a no-op context."""
+    return _root_run_span_cm(oid, vaddr, name) if enabled else contextlib.nullcontext()
+
+
 async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     """Build the deepagents multi-agent (coordinator + type_worker + verifier), run it on `question`,
     then append the deterministic ORACLE-CERTIFIED trailer. Returns the final per-variable answer."""
@@ -324,10 +352,22 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     # agent graph are built so the LangChain instrumentor patches langgraph's callback manager — that
     # is what makes the coordinator -> worker -> verifier delegation, LLM turns, and tool calls show
     # up as nested spans in the local Phoenix UI (http://localhost:6006).
+    _phoenix_on = False
     if str(C._opt(opts, "phoenix") or "").strip().lower() in ("1", "true", "yes", "on"):
         from oxide.core.libraries.agentic import trace as _TR
         _ep = C._opt(opts, "phoenix_endpoint") or "http://localhost:6006/v1/traces"
-        _TR.setup_phoenix(_ep, project_name="oxide-agentic-deepagents")
+        _phoenix_on = _TR.setup_phoenix(_ep, project_name="oxide-agentic-deepagents")
+
+    # Optional run-flow recorder (AGENTIC_FLOW_DIAGRAM=1): a callback handler that records the actual
+    # decompose -> delegate -> tool-calls -> verify -> deterministic-certify flow so it can be drawn as a
+    # Mermaid figure for visual inspection. No-op (recorder stays None) unless the flag is set.
+    _flow_rec = None
+    if str(C._opt(opts, "flow_diagram") or "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from oxide.core.libraries.agentic.flow_recorder import FlowRecorder
+            _flow_rec = FlowRecorder()
+        except Exception:  # noqa: BLE001
+            _flow_rec = None
 
     # Warm the on-disk analysis cache in THIS process first, so the MCP subprocess (which shares the
     # datastore) reads cached Ghidra results on its first tool call instead of re-running analysis.
@@ -418,10 +458,19 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
             system_prompt=COORDINATOR_PROMPT.format(oid=oid, vaddr=vaddr),
             subagents=_subagents,
         )
-        result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": user}]},
-            {"recursion_limit": recursion_limit},
-        )
+        # Wrap the whole run in ONE root span (+ a session id) so Phoenix shows a single connected tree
+        # grouped coordinator -> task -> worker/verifier, instead of the dozens of orphan traces langgraph
+        # otherwise emits (its async subagent/tool nodes each start a fresh OTel root, fragmenting the
+        # trace). asyncio tasks copy the current context at creation, so with this span current when
+        # ainvoke runs, the langgraph model/tool/subagent spans nest under it.
+        _cfg = {"recursion_limit": recursion_limit}
+        if _flow_rec is not None:
+            _cfg["callbacks"] = [_flow_rec]
+        with _root_run_span(_phoenix_on, oid, vaddr):
+            result = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": user}]},
+                _cfg,
+            )
         answer = result["messages"][-1].content
 
     # clean gemma special tokens: the thinking block, then any residual <|..>/<..|> markers + a bare
@@ -429,7 +478,79 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     answer = re.sub(r"<\|?channel\|?>.*?<\|?/?channel\|?>", "", answer, flags=re.S)
     answer = re.sub(r"<\|[^>]*>|<[^>]*\|>", "", answer)
     answer = re.sub(r"(?im)^\s*thought\s*$", "", answer).strip()
-    return _certified_trailer(oid, question, answer, opts)
+    # The deterministic oracle trailer gets its OWN root span so its (main-process) decompile/stack_var
+    # oracle calls collapse into one `oracle_certification` tree instead of ~60 orphan traces.
+    with _root_run_span(_phoenix_on, oid, vaddr, name="oracle_certification"):
+        final = _certified_trailer(oid, question, answer, opts)
+
+    if _flow_rec is not None:
+        _emit_flow_diagram(_flow_rec, oid, vaddr, question, final, opts)
+    return final
+
+
+# Stash of the last run's flow data so the harness can RE-render the diagrams after it has scored the
+# prediction (adding ground-truth match + mean score to the Output node). Keeps the library generic —
+# it only DISPLAYS a scoring dict the harness computes; it never knows about TREX ground truth itself.
+_LAST_FLOW: dict = {}
+
+
+def _emit_flow_diagram(recorder, oid: str, vaddr: str, question: str, answer: str, opts: dict) -> None:
+    """Build the Mermaid run-flow figures from the recorded events + deterministic oracle facts, and write
+    them next to the run outputs. Best-effort: a failure here never affects the returned answer."""
+    try:
+        from oxide.core.libraries.agentic import flow_recorder as _FR
+        oracle_facts = _collect_oracle_facts(oid, question, opts)
+        # the FULL list of deterministic oracles that were CONSULTED (mirrors _collect_oracle_facts'
+        # resolution) so the diagram can show which ran-and-abstained (e.g. runtime_type_probe) vs which
+        # certified — an oracle producing no fact must not look like it was skipped.
+        _which = (opts.get("domain_oracles")
+                  or "callee_signature,decompiler_pointer,interprocedural_param_usage,spilled_param")
+        consulted = [x.strip() for x in str(_which).split(",") if x.strip()]
+        if "runtime_type_probe" not in consulted:
+            consulted.append("runtime_type_probe")
+        variables = _FR.input_vars_from_question(question)
+        meta = {"vaddr": vaddr, "nvars": len(variables) or len(set(re.findall(r"\bV\d+\b", question))),
+                "oracles_consulted": consulted, "variables": variables}
+        out_dir = C.cfg_get("flow_dir") or opts.get("flow_dir") or os.getcwd()
+        base = os.path.join(out_dir, f"agentic_flow_{vaddr.replace('0x', '')}")
+        _LAST_FLOW.clear()
+        _LAST_FLOW.update({"recorder": recorder, "meta": meta, "oracle_facts": oracle_facts,
+                           "answer": answer, "base": base})
+        _render_flow(scoring=opts.get("flow_scoring"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[flow] diagram skipped — {str(e)[:120]}")
+
+
+def _render_flow(scoring=None) -> None:
+    """Render the 3 views (flowchart, turn sequence, markdown) from _LAST_FLOW, optionally with a scoring
+    dict {ground_truth:{vid:type}, score:float} that adds the ground-truth match + mean score to Output."""
+    from oxide.core.libraries.agentic import flow_recorder as _FR
+    F = _LAST_FLOW
+    if not F:
+        return
+    rec, meta, facts, answer, base = F["recorder"], F["meta"], F["oracle_facts"], F["answer"], F["base"]
+    # (1) overview flowchart. (2) sequence diagram, then compose ONE figure = input panel + the sequence
+    # image + output panel (final answer + score). (3) markdown log.
+    _, png_path = _FR.render(_FR.to_mermaid(rec, meta, facts, answer, scoring), base)
+    _, seq_png = _FR.render(_FR.to_sequence(rec, meta, facts, answer, scoring), base + "_turns")
+    if seq_png:
+        _FR.compose_sequence_figure(seq_png, meta, answer, scoring, base + "_turns.png")
+    with open(base + ".md", "w") as fh:
+        fh.write(_FR.to_markdown(rec, meta, facts, answer, scoring))
+    tag = "  (+ ground-truth & score)" if scoring else ""
+    print(f"[flow] run-flow diagrams -> {base}.{{mmd,svg,png}} (flowchart) + {base}_turns.png "
+          f"(input + sequence + output) + {base}.md{tag}"
+          + ("" if png_path else "  (npx @mermaid-js/mermaid-cli for PNGs)"))
+
+
+def write_flow_scoring(ground_truth: dict, score: float) -> None:
+    """Public hook the HARNESS calls AFTER scoring: re-renders the last run's diagrams with the Output node
+    showing predicted-vs-ground-truth and the mean score. No-op if no flow run was recorded."""
+    if _LAST_FLOW:
+        try:
+            _render_flow(scoring={"ground_truth": ground_truth or {}, "score": score})
+        except Exception as e:  # noqa: BLE001
+            print(f"[flow] scoring overlay skipped — {str(e)[:120]}")
 
 
 def run_sync(oid: str, question: str, opts: dict) -> str:
