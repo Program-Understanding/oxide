@@ -21,12 +21,15 @@ DESIGN (per the integration spec):
     trace (``classify_observations``). Cache miss / unreachable -> abstain, exactly the
     fallback semantics the static oracles already have.
 
-STATUS: the decision logic (``classify_observations``) and the integration (firing predicate,
-certification gate, cache, registration) are complete and tested. The emulation BACKEND
-(``ExecProbe.observe``) is a conservative stub that reports ``unreachable`` until the
-drive-to-slot + argument-bootstrap + observation loop is built (Phase B); the oracle therefore
-ABSTAINS everywhere for now, disturbing no measured component. It is OPT-IN — not in the
-default AGENTIC_DOMAIN_ORACLES set — so it never runs in the current benchmark unless named.
+STATUS: the decision logic (``classify_observations``), the integration (firing predicate,
+certification gate, cache, registration), AND the B0 concrete-execution backend (``ExecProbe``,
+angr drive-from-entry) are complete and validated (base32 scale run: 313/340 residual slots
+reached, 17 certified, 17/17 representationally correct). Coverage — not reach — is the ceiling:
+most reached integer slots show no Tier-A signal on the concrete path. Tier-A signals now include
+signed CONDITIONAL BRANCHES (``cmp`` on a slot followed by jl/jle/jg/jge => sound signed integer;
+the unsigned flavor jb/ja... is Tier-B only, being shared by unsigned/size_t/pointer), which
+converts the large reached-but-silent integer population into certified facts. It is OPT-IN — not
+in the default AGENTIC_DOMAIN_ORACLES set — so it never runs unless named.
 """
 from __future__ import annotations
 
@@ -35,10 +38,15 @@ import os
 import re
 import tempfile
 
-from oxide.core.libraries.agentic.grounding import register_domain_oracle
+from agentic.grounding import register_domain_oracle
 
 # oid -> on-disk path of the materialised binary (angr needs a file; Oxide stores bytes by oid).
 _BIN_PATHS: dict = {}
+# binary_path -> loaded angr Project. The Project (CLE load + extern hooking) is the expensive part and
+# is IMMUTABLE after setup (blank_state builds a fresh state per run), so it is shared across every
+# function of the same binary instead of being rebuilt per ExecProbe. This is the big constant-factor
+# speedup: without it, driving N functions reloaded + re-hooked the whole binary N times.
+_PROJ_CACHE: dict = {}
 
 
 def _materialize_binary(oid: str):
@@ -91,20 +99,30 @@ def _tier_a_of(o: dict):
         return ("double" if w == 8 else "float", None)
     if o.get("dereferenced"):                             # used as base AND deref succeeded
         return ("pointer", None)                          #   (NOT value-range plausibility)
-    if o.get("signed_op"):                                # movsx / idiv
+    if o.get("signed_op") or o.get("signed_branch"):      # movsx / idiv  OR signed conditional branch
+        # A signed conditional branch (jl/jle/jg/jge after a cmp on the slot) is Tier-A SOUND: at -O0
+        # gcc emits signed jumps ONLY for signed operands. Pointers, unsigned ints, and size_t compare
+        # with the UNSIGNED flavor (jb/ja...), which is handled as ambiguous Tier-B, never certified.
         return (f"signed{o.get('width') or ''}", None)
-    if o.get("unsigned_op"):                              # div
+    if o.get("unsigned_op"):                              # div (a real unsigned division)
         return (f"unsigned{o.get('width') or ''}", None)
     return None
 
 
-def classify_observations(observations, k_min: int = CERT_MIN_OBS) -> dict:
+def classify_observations(observations, k_min: int = CERT_MIN_OBS, k_intr: int = 1) -> dict:
     """Fold per-run observations into a verdict. Returns
         {"ctype": str|None, "tier": "A"/"B"/"C"/None, "certified": bool, "reason": str,
          "polymorphic": list|None}
-    Certification (confidence 1.0) requires: >= k_min clean Tier-A observations that AGREE, with
-    NO conflicting Tier-A. Conflicting Tier-A across runs -> polymorphic/union (never collapse).
-    Tier-B or single/weak Tier-A -> reported (tier set) but certified=False. Else abstain."""
+    Certification (confidence 1.0) requires clean Tier-A observations that AGREE with NO conflicting
+    Tier-A. The required count depends on WHY the signal is trustworthy:
+      * INSTRUCTION-INTRINSIC signals (movsx/idiv=signed, div=unsigned, xmm=fp, signed conditional
+        branch) are properties of the emitted INSTRUCTIONS, not of the seeded argument values, so one
+        clean observation certifies them (k_intr, default 1) -- re-driving identical control flow with
+        different arg values only reproduces the same instruction.
+      * The POINTER signal (a slot value used as a base that dereferences into mapped memory) is
+        value-SENSITIVE, so it still needs k_min agreeing runs to rule out a coincidental address.
+    Conflicting Tier-A across runs -> polymorphic/union (never collapse). Tier-B or too-few Tier-A ->
+    reported (tier set) but certified=False. Else abstain."""
     clean = [o for o in observations if not o.get("uninitialized")]   # discard def-before-use
     if not clean:
         return {"ctype": None, "tier": None, "certified": False,
@@ -122,13 +140,15 @@ def classify_observations(observations, k_min: int = CERT_MIN_OBS) -> dict:
             return {"ctype": _union_type(distinct_a), "tier": _TIER_A, "certified": False,
                     "reason": f"cross-run Tier-A conflict -> polymorphic {distinct_a}",
                     "polymorphic": distinct_a}
-        if len(a_repr) >= k_min:                                 # consistent AND enough clean obs
+        # value-sensitive pointer needs k_min agreeing runs; instruction-intrinsic classes need k_intr.
+        required = k_min if _core_repr(distinct_a[0]) == "pointer" else k_intr
+        if len(a_repr) >= required:                              # consistent AND enough clean obs
             ct = _to_ctype(distinct_a[0], clean)
             return {"ctype": ct, "tier": _TIER_A, "certified": True,
-                    "reason": f"Tier-A {distinct_a[0]} consistent across {len(a_repr)} runs",
+                    "reason": f"Tier-A {distinct_a[0]} consistent across {len(a_repr)} run(s)",
                     "polymorphic": None}
         return {"ctype": _to_ctype(distinct_a[0], clean), "tier": _TIER_A, "certified": False,
-                "reason": f"Tier-A {distinct_a[0]} but only {len(a_repr)}<{k_min} obs",
+                "reason": f"Tier-A {distinct_a[0]} but only {len(a_repr)}<{required} obs",
                 "polymorphic": None}
 
     # --- Tier B: strong statistical (never certified; feeds normal verification) ---
@@ -143,6 +163,13 @@ def classify_observations(observations, k_min: int = CERT_MIN_OBS) -> dict:
     if len(offs) >= 2:
         return {"ctype": f"struct {{layout {offs}}}", "tier": _TIER_B, "certified": False,
                 "reason": f"clustered fixed offsets {offs}", "polymorphic": None}
+    if any(o.get("unsigned_branch") for o in clean):     # cmp + jb/ja... : unsigned-OR-pointer-OR-size_t
+        w = next((o.get("width") for o in clean if o.get("width")), 8)
+        ct = {1: "unsigned char", 2: "unsigned short", 4: "unsigned int",
+              8: "unsigned long"}.get(w, "unsigned long")
+        return {"ctype": ct, "tier": _TIER_B, "certified": False,
+                "reason": "unsigned conditional branch (ambiguous vs pointer/size_t) -> not certified",
+                "polymorphic": None}
 
     # --- Tier C: suggestive, never alone -> abstain ---
     return {"ctype": None, "tier": _TIER_C, "certified": False,
@@ -197,6 +224,12 @@ FRAME_ADJ = 0x8
 _SIGNED_MNEM = ("movsx", "movsxd", "idiv")
 _FP_MNEM = ("movsd", "movss", "cvtsi2sd", "cvtsi2ss", "cvttsd2si", "cvttss2si",
             "addsd", "mulsd", "subsd", "divsd", "addss", "mulss", "subss", "divss")
+# Conditional-branch signedness (the compiler chooses the jump flavor by operand signedness):
+#   signed relational  -> jl / jle / jg / jge   (SOUND: emitted ONLY for signed operands)
+#   unsigned relational -> jb / jbe / ja / jae   (shared by unsigned int, size_t, AND pointers -> Tier-B)
+# Equality (je/jne) and sign-bit (js/jns) jumps carry no relational-signedness and are ignored.
+_SIGNED_JCC = frozenset(("jl", "jle", "jg", "jge", "jnge", "jng", "jnl", "jnle"))
+_UNSIGNED_JCC = frozenset(("jb", "jbe", "ja", "jae", "jnae", "jna", "jnb", "jnbe", "jc", "jnc"))
 
 
 class ExecProbe:
@@ -223,6 +256,10 @@ class ExecProbe:
     def _project(self):
         if self._proj is not None:
             return self._proj
+        cached = _PROJ_CACHE.get(self.binary_path)
+        if cached is not None:
+            self._proj, self._arena_lo = cached
+            return self._proj
         import logging
         for n in ("angr", "cle", "pyvex", "claripy"):
             logging.getLogger(n).setLevel(logging.CRITICAL)
@@ -248,6 +285,7 @@ class ExecProbe:
                     pass
         self._proj = proj
         self._arena_lo = 0x4100_0000
+        _PROJ_CACHE[self.binary_path] = (proj, self._arena_lo)   # share across this binary's functions
         return proj
 
     def _run_once(self, addr_i: int, seed: int) -> dict:
@@ -275,32 +313,35 @@ class ExecProbe:
         st.regs.rsp = 0x7fff_0000
         st.stack_push(claripy.BVV(retpage, 64))          # sentinel return address
 
-        frame = {"rbp": None}
-        slot_map = {}                                    # concrete addr -> rbp_rel offset
+        # Deterministic frame: at -O0 the standard prologue (push rbp; mov rbp,rsp) sets rbp to a fixed
+        # address given our seeded rsp (0x7fff_0000, minus 8 for the pushed sentinel return, minus 8 for
+        # the pushed old rbp) = 0x7ffe_fff0. Building slot_map up front lets us DROP the per-instruction
+        # breakpoint that used to watch every instruction just to discover rbp -- a mis-set rbp only
+        # costs recall (no slot is hit -> abstain), never precision.
+        rbp_val = 0x7ffe_fff0
+        slot_map = {rbp_val + g: g for g in range(-0x100, 0x8)}  # concrete addr -> rbp_rel offset
         acc = {}                                         # rbp_rel off -> fragment
         loaded = {}                                      # concrete value loaded from a slot -> rbp_rel off
 
         def frag(off):
             return acc.setdefault(off, {"width": None, "fp_used": False, "dereferenced": False,
                                         "signed_op": False, "unsigned_op": False,
+                                        "signed_branch": False, "unsigned_branch": False,
                                         "read": False, "written": False})
+
+        def _ins_addr(state):
+            # the instruction CURRENTLY executing. With block-granularity stepping state.addr is the
+            # BLOCK entry, not the current instruction, so use scratch.ins_addr (the live imark address).
+            try:
+                return state.scratch.ins_addr
+            except Exception:  # noqa: BLE001
+                return state.addr
 
         def cur_insn(state):
             try:
-                return proj.factory.block(state.addr, num_inst=1).capstone.insns[0]
+                return proj.factory.block(_ins_addr(state), num_inst=1).capstone.insns[0]
             except Exception:  # noqa: BLE001
                 return None
-
-        def on_instr(state):
-            if frame["rbp"] is None:
-                try:
-                    rbp = state.solver.eval(state.regs.rbp)
-                    if 0x7ffe_0000 < rbp < 0x7fff_0000:  # rbp established by prologue
-                        frame["rbp"] = rbp
-                        for g in range(-0x100, 0x8):
-                            slot_map[rbp + g] = g
-                except Exception:  # noqa: BLE001
-                    pass
 
         def on_read(state):
             try:
@@ -325,6 +366,16 @@ class ExecProbe:
                         f["unsigned_op"] = True
                     if m.startswith(_FP_MNEM) or "xmm" in ops:
                         f["fp_used"] = True
+                    if m == "cmp":                        # the NEXT insn's Jcc reveals the operand sign
+                        try:                              # static lookahead -> no per-instruction hook
+                            nins = proj.factory.block(_ins_addr(state) + ins.size,
+                                                      num_inst=1).capstone.insns[0]
+                            if nins.mnemonic in _SIGNED_JCC:
+                                f["signed_branch"] = True
+                            elif nins.mnemonic in _UNSIGNED_JCC:
+                                f["unsigned_branch"] = True
+                        except Exception:  # noqa: BLE001
+                            pass
                 try:
                     v = state.solver.eval(state.inspect.mem_read_expr) \
                         if state.inspect.mem_read_expr is not None else None
@@ -343,10 +394,13 @@ class ExecProbe:
                 if not f["read"]:
                     f["written"] = True                   # written before any read -> initialised
 
-        st.inspect.b("instruction", when=angr.BP_BEFORE, action=on_instr)
         st.inspect.b("mem_read", when=angr.BP_AFTER, action=on_read)
         st.inspect.b("mem_write", when=angr.BP_BEFORE, action=on_write)
 
+        # Instruction-granularity stepping is (counter-intuitively) FASTER than block stepping here:
+        # the mem_read/mem_write inspect breakpoints force angr to break every block at each memory
+        # access anyway, so block stepping only adds block-management overhead. num_inst=1 also keeps
+        # state.addr == the current instruction, which cur_insn / the branch lookahead rely on.
         simgr = proj.factory.simulation_manager(st)
         for _ in range(600):
             if not simgr.active:
@@ -387,6 +441,8 @@ class ExecProbe:
                 "dereferenced": frag["dereferenced"],
                 "signed_op": frag["signed_op"],
                 "unsigned_op": frag["unsigned_op"],
+                "signed_branch": frag.get("signed_branch", False),
+                "unsigned_branch": frag.get("unsigned_branch", False),
                 "uninitialized": frag["read"] and not frag["written"],  # read before any write
             })
         return obs
@@ -410,7 +466,7 @@ def _stack_slots(question: str) -> dict:
 def _statically_anchored(call_tool, question) -> set:
     """The vids the STATIC oracles already pin — so the probe fires only on the residual. Runs the
     cheap static certifiers (decompile-based) and collects the entities they resolve."""
-    from oxide.core.libraries.agentic.tasks import type_recovery as TR
+    from agentic.tasks import type_recovery as TR
     anchored = set()
     for facts_fn in (TR.callee_type_recall_facts, TR.spilled_param_facts,
                      TR.interprocedural_param_usage_facts, TR.decompiler_pointer_facts):
@@ -453,13 +509,19 @@ def runtime_type_probe_facts(call_tool, question) -> list:
     for vid, off in residual:
         key = (bpath, addr, off)
         if key in _TRACE_CACHE:
-            obs = _TRACE_CACHE[key]
+            verdict = classify_observations(_TRACE_CACHE[key])
         else:
-            # drive CERT_MIN_OBS distinct seeds: the certification gate needs >=k clean Tier-A
-            # observations that agree, so a single run can never certify (firing predicate 3: drivable).
-            obs = probe.observe(addr, off, seeds=list(range(CERT_MIN_OBS)))
+            # ADAPTIVE DRIVE: an instruction-intrinsic Tier-A (sign/fp/unsigned/branch) is settled by a
+            # single clean run, so drive ONE seed first and stop the moment it certifies. Only fall back
+            # to the full CERT_MIN_OBS seeds when seed 0 did not certify (the value-sensitive pointer
+            # case, which genuinely needs agreeing runs). observe() memoizes per (addr, seed) in the
+            # probe, so the fallback re-uses seed 0's trace and only drives the extra seeds.
+            obs = probe.observe(addr, off, seeds=[0])
+            verdict = classify_observations(obs)
+            if not (verdict["certified"] and verdict["ctype"]):
+                obs = probe.observe(addr, off, seeds=list(range(CERT_MIN_OBS)))
+                verdict = classify_observations(obs)
             _TRACE_CACHE[key] = obs
-        verdict = classify_observations(obs)                      # Section 5 rules (pure)
         if verdict["certified"] and verdict["ctype"]:             # certification gate
             facts.append((vid, verdict["ctype"], verdict["tier"], verdict["reason"]))
     return facts

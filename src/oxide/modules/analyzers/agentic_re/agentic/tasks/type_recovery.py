@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from oxide.core.libraries.agentic.grounding import register_domain_oracle
+from agentic.grounding import register_domain_oracle
 
 # C-library ABI facts: callee -> per-argument fixed type ("" = unconstrained/vararg). These hold for
 # ANY binary linking libc (a decompiler ships the same prototypes), so this is generic type-recovery

@@ -31,8 +31,8 @@ def documentation() -> Dict[str, Any]:
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, dict]:
     """Run the deepagents multi-agent RE pipeline per oid; returns {oid: final_answer_string}. The
-    heavy lifting lives in the core library so the module stays a thin, auto-discovered entry point."""
-    from oxide.core.libraries.agentic import deepagent as D
+    heavy lifting lives in the sibling `agentic` package so the module stays a thin entry point."""
+    from agentic import deepagent as D
     question = opts.get("question") or ""
     if not question:
         logger.error("agentic_re requires a 'question' opt (the type-recovery task)")

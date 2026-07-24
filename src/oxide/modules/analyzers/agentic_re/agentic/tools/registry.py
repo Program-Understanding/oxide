@@ -10,7 +10,7 @@ REGISTRY: dict = {}      # name -> ToolSpec
 def out_cap() -> int:
     """Per-tool-output char cap. REQUIRED via AGENTIC_OUT_CAP / [agentic] out_cap; 0 = unlimited
     (use on local models where context is cheap), a positive value bounds remote/API runs."""
-    from oxide.core.libraries.agentic.config import cfg_required
+    from agentic.config import cfg_required
     return int(cfg_required("out_cap"))
 
 
@@ -87,7 +87,7 @@ def build_tools(api, oid: str, groups=None, memoize=True):
       fire (measured: callee-signature missing `strcmp`/`fopen` past the 400-char cut)."""
     from .context import OxideContext
     try:
-        from oxide.core.libraries.agentic import trace as _trace
+        from agentic import trace as _trace
     except Exception:  # noqa: BLE001
         _trace = None
     ctx = OxideContext(api, oid)

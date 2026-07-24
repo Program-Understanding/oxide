@@ -18,7 +18,7 @@ import os
 import re
 import sys
 
-from oxide.core.libraries.agentic import config as C
+from agentic import config as C
 
 # The tools the agent may call — all ADDRESS-based (they take the function's 0x vaddr), so they work
 # on a stripped binary where the function has no symbol name (the earlier loop was caused by the LLM
@@ -74,7 +74,7 @@ ORACLE_TOOLS = {"static_type_oracles", "runtime_type_probe", "verify_finding"}
 # explicit "never downgrade" instruction). The oracles' *values* are still applied — but SOUNDLY, by
 # the deterministic ORACLE-CERTIFIED trailer (`_certified_trailer` / `_collect_oracle_facts`), which is
 # monotone and never corrupts a correct answer. The verifier's job is only its independent decomp lens.
-VERIFIER_TOOLS = {"decompile", "verify_finding"}
+VERIFIER_TOOLS = {"decompile"}
 
 # The MCP server exposes ~38 tools; handing all of them (plus deepagents' built-in todo/fs/task
 # tools) to a small model causes long, exploratory, non-converging loops. Curate to the type-recovery
@@ -92,7 +92,7 @@ types) and the declared locals.
 slot, and CORRECT the type when the decompilation shows a more accurate one (pointer levels, a \
 specific pointee like `char *`/`FILE *`/`T *`, struct pointers, integer width/signedness). KEEP the \
 worker's candidate when the C code agrees with it or is silent — do not change a type without \
-evidence. Use `verify_finding` for a claim that cites concrete evidence.
+evidence.
 
 Report the final adjudicated `<id>: <C type>` line for EVERY variable you were given. Do not re-call a \
 tool with identical arguments; finish promptly."""
@@ -128,7 +128,7 @@ never collapse a pointer parameter to `size_t`/`int`.
 3. For every remaining variable (stack locals), map the id to the decompiler local at its slot and \
 CORRECT the type when the C code shows a more accurate one (pointer level, specific pointee like \
 `char *`/`FILE *`/`T *`, integer width/signedness). KEEP the worker's candidate when the C code agrees \
-or is silent. Use `verify_finding` for a claim that cites concrete evidence.
+or is silent.
 4. NEVER emit `void *` for a value that is not dereferenced. A variable used only in arithmetic, \
 counting, or comparison (an index, length, column, sum) is an INTEGER (`int`/`long`/`size_t`/`idx_t`), \
 NOT a pointer — type it as the integer the code shows, never `void *`.
@@ -146,14 +146,23 @@ def _verifier_prompt() -> str:
 
 
 def _repo_root() -> str:
-    """.../oxide (the repo root that holds mcp_server.py) — 5 levels up from this file's dir."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.abspath(os.path.join(here, "..", "..", "..", "..", ".."))
+    """The Oxide repo root that holds mcp_server.py — found by walking up from this file (robust to
+    wherever this package lives in the tree)."""
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(12):
+        if os.path.exists(os.path.join(d, "mcp_server.py")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return os.path.dirname(os.path.abspath(__file__))  # fallback (shouldn't hit)
 
 
 def _mcp_server_path(opts) -> str:
+    # the agent's OWN tool server, a sibling of this file — NOT Oxide's default oxide/mcp_server.py
     return opts.get("mcp_server_path") or C.cfg_get("mcp_server_path") \
-        or os.path.join(_repo_root(), "mcp_server.py")
+        or os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_agentic.py")
 
 
 def _oxidepath(opts) -> str:
@@ -264,12 +273,12 @@ def _collect_oracle_facts(oid: str, question: str, opts: dict) -> dict:
     an LLM tool call, which was observed to drop the vaddr and get empty results. Used both to INJECT
     certified facts into the prompt (so the agent reasons with them) and to build the trailer."""
     from oxide.core.oxide import api
-    from oxide.core.libraries.agentic import tools as T, grounding as G
-    from oxide.core.libraries.agentic.tasks import type_recovery, runtime_probe  # noqa: F401 register
+    from agentic import tools as T, grounding as G
+    from agentic.tasks import type_recovery, runtime_probe  # noqa: F401 register
+    # runtime_type_probe is OPT-IN — the 4 static oracles are the default; add "runtime_type_probe" to
+    # domain_oracles to enable the (expensive, ~5%-coverage) dynamic angr probe.
     which = (opts.get("domain_oracles")
              or "callee_signature,decompiler_pointer,interprocedural_param_usage,spilled_param")
-    if "runtime_type_probe" not in which:
-        which = which + ",runtime_type_probe"
     _s, ct = T.build_tools(api, oid, memoize=False)
     facts: dict = {}                                         # vid -> (ctype, oname, floor); first wins
     for name, fn in G.resolve_domain_oracles(which, question):
@@ -354,7 +363,7 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     # up as nested spans in the local Phoenix UI (http://localhost:6006).
     _phoenix_on = False
     if str(C._opt(opts, "phoenix") or "").strip().lower() in ("1", "true", "yes", "on"):
-        from oxide.core.libraries.agentic import trace as _TR
+        from agentic import trace as _TR
         _ep = C._opt(opts, "phoenix_endpoint") or "http://localhost:6006/v1/traces"
         _phoenix_on = _TR.setup_phoenix(_ep, project_name="oxide-agentic-deepagents")
 
@@ -364,7 +373,7 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     _flow_rec = None
     if str(C._opt(opts, "flow_diagram") or "").strip().lower() in ("1", "true", "yes", "on"):
         try:
-            from oxide.core.libraries.agentic.flow_recorder import FlowRecorder
+            from agentic.flow_recorder import FlowRecorder
             _flow_rec = FlowRecorder()
         except Exception:  # noqa: BLE001
             _flow_rec = None
@@ -498,7 +507,7 @@ def _emit_flow_diagram(recorder, oid: str, vaddr: str, question: str, answer: st
     """Build the Mermaid run-flow figures from the recorded events + deterministic oracle facts, and write
     them next to the run outputs. Best-effort: a failure here never affects the returned answer."""
     try:
-        from oxide.core.libraries.agentic import flow_recorder as _FR
+        from agentic import flow_recorder as _FR
         oracle_facts = _collect_oracle_facts(oid, question, opts)
         # the FULL list of deterministic oracles that were CONSULTED (mirrors _collect_oracle_facts'
         # resolution) so the diagram can show which ran-and-abstained (e.g. runtime_type_probe) vs which
@@ -506,8 +515,6 @@ def _emit_flow_diagram(recorder, oid: str, vaddr: str, question: str, answer: st
         _which = (opts.get("domain_oracles")
                   or "callee_signature,decompiler_pointer,interprocedural_param_usage,spilled_param")
         consulted = [x.strip() for x in str(_which).split(",") if x.strip()]
-        if "runtime_type_probe" not in consulted:
-            consulted.append("runtime_type_probe")
         variables = _FR.input_vars_from_question(question)
         meta = {"vaddr": vaddr, "nvars": len(variables) or len(set(re.findall(r"\bV\d+\b", question))),
                 "oracles_consulted": consulted, "variables": variables}
@@ -524,7 +531,7 @@ def _emit_flow_diagram(recorder, oid: str, vaddr: str, question: str, answer: st
 def _render_flow(scoring=None) -> None:
     """Render the 3 views (flowchart, turn sequence, markdown) from _LAST_FLOW, optionally with a scoring
     dict {ground_truth:{vid:type}, score:float} that adds the ground-truth match + mean score to Output."""
-    from oxide.core.libraries.agentic import flow_recorder as _FR
+    from agentic import flow_recorder as _FR
     F = _LAST_FLOW
     if not F:
         return

@@ -551,16 +551,29 @@ def to_markdown(recorder, meta, oracle_facts, answer, scoring=None):
 
 
 def _final_types(answer):
-    for j in reversed(re.findall(r"\{[^{}]*\}", answer or "")):
+    """The FINAL per-variable types exactly as the scorer sees them: the model's synthesized map, then
+    the deterministic ORACLE-CERTIFIED block applied as an authoritative override. Mirrors run_trex_one's
+    parsing so the diagram's Output matches the scored answer (the oracle block overrides the last JSON,
+    which is the model's PRE-oracle synthesis)."""
+    answer = answer or ""
+    # base map: prefer the last well-formed JSON object; else the body "V: type" lines
+    out = {}
+    for j in reversed(re.findall(r"\{[^{}]*\}", answer)):
         try:
             o = json.loads(j)
             if o and all(isinstance(v, str) for v in o.values()):
-                return o
+                out = dict(o)
+                break
         except Exception:  # noqa: BLE001
             pass
-    out = {}
-    for m in re.finditer(r"(?m)^\s*-?\s*(V\d+)\s*:\s*(.+?)\s*$", answer or ""):
-        out[m.group(1)] = m.group(2)
+    if not out:
+        for m in re.finditer(r"(?mi)^\s*-?\s*(V\d+)\s*:\s*(.+?)\s*$", answer):
+            out[m.group(1)] = m.group(2).strip()
+    # ORACLE-CERTIFIED block: authoritative override (same regex the scorer uses)
+    om = re.search(r"ORACLE-CERTIFIED[^\n]*\n((?:\s*[-*]\s*V?\d+\s*[:=][^\n]*\n?)+)", answer)
+    if om:
+        for m in re.finditer(r"(?mi)^\s*[-*]\s*(V\d+)\s*[:=]\s*(.+?)\s*$", om.group(1)):
+            out[m.group(1)] = m.group(2).strip()
     return out
 
 
