@@ -589,7 +589,7 @@ def _emit_flow_diagram(recorder, oid: str, vaddr: str, question: str, answer: st
 def _render_flow(scoring=None) -> None:
     """Render the 3 views (flowchart, turn sequence, markdown) from _LAST_FLOW, optionally with a scoring
     dict {ground_truth:{vid:type}, score:float} that adds the ground-truth match + mean score to Output."""
-    from agentic import flow_recorder as _FR
+    from agentic.extras import flow_recorder as _FR
     F = _LAST_FLOW
     if not F:
         return
