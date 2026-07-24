@@ -64,8 +64,9 @@ value flows into — infer the C type. The byte size constrains it (a pointer is
 Report EXACTLY one `<id>: <C type>` line per assigned variable. Report ONLY your assigned ids. Do not \
 re-call a tool with identical arguments; finish promptly."""
 
-# the deterministic oracle tools (the hybrid trust layer the worker may consult)
-ORACLE_TOOLS = {"static_type_oracles", "runtime_type_probe", "verify_finding"}
+# the deterministic oracle tool exposed on the MCP server. The oracles' VALUES are applied in-process by
+# the certified trailer (_collect_oracle_facts), not by the LLM — this is only what the server publishes.
+ORACLE_TOOLS = {"static_type_oracles"}
 
 # the verifier subagent's tools: the DECOMPILATION lens (the evidence the worker could not see) plus
 # the deterministic finding-checker. The oracles are DELIBERATELY excluded — an A/B showed that letting
@@ -197,22 +198,45 @@ def _parse_call_args(argstr: str) -> dict:
         return args
 
 
+def _strip_channel(text: str) -> str:
+    """Remove the model's reasoning-channel markup (`<|channel|>thought<|channel|>…`) that this served
+    model wraps around EVERY response — `enable_thinking:False` does NOT suppress it. This MUST run on
+    every turn (not just the final answer): if a worker/verifier turn's channel-polluted content stays
+    in the ReAct history, the model mimics its own `<|channel|>thought` pattern and never emits a
+    terminal answer, looping on tool calls until it exhausts iterations (the observed hang)."""
+    if not isinstance(text, str) or not text:
+        return text
+    t = re.sub(r"<\|?channel\|?>.*?<\|?/?channel\|?>", "", text, flags=re.S)  # paired channel block
+    t = re.sub(r"<\|[^>]*>|<[^>]*\|>", "", t)                                 # any residual <|..>/<..|>
+    t = re.sub(r"(?im)^\s*thought\s*$", "", t)                                # bare 'thought' label line
+    return t.strip()
+
+
 def _salvage_message(msg):
-    """If `msg` (an AIMessage) has no tool_calls but its text encodes gemma tool calls, return a new
-    AIMessage with structured tool_calls; otherwise return `msg` unchanged."""
-    if getattr(msg, "tool_calls", None):
-        return msg
-    text = msg.content if isinstance(msg.content, str) else ""
-    matches = list(_GEMMA_TC_RE.finditer(text))
-    if not matches:
-        return msg
+    """Normalize one model response: (1) strip reasoning-channel markup from its content on EVERY turn
+    (see `_strip_channel`) so channel tokens never accumulate in the ReAct history, and (2) if it has
+    no structured tool_calls but its text encodes gemma raw-text tool calls, convert those to structured
+    tool_calls. Returns a new AIMessage when anything changed, else `msg` unchanged."""
     from langchain_core.messages import AIMessage
+    text = msg.content if isinstance(msg.content, str) else ""
+    cleaned = _strip_channel(text)
+
+    def _rebuild(content, tool_calls):
+        return AIMessage(content=content, tool_calls=tool_calls, id=getattr(msg, "id", None),
+                         usage_metadata=getattr(msg, "usage_metadata", None),
+                         response_metadata=getattr(msg, "response_metadata", {}) or {})
+
+    # Already has structured tool_calls (vLLM parsed them): keep them, just clean channel residue.
+    if getattr(msg, "tool_calls", None):
+        return _rebuild(cleaned, msg.tool_calls) if cleaned != text else msg
+    # No structured tool_calls: look for gemma raw-text tool calls in the cleaned text.
+    matches = list(_GEMMA_TC_RE.finditer(cleaned))
+    if not matches:
+        return _rebuild(cleaned, []) if cleaned != text else msg
     tcs = [{"name": m.group(1), "args": _parse_call_args(m.group(2)),
             "id": f"salvage_{i}", "type": "tool_call"} for i, m in enumerate(matches)]
-    residual = _GEMMA_TC_RE.sub("", text).strip()
-    return AIMessage(content=residual, tool_calls=tcs, id=getattr(msg, "id", None),
-                     usage_metadata=getattr(msg, "usage_metadata", None),
-                     response_metadata=getattr(msg, "response_metadata", {}) or {})
+    residual = _GEMMA_TC_RE.sub("", cleaned).strip()
+    return _rebuild(residual, tcs)
 
 
 def _salvage_result(result):
@@ -224,16 +248,47 @@ def _salvage_result(result):
     return result
 
 
+def _cap_tool_loop(messages, kwargs):
+    """Per-conversation ReAct loop breaker. deepagents runs every subagent with a hardcoded
+    recursion_limit of 9_999 (graph.py) — effectively unbounded — and this small model can spin on the
+    same tool indefinitely without ever emitting findings (observed: 50+ `disassemble` calls). Once a
+    conversation has made >= AGENTIC_MAX_TOOL_TURNS tool-call turns, drop the tools from the request and
+    inject a directive so the model MUST return text. Counting is per-conversation (the `messages` of a
+    single agent), so the coordinator's delegations and each worker's tool loop are bounded independently."""
+    try:
+        cap = int(os.environ.get("AGENTIC_MAX_TOOL_TURNS", "10"))
+    except (ValueError, TypeError):
+        cap = 10
+    if not kwargs.get("tools"):
+        return messages, kwargs
+    n = sum(1 for m in messages
+            if getattr(m, "type", None) == "ai" and getattr(m, "tool_calls", None))
+    if n < cap:
+        return messages, kwargs
+    from langchain_core.messages import HumanMessage
+    kwargs = dict(kwargs)
+    kwargs.pop("tools", None)
+    kwargs.pop("tool_choice", None)
+    directive = HumanMessage(content=(
+        f"You have already called tools {n} times — that is enough. Do NOT call any more tools. Using "
+        f"the tool results already in this conversation, output ONLY your final answer NOW: one "
+        f"`<id>: <C type>` line per assigned variable, then the final JSON object on the last line."))
+    return list(messages) + [directive], kwargs
+
+
 def _make_salvaging_class():
     from langchain_openai import ChatOpenAI
 
     class SalvagingChatOpenAI(ChatOpenAI):
-        """ChatOpenAI that converts gemma's raw-text tool calls into structured tool_calls."""
+        """ChatOpenAI that (1) bounds each conversation's tool-call loop (see `_cap_tool_loop`) and
+        (2) converts gemma's raw-text tool calls + strips channel markup (see `_salvage_result`)."""
 
         def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            messages, kwargs = _cap_tool_loop(messages, kwargs)
             return _salvage_result(super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs))
 
         async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+            messages, kwargs = _cap_tool_loop(messages, kwargs)
             return _salvage_result(await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
 
     return SalvagingChatOpenAI
@@ -274,11 +329,16 @@ def _collect_oracle_facts(oid: str, question: str, opts: dict) -> dict:
     certified facts into the prompt (so the agent reasons with them) and to build the trailer."""
     from oxide.core.oxide import api
     from agentic import tools as T, grounding as G
-    from agentic.tasks import type_recovery, runtime_probe  # noqa: F401 register
-    # runtime_type_probe is OPT-IN — the 4 static oracles are the default; add "runtime_type_probe" to
-    # domain_oracles to enable the (expensive, ~5%-coverage) dynamic angr probe.
+    from agentic.tasks import type_recovery  # noqa: F401 registers the 4 static oracles (the default)
     which = (opts.get("domain_oracles")
              or "callee_signature,decompiler_pointer,interprocedural_param_usage,spilled_param")
+    # runtime_type_probe is OPT-IN and lives in extras/ (the expensive, ~5%-coverage dynamic angr probe);
+    # import it only when named, so the minimal pipeline never pulls angr.
+    if "runtime_type_probe" in str(which):
+        try:
+            from agentic.extras import runtime_probe  # noqa: F401 registers the runtime oracle
+        except Exception:  # noqa: BLE001
+            pass
     _s, ct = T.build_tools(api, oid, memoize=False)
     facts: dict = {}                                         # vid -> (ctype, oname, floor); first wins
     for name, fn in G.resolve_domain_oracles(which, question):
@@ -363,7 +423,7 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     # up as nested spans in the local Phoenix UI (http://localhost:6006).
     _phoenix_on = False
     if str(C._opt(opts, "phoenix") or "").strip().lower() in ("1", "true", "yes", "on"):
-        from agentic import trace as _TR
+        from agentic.extras import trace as _TR
         _ep = C._opt(opts, "phoenix_endpoint") or "http://localhost:6006/v1/traces"
         _phoenix_on = _TR.setup_phoenix(_ep, project_name="oxide-agentic-deepagents")
 
@@ -373,7 +433,7 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     _flow_rec = None
     if str(C._opt(opts, "flow_diagram") or "").strip().lower() in ("1", "true", "yes", "on"):
         try:
-            from agentic.flow_recorder import FlowRecorder
+            from agentic.extras.flow_recorder import FlowRecorder
             _flow_rec = FlowRecorder()
         except Exception:  # noqa: BLE001
             _flow_rec = None
@@ -482,11 +542,9 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
             )
         answer = result["messages"][-1].content
 
-    # clean gemma special tokens: the thinking block, then any residual <|..>/<..|> markers + a bare
-    # 'thought' channel label, so only the answer text (and its final JSON line) remains.
-    answer = re.sub(r"<\|?channel\|?>.*?<\|?/?channel\|?>", "", answer, flags=re.S)
-    answer = re.sub(r"<\|[^>]*>|<[^>]*\|>", "", answer)
-    answer = re.sub(r"(?im)^\s*thought\s*$", "", answer).strip()
+    # clean gemma special tokens (thinking/channel markup) so only the answer text (+ its final JSON
+    # line) remains. Same helper the per-turn salvage uses, applied once more to the final answer.
+    answer = _strip_channel(answer)
     # The deterministic oracle trailer gets its OWN root span so its (main-process) decompile/stack_var
     # oracle calls collapse into one `oracle_certification` tree instead of ~60 orphan traces.
     with _root_run_span(_phoenix_on, oid, vaddr, name="oracle_certification"):
@@ -507,7 +565,7 @@ def _emit_flow_diagram(recorder, oid: str, vaddr: str, question: str, answer: st
     """Build the Mermaid run-flow figures from the recorded events + deterministic oracle facts, and write
     them next to the run outputs. Best-effort: a failure here never affects the returned answer."""
     try:
-        from agentic import flow_recorder as _FR
+        from agentic.extras import flow_recorder as _FR
         oracle_facts = _collect_oracle_facts(oid, question, opts)
         # the FULL list of deterministic oracles that were CONSULTED (mirrors _collect_oracle_facts'
         # resolution) so the diagram can show which ran-and-abstained (e.g. runtime_type_probe) vs which

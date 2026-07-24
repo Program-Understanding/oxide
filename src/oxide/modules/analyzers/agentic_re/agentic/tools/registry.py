@@ -87,7 +87,7 @@ def build_tools(api, oid: str, groups=None, memoize=True):
       fire (measured: callee-signature missing `strcmp`/`fopen` past the 400-char cut)."""
     from .context import OxideContext
     try:
-        from agentic import trace as _trace
+        from agentic.extras import trace as _trace
     except Exception:  # noqa: BLE001
         _trace = None
     ctx = OxideContext(api, oid)

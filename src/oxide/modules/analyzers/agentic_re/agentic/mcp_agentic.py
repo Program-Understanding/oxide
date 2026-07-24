@@ -25,15 +25,15 @@ mcp = FastMCP("oxide-agentic")
 
 # ============================================================================================
 #  Agentic fine-grained analysis tools + deterministic oracle tools.
-#  These surface the existing agentic tool backends (core/libraries/agentic/tools/{ghidra,elf,util})
-#  and the deterministic type oracles (grounding.py + tasks/{type_recovery,runtime_probe}) through
-#  this MCP server, so a deepagents client can get ALL of its tools from a single source.
+#  These surface the agentic tool backends (agentic/tools/{ghidra,elf,util}) and the deterministic
+#  STATIC type oracles (grounding.py + tasks/type_recovery) through this MCP server, so a deepagents
+#  client gets its tools from a single source. The opt-in dynamic runtime probe lives in extras/ and is
+#  applied in-process by deepagent's certified trailer, not exposed as an MCP tool.
 # ============================================================================================
 from oxide.core.oxide import api as _oxapi
 from agentic import tools as _agentic_tools
 from agentic import grounding as _G
-from agentic.tasks import type_recovery as _type_recovery  # noqa: F401 registers static oracles
-from agentic.tasks import runtime_probe as _runtime_probe   # noqa: F401 registers runtime oracle
+from agentic.tasks import type_recovery as _type_recovery  # noqa: F401 registers the 4 static oracles
 os.environ.setdefault("AGENTIC_OUT_CAP", "0")   # tool layer's out_cap() is REQUIRED; safe default
 
 
@@ -130,13 +130,6 @@ async def stack_var(oid: str, addr: str, offset: str = "") -> Any:
 
 
 @mcp.tool()
-async def value_usage(oid: str, addr: str, var: str) -> Any:
-    """How a decompiler variable's value is used across the function at addr (reads/writes/calls it
-    flows into) — evidence for its type."""
-    return _call(oid, "value_usage", {"addr": _norm_addr(addr), "var": var})
-
-
-@mcp.tool()
 async def xrefs_to(oid: str, addr: str) -> Any:
     """Cross-references (callers / code references) to the address or function `addr`."""
     return _call(oid, "xrefs_to", {"addr": _norm_addr(addr)})
@@ -155,30 +148,6 @@ async def compute(oid: str, expr: str) -> Any:
     """Exact arithmetic/bitwise evaluation of an integer expression (safe AST eval, no code run).
     Use for offset/address math instead of guessing."""
     return _as_json(_ct(oid)("compute", {"expr": expr}))
-
-
-@mcp.tool()
-async def file_offset_to_vaddr(oid: str, file_offset: str) -> Any:
-    """Convert an ELF file offset to a virtual address (sanctioned coordinate conversion)."""
-    return _call(oid, "file_offset_to_vaddr", {"file_offset": _norm_addr(file_offset)})
-
-
-@mcp.tool()
-async def vaddr_to_file_offset(oid: str, vaddr: str) -> Any:
-    """Convert a virtual address to an ELF file offset (sanctioned coordinate conversion)."""
-    return _call(oid, "vaddr_to_file_offset", {"vaddr": _norm_addr(vaddr)})
-
-
-@mcp.tool()
-async def imports(oid: str) -> Any:
-    """Imported (PLT) library symbols of the binary."""
-    return _as_json(_ct(oid)("imports", {}))
-
-
-@mcp.tool()
-async def search_bytes(oid: str, hex_pattern: str) -> Any:
-    """Find occurrences of a hex byte pattern (e.g. "48 89 e5") in the binary; returns hit locations."""
-    return _as_json(_ct(oid)("search_bytes", {"hex_pattern": hex_pattern}))
 
 
 # ---- deterministic oracle tools (the hybrid trust layer) ---------------------------------------
@@ -215,25 +184,6 @@ async def static_type_oracles(
             print(f"static_type_oracles: {name} skipped: {e}", file=sys.stderr)
     _ORACLE_CACHE[key] = facts
     return facts
-
-
-@mcp.tool()
-async def runtime_type_probe(oid: str, vaddr: str, variables: str) -> Any:
-    """Execution-grounded (angr) type oracle. Drives the function under a controlled emulator and
-    certifies a stack slot's representational type from observed runtime behaviour (dereference =>
-    pointer, XMM => float/double, movsx/idiv => signed, div => unsigned). Fires ONLY on the residual
-    stack slots the static oracles left un-anchored; pointer verdicts are representational FLOORS
-    (they defer to a more specific pointer). `vaddr`: function virtual address; `variables`: variable
-    list (one 'V<n>  <location>  <size>' per line). Returns certified facts (possibly empty)."""
-    question = _canon_question(vaddr, variables)
-    key = ("runtime", oid, question)
-    if key in _ORACLE_CACHE:
-        return _ORACLE_CACHE[key]
-    res = _runtime_probe._oracle_runtime_type_probe(_ct(oid), question)
-    _ORACLE_CACHE[key] = res
-    return res
-
-
 
 
 if __name__ == "__main__":
