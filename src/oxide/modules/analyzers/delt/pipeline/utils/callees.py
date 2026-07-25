@@ -9,6 +9,10 @@ from oxide.modules.analyzers.delt.pipeline.utils.text_utils import ensure_decima
 
 logger = logging.getLogger(NAME)
 
+# Ghidra namespaces imported symbols under <EXTERNAL>::, covering both the PLT stub and the
+# bodiless placeholder it thunks to.
+EXTERNAL_NAME_PREFIX = "<EXTERNAL>::"
+
 
 def normalize_added_function_ref(raw_item: Any) -> Optional[Dict[str, str]]:
     """ Normalize an already-built added_functions entry (from drift_adapter.build_drift_file_pairs,
@@ -99,8 +103,10 @@ class AddedCalleeIndex(NamedTuple):
 
         edges maps a function address to the addresses of the added functions it calls,
         so the whole-binary call map is filtered down to added-only edges once rather than
-        once per candidate. decomps maps an added function's address to its decompilation,
-        keyed as callee_added_funcs returns it.
+        once per candidate. decomps maps an added function's address to its decompilation.
+        keys maps an added function's address to its display name (the Ghidra function
+        name, FUN_<vaddr> for stripped binaries), which callee_added_funcs uses as the key
+        of the returned evidence so the attached file's name matches the diff.
     """
     edges: Dict[int, List[int]]
     decomps: Dict[int, str]
@@ -114,6 +120,13 @@ def build_added_callee_index(target_oid: str, added_func_decomp: Dict[str, str])
         Call edges come from function_call_targets, which derives each function's outgoing
         calls from the disassembled basic-block destinations, the same source
         function_diff_features uses for its call-edge features.
+
+        Imported symbols are excluded from the node set. Cross-version matching reports them
+        as added whenever the update introduces a new import, but they are library code the
+        update did not write, and they have no body to recover. Ghidra still decompiles them
+        into a signature wrapped around a halt_baddata() placeholder, which reads as a fact
+        about the update's new code and is not one, so the walk neither attaches them nor
+        passes through them.
     """
     if not added_func_decomp:
         return None
@@ -128,13 +141,33 @@ def build_added_callee_index(target_oid: str, added_func_decomp: Dict[str, str])
 
     # The call map is keyed by ghidra_disasm function address, added_func_decomp by the
     # decimal string form, so index the added set by address to join the two.
+    funcs = api.get_field("ghidra_disasm", target_oid, "functions") or {}
     decomps: Dict[int, str] = {}
     keys: Dict[int, str] = {}
+    skipped_external = 0
     for key, text in added_func_decomp.items():
         as_int = _as_int(key)
-        if as_int is not None:
-            decomps[as_int] = text
-            keys[as_int] = key
+        if as_int is None:
+            continue
+        meta = funcs.get(as_int)
+        name = meta.get("name") if isinstance(meta, dict) else None
+        if isinstance(name, str) and name.startswith(EXTERNAL_NAME_PREFIX):
+            skipped_external += 1
+            continue
+        decomps[as_int] = text
+        # Key the attached evidence by the function's name (FUN_<vaddr> for stripped
+        # binaries) rather than the drift offset, so the attached file's name matches
+        # the name the function carries in the decompiled diff. Fall back to the offset
+        # when Ghidra assigned no name.
+        keys[as_int] = name if (isinstance(name, str) and name) else key
+
+    if skipped_external:
+        logger.debug(
+            "excluded %d imported symbol(s) from the added set for %s",
+            skipped_external, target_oid,
+        )
+    if not decomps:
+        return None
 
     edges: Dict[int, List[int]] = {}
     for caller, callees in call_targets.items():

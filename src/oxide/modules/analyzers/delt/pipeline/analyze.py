@@ -27,6 +27,7 @@ from oxide.modules.analyzers.delt.pipeline.utils.text_utils import (
     _EMPTY_DECOMP_FAILURE_MESSAGES,
     _coerce_result_label,
     _coerce_str,
+    ascii_sanitize,
     ensure_decimal_str,
     normalize_filter_value,
     write_json,
@@ -134,6 +135,21 @@ def normalize_function_decomp_diff_response(resp: Any) -> Dict[str, Any]:
 def write_diff_artifacts(func_dir: str, unified: str, diff_meta: Dict[str, Any]) -> None:
     write_text(f"{func_dir}/diff.txt", unified or "")
     write_json(f"{func_dir}/diff_meta.json", diff_meta or {})
+
+
+def write_agent_inputs(func_dir: str, unified: str, callee_texts: Dict[str, str]) -> None:
+    """Mirror the exact files the triage agent would see under /inputs/ to
+    func_dir/agent_inputs/, so a dry run produces the full evidence set the agent
+    receives without running it. Layout matches agent_runtime.build_agent_payload:
+    unified_diff.txt plus one added_functions/<addr>.c per reachable added callee."""
+    inputs_dir = os.path.join(func_dir, "agent_inputs")
+    os.makedirs(inputs_dir, exist_ok=True)
+    write_text(os.path.join(inputs_dir, "unified_diff.txt"), ascii_sanitize(unified or ""))
+    added_dir = os.path.join(inputs_dir, "added_functions")
+    for addr, text in (callee_texts or {}).items():
+        if text.strip():
+            os.makedirs(added_dir, exist_ok=True)
+            write_text(os.path.join(added_dir, f"{addr}.c"), text)
 
 
 def _resolve_bool_override(opts: Dict[str, Any], public_key: str, private_key: str) -> bool:
@@ -254,10 +270,18 @@ def analyze_function_pair(
         diff_info, diff_elapsed_s = _fetch_and_write_diff()
 
         if opts.get("no_triage"):
+            # Dry run: produce everything the triage agent would receive (the unified diff
+            # plus the reachable added-callee decomps) on disk, but don't run the agent.
+            unified = diff_info.get("unified") or ""
+            callee_texts: Dict[str, str] = {}
+            if unified.strip() and not diff_info["tool_error"]:
+                callee_texts = callee_added_funcs(taddr, added_callee_index)
+            write_agent_inputs(func_dir, unified, callee_texts)
             return _write_analysis(
-                label="failed", why="Triage disabled by configuration.", triage_ran=False,
-                failure_reason="triage_disabled", failure_detail="", diff_elapsed_s=diff_elapsed_s,
+                label="skipped", why="Dry run: triage inputs produced, agent not run.", triage_ran=False,
+                failure_reason="dry_run", failure_detail="", diff_elapsed_s=diff_elapsed_s,
                 llm_elapsed_s=0.0, llm_input_tokens=0, llm_output_tokens=0, llm_total_tokens=0, notes=notes,
+                callee_augmented=bool(callee_texts),
             )
 
         triage_ran = False
@@ -416,7 +440,10 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     opts = _normalize_run_opts(opts)
     os.makedirs(outdir, exist_ok=True)
 
-    runtime = get_or_build_runtime(opts)
+    # Dry run (no_triage): no model is needed, so skip building the Ollama runtime and run
+    # single-threaded -- the per-function loop only fetches diffs and writes agent inputs.
+    no_triage = bool(opts.get("no_triage"))
+    runtime = None if no_triage else get_or_build_runtime(opts)
     fingerprint = cache.opts_fingerprint(opts, load_prompt_bundle(opts))
     include_added_callees = bool(opts.get("include_added_callees", True))
     diff_raw_for_stats = _resolve_bool_override(opts, "raw", "_diff_raw")
@@ -424,7 +451,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     # Per-function parallelism (prototype, behind function_workers). When > 1, functions
     # within each file pair are triaged concurrently by worker threads, each pinned to one
     # Ollama endpoint. Endpoints are provisioned lazily by the module (one server per GPU).
-    function_workers = int(opts.get("function_workers") or 1)
+    function_workers = 1 if no_triage else int(opts.get("function_workers") or 1)
     function_base_urls = resolve_function_endpoints(opts) if function_workers > 1 else []
     if function_workers > 1:
         logger.info(
@@ -470,6 +497,29 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     report_lines.append(f"Diff Mode:    {diff_mode}")
     report_lines.append(f"Filter:       {filter_mode}")
     report_lines.append("")
+
+    # gt_only: restrict triage to the ground-truth insertion function(s) so a
+    # backdoor-recall check spends LLM budget only on the GT candidate. The full
+    # filtered set is still counted/reported; only the triaged subset shrinks.
+    # Pairs with no ground truth (e.g. safe variants) triage nothing under gt_only.
+    gt_only = bool(opts.get("gt_only"))
+    gt_only_norm: Optional[Dict[str, Any]] = None
+    if gt_only:
+        gt_all = (
+            opts["_ground_truth"]
+            if "_ground_truth" in opts
+            else ground_truth.load_ground_truth_file(opts.get("ground_truth"))
+        )
+        gt_only_norm = ground_truth.get_ground_truth_for_target(
+            gt_all or {}, target_name, pair_dir=outdir, target_oid=target,
+        )
+        if gt_only_norm:
+            logger.info(
+                "gt_only: triaging only the %d ground-truth function(s) for %s",
+                len(gt_only_norm.get("targets", []) or []), target_name,
+            )
+        else:
+            logger.info("gt_only: no ground truth for %s; triaging no functions", target_name)
 
     triage_index: List[Dict[str, Any]] = []
     per_function_results: List[Dict[str, Any]] = []
@@ -519,8 +569,29 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                 report_lines.append("- modified functions (excluded by filter): <unknown>")
         report_lines.append("")
 
+        # Under gt_only, triage only the ground-truth candidate(s); otherwise the whole
+        # filtered set. filtered_mods stays intact above so the filter counts are unchanged.
+        if gt_only:
+            triage_mods = [
+                m for m in filtered_mods
+                if gt_only_norm
+                and ground_truth.gt_row_matches_any(
+                    {
+                        "target_addr": ensure_decimal_str(m.get("target_func_addr")),
+                        "target_oid": target_oid,
+                    },
+                    gt_only_norm,
+                )
+            ]
+            report_lines.append(
+                f"- gt_only: triaging {len(triage_mods)} of {len(filtered_mods)} filtered function(s)"
+            )
+            report_lines.append("")
+        else:
+            triage_mods = filtered_mods
+
         added_callee_index: Optional[AddedCalleeIndex] = None
-        if include_added_callees and added_funcs:
+        if include_added_callees and added_funcs and triage_mods:
             added_func_decomp = fetch_added_func_decomps(target_oid, added_funcs)
             save_added_function_artifacts(
                 target_oid=target_oid, added_functions=added_funcs, fp_idx=fp_idx,
@@ -530,10 +601,10 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
             # this file pair walks the same added-only edges.
             added_callee_index = build_added_callee_index(target_oid, added_func_decomp)
 
-        prog = progress.Progress(len(filtered_mods))
+        prog = progress.Progress(len(triage_mods))
 
         function_results = _run_function_pairs(
-            filtered_mods,
+            triage_mods,
             baseline_oid=baseline_oid, target_oid=target_oid,
             fp_idx=fp_idx, fp_total=len(file_pairs),
             outdir=outdir, opts=opts, runtime=runtime, fingerprint=fingerprint,

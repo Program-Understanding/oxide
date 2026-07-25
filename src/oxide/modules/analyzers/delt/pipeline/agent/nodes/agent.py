@@ -67,9 +67,6 @@ def run_agent(
     callee_texts = callee_texts or {}
     request_timeout_s = float(getattr(runtime, "agent_request_timeout_s", 150.0))
 
-    # The system prompt owns the role, the criteria, and the workflow. The user turn only has
-    # to start the run, so it does not restate them. Repeating the workflow here stacked the
-    # same terminal instruction many times in context, which the model then got stuck on.
     sys_prompt = runtime.agent_sys_callee if callee_texts else runtime.agent_sys
     prompt = "Review the evidence under /inputs/ and decide whether this update inserts a backdoor."
 
@@ -80,7 +77,7 @@ def run_agent(
         AgentDecisionSchema,
         final_holder,
         _normalize_decision_payload,
-        doc="Submit the final triage decision after writing /work/final.md.",
+        doc="Submit the final triage decision as your last action",
     )
     agent = agent_runtime.build_triage_agent(
         main_model=runtime.agent_llm,

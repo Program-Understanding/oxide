@@ -15,7 +15,7 @@ from oxide.modules.analyzers.delt.pipeline.utils.ground_truth import (
     gt_row_matches_any,
     load_ground_truth_file,
 )
-from oxide.modules.analyzers.delt.pipeline.utils.text_utils import comparison_dir_name
+from oxide.modules.analyzers.delt.pipeline.utils.text_utils import comparison_dir_name, ensure_decimal_str
 
 NAME = "delt_experiment"
 logger = logging.getLogger(NAME)
@@ -131,20 +131,23 @@ def _model_slug(model: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", str(model)).strip("_") or "model"
 
 
-def _resolve_model_specs(opts: Dict[str, Any]) -> Tuple[List[Tuple[str, int]], bool]:
-    """Return (model_specs, nested). Each spec is (model, function_workers). `nested` is
-    True when results should live under a per-model subdirectory (multi-model runs);
-    False keeps the flat single-model layout."""
+def _resolve_model_specs(opts: Dict[str, Any]) -> Tuple[List[Tuple[str, int]], bool, bool]:
+    """Return (model_specs, nested, dry_run). Each spec is (model, function_workers).
+    `nested` is True when results should live under a per-model subdirectory (multi-model
+    runs); False keeps the flat single-model layout. `dry_run` is True when no model was
+    given: the pipeline then produces every triage input (unified diffs + added-callee
+    context) without running the agent, for ground-truth authoring."""
     models_path = opts.get("models")
     if models_path:
-        return _parse_models_file(models_path), True
+        return _parse_models_file(models_path), True, False
     model = opts.get("model")
     if not model:
-        raise ValueError("run_experiments requires --model or --models (a models file).")
+        # No model -> dry run: produce triage inputs only, no LLM.
+        return [("dry_run", 1)], False, True
     function_workers = int(opts.get("function_workers") or 1)
     if function_workers < 1:
         raise ValueError(f"--function_workers must be >= 1 (got {function_workers}).")
-    return [(str(model), function_workers)], False
+    return [(str(model), function_workers)], False, False
 
 
 def _run_one_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]) -> Dict[str, Any]:
@@ -336,6 +339,71 @@ def _summarize_category(results: List[Dict[str, Any]], category: str) -> Dict[st
     return summary
 
 
+def _function_names(oid: str) -> Dict[str, str]:
+    """Decimal address string -> function name for one binary."""
+    funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
+    return {str(addr): str((meta or {}).get("name") or "") for addr, meta in funcs.items() if addr is not None}
+
+
+def _candidate_target_addr(item: Any) -> Optional[str]:
+    """Pull the target-side address out of a drift item. Filtered functions come from
+    the drift adapter already normalized, excluded ones are still drift's raw
+    {"pair": [target, baseline]} shape, and added ones carry a bare "address"."""
+    if not isinstance(item, dict):
+        return ensure_decimal_str(item)
+    if item.get("target_func_addr") is not None:
+        return ensure_decimal_str(item.get("target_func_addr"))
+    if item.get("address") is not None:
+        return ensure_decimal_str(item.get("address"))
+    pair = item.get("pair") or []
+    return ensure_decimal_str(pair[0]) if pair else None
+
+
+def _hex_addr(addr: Optional[str]) -> str:
+    try:
+        return hex(int(str(addr)))
+    except (TypeError, ValueError):
+        return ""
+
+
+def _build_candidate_functions(
+    drift_json: Dict[str, Any],
+    gt_norm: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Flatten a comparison's drift output into one row per function drift saw, so the
+    search space can be eyeballed (and ground truth authored) without running triage."""
+    candidates: List[Dict[str, Any]] = []
+
+    for file_pair in drift_json.get("file_pairs", []) or []:
+        target_oid = file_pair.get("target_oid")
+        baseline_oid = file_pair.get("baseline_oid")
+        names = _function_names(target_oid) if target_oid else {}
+
+        for kind, items in (
+            ("filtered", file_pair.get("modified_functions") or []),
+            ("excluded", file_pair.get("excluded_functions") or []),
+            ("added", file_pair.get("added_functions") or []),
+        ):
+            for item in items:
+                addr = _candidate_target_addr(item)
+                name = names.get(addr or "") or (item.get("name") if isinstance(item, dict) else None)
+                row: Dict[str, Any] = {
+                    "kind": kind,
+                    "target_oid": target_oid,
+                    "baseline_oid": baseline_oid,
+                    "target_addr": addr,
+                    "target_addr_hex": _hex_addr(addr),
+                    "target_func_name": str(name or ""),
+                }
+                if gt_norm:
+                    row["ground_truth"] = gt_row_matches_any(
+                        {"target_addr": addr, "target_oid": target_oid}, gt_norm
+                    )
+                candidates.append(row)
+
+    return candidates
+
+
 def _run_filter_census_comparison(
     target: str,
     baseline: str,
@@ -348,35 +416,20 @@ def _run_filter_census_comparison(
     drift_json = build_drift_file_pairs(target, baseline, filter_key) or {}
     _write_json(os.path.join(outdir, "drift_raw.json"), drift_json)
 
-    file_pairs = drift_json.get("file_pairs", []) or []
-    modified_functions = 0
-    filtered_functions = 0
-    excluded_functions = 0
-
     gt_norm = get_ground_truth_for_target(gt, target_name, pair_dir=outdir, target_oid=target)
-    gt_in_filtered = 0
+    candidates = _build_candidate_functions(drift_json, gt_norm)
+    _write_json(os.path.join(outdir, "candidate_functions.json"), candidates)
 
-    for file_pair in file_pairs:
-        target_oid = file_pair.get("target_oid")
-        filtered_mods = file_pair.get("modified_functions", []) or []
-        excluded_mods = file_pair.get("excluded_functions", []) or []
-
-        modified_functions += len(filtered_mods) + len(excluded_mods)
-        filtered_functions += len(filtered_mods)
-        excluded_functions += len(excluded_mods)
-
-        if gt_norm and not gt_in_filtered:
-            for func in filtered_mods:
-                row = {"target_addr": func.get("target_func_addr"), "target_oid": target_oid}
-                if gt_row_matches_any(row, gt_norm):
-                    gt_in_filtered = 1
-                    break
+    filtered = [row for row in candidates if row["kind"] == "filtered"]
+    excluded = [row for row in candidates if row["kind"] == "excluded"]
 
     stats = {
-        "modified_functions": modified_functions,
-        "filtered_functions": filtered_functions,
-        "excluded_functions": excluded_functions,
-        "gt_in_filtered": gt_in_filtered,
+        "modified_functions": len(filtered) + len(excluded),
+        "filtered_functions": len(filtered),
+        "excluded_functions": len(excluded),
+        "added_functions": sum(1 for row in candidates if row["kind"] == "added"),
+        "gt_in_filtered": int(any(row.get("ground_truth") for row in filtered)),
+        "gt_in_excluded": int(any(row.get("ground_truth") for row in excluded)),
     }
     _write_json(os.path.join(outdir, "stats.json"), stats)
     return stats
@@ -390,6 +443,7 @@ def _run_filter_census_category(
 ) -> List[Dict[str, Any]]:
     os.makedirs(category_outdir, exist_ok=True)
     results: List[Dict[str, Any]] = []
+    candidates_by_sample: Dict[str, Any] = {}
     total = len(pairs)
 
     for idx, (target, baseline) in enumerate(pairs, 1):
@@ -403,16 +457,22 @@ def _run_filter_census_category(
             baseline_name = str(baseline)
 
         pair_dir = os.path.join(category_outdir, _comparison_dir(target_name, baseline_name))
-        if _sample_is_complete(pair_dir):
+        candidates_path = os.path.join(pair_dir, "candidate_functions.json")
+        # Pairs cached by an older run have stats but no candidate dump, so re-run those
+        # (the underlying drift results are cached, only the reshaping repeats).
+        if _sample_is_complete(pair_dir) and os.path.exists(candidates_path):
             logger.info("[%d/%d] skipping %s (already complete)", idx, total, pair_dir)
             stats = _read_json(os.path.join(pair_dir, "stats.json"))
             results.append(stats if isinstance(stats, dict) else {})
+            candidates_by_sample[str(target_name)] = _read_json(candidates_path)
             continue
 
         logger.info("[%d/%d] %s -> %s", idx, total, target_name, baseline_name)
         stats = _run_filter_census_comparison(target, baseline, pair_dir, filter_key, gt, target_name)
         results.append(stats)
+        candidates_by_sample[str(target_name)] = _read_json(candidates_path)
 
+    _write_json(os.path.join(category_outdir, "candidate_functions_by_sample.json"), candidates_by_sample)
     return results
 
 
@@ -422,9 +482,11 @@ def _summarize_filter_census(results: List[Dict[str, Any]], category: str) -> Di
         "modified_functions": sum(int(row.get("modified_functions") or 0) for row in results),
         "filtered_functions": sum(int(row.get("filtered_functions") or 0) for row in results),
         "excluded_functions": sum(int(row.get("excluded_functions") or 0) for row in results),
+        "added_functions": sum(int(row.get("added_functions") or 0) for row in results),
     }
     if category == "backdoored":
         summary["gt_in_filter"] = sum(int(row.get("gt_in_filtered") or 0) for row in results)
+        summary["gt_in_excluded"] = sum(int(row.get("gt_in_excluded") or 0) for row in results)
     return summary
 
 
@@ -502,10 +564,16 @@ def _run_experiment_configs(
     openwrt_pairs: List[Tuple[str, str]],
     gt: Dict[str, Any],
     gt_path: Optional[str],
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Run the LLM experiment configs for a single model into config_root."""
+    """Run the LLM experiment configs for a single model into config_root. In dry_run mode
+    only the deployed `delt` config runs, with triage disabled, so each modified function
+    gets its unified diff and agent inputs on disk but the agent never runs."""
+    configs = EXPERIMENT_CONFIGS
+    if dry_run:
+        configs = tuple(cfg for cfg in EXPERIMENT_CONFIGS if cfg[0] == "delt")
     config_summaries: Dict[str, Any] = {}
-    for config_name, diff_mode, filter_key, overrides in EXPERIMENT_CONFIGS:
+    for config_name, diff_mode, filter_key, overrides in configs:
         config_dir = os.path.join(config_root, config_name)
         os.makedirs(config_dir, exist_ok=True)
         include_added_callees = bool(
@@ -519,6 +587,10 @@ def _run_experiment_configs(
             "include_added_callees": include_added_callees,
         }
 
+        # gt_only is a backdoor-recall shortcut: only the ground-truth function is triaged.
+        # It applies to the backdoored set alone. The safe/openwrt categories have no ground
+        # truth, so they always run in full, with gt_only forced off for them below.
+        gt_only = bool(base_opts.get("gt_only"))
         categories: List[Tuple[str, List[Tuple[str, str]], Optional[str], Dict[str, Any]]] = []
         if backdoored_pairs:
             categories.append(("backdoored", backdoored_pairs, gt_path, gt))
@@ -536,6 +608,10 @@ def _run_experiment_configs(
                 gt_path=category_gt_path,
                 overrides=overrides,
             )
+            # gt_only restricts triage to the ground-truth function, which only exists for
+            # the backdoored set. Force it off everywhere else so safe/openwrt triage every
+            # filtered function and their false-positive counts stay complete.
+            run_opts["gt_only"] = gt_only and category == "backdoored"
             results = _run_category(pairs, category_dir, run_opts, gt=category_gt)
             summary = _summarize_category(results, category)
             config_summary[category] = summary
@@ -565,6 +641,46 @@ def _run_experiment_configs(
     return config_summaries
 
 
+def run_drift(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
+    """Run only the structural drift stage over the backdoored and safe pairs, no LLM.
+
+    Use this before `run_experiments` to see the search space each comparison produces
+    and to work out ground truth. Both filter policies are run (filter_OR and
+    filter_NONE), which is exactly the census `run_experiments` does at its root, so
+    pointing this at the same --outdir means the full run reuses these results.
+
+    Opts:
+      backdoored   -- entries file of backdoored target,baseline pairs
+      safe         -- entries file of safe target,baseline pairs
+      ground_truth -- optional ground-truth JSON; when given, each candidate row is
+                      marked with whether it matches a ground-truth target
+      outdir       -- root output directory (default: out/delt_experiments)
+
+    Per comparison this writes drift_raw.json, stats.json, and candidate_functions.json
+    (one row per filtered/excluded/added function with decimal + hex target address and
+    the Ghidra function name). Each category also gets
+    candidate_functions_by_sample.json, keyed by target collection name, which is the
+    same key the ground-truth file uses.
+    """
+    backdoored_path: Optional[str] = opts.get("backdoored")
+    safe_path: Optional[str] = opts.get("safe")
+    gt_path: Optional[str] = opts.get("ground_truth")
+    outdir = str(opts.get("outdir") or "out/delt_experiments")
+
+    if not backdoored_path and not safe_path:
+        raise ValueError("At least one of --backdoored or --safe must be provided.")
+
+    backdoored_pairs = _read_series_file(backdoored_path) if backdoored_path else []
+    safe_pairs = _read_series_file(safe_path) if safe_path else []
+    gt = load_ground_truth_file(gt_path) if gt_path else {}
+
+    os.makedirs(outdir, exist_ok=True)
+    census_summaries = _run_filter_census(outdir, backdoored_pairs, safe_pairs, gt)
+    _write_json(os.path.join(outdir, "drift_summary.json"), census_summaries)
+    logger.info("Drift summary written to %s", os.path.join(outdir, "drift_summary.json"))
+    return census_summaries
+
+
 def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """Run the paper's full DeLT experiment matrix using the `delt` analyzer.
 
@@ -572,11 +688,16 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
       backdoored   -- entries file of backdoored target,baseline pairs
       ground_truth -- ground-truth JSON for the backdoored pairs
 
-    Model selection (exactly one of):
+    Model selection:
       model        -- a single model tag passed through to the delt analyzer
       models       -- a models file (like models.txt); each line is
                       `model_tag [function_workers]` (function_workers defaults to 1).
                       Results for each model land under outdir/<model_slug>/.
+      (neither)    -- dry run: only the deployed `delt` config runs, with triage
+                      disabled, so each modified function gets its unified diff and the
+                      agent's input files (outdir/delt/<category>/<pair>/filepair_NN/
+                      modified_functions/<b..t..>/{diff.txt,agent_inputs/}) written to
+                      disk without invoking the agent. Use this to author ground truth.
 
     Parallelization is owned by the delt analyzer, not this plugin: comparisons run
     sequentially here, and when function_workers > 1 the analyzer triages functions
@@ -593,6 +714,15 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
       safe         -- entries file of safe target,baseline pairs
       openwrt      -- entries file of OpenWrt target,baseline pairs
       outdir       -- root output directory (default: out_delt_experiments)
+      gt_only      -- backdoor-recall shortcut: triage only the ground-truth
+                      insertion function(s) of each backdoored pair instead of every
+                      filtered candidate, and skip the safe/openwrt categories entirely
+                      (they have no ground truth). Filter counts are still reported; only
+                      the triaged subset shrinks, so it runs much faster when you only
+                      need to check whether the backdoor is detected.
+
+    To run only the structural drift stage (no LLM), use `run_drift` with the same
+    --backdoored/--safe/--outdir; this run then reuses its filter census.
     """
     backdoored_path: Optional[str] = opts.get("backdoored")
     safe_path: Optional[str] = opts.get("safe")
@@ -603,7 +733,7 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     if not backdoored_path and not safe_path and not openwrt_path:
         raise ValueError("At least one of --backdoored, --safe, or --openwrt must be provided.")
 
-    model_specs, nested = _resolve_model_specs(opts)
+    model_specs, nested, dry_run = _resolve_model_specs(opts)
 
     backdoored_pairs = _read_series_file(backdoored_path) if backdoored_path else []
     safe_pairs = _read_series_file(safe_path) if safe_path else []
@@ -623,13 +753,19 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         # Comparisons run sequentially here; the delt analyzer fans functions across GPUs
         # when function_workers > 1, provisioning per-GPU Ollama servers on its own.
         base_opts["function_workers"] = function_workers
+        # Dry run: disable triage so the analyzer only produces per-function diffs and
+        # agent inputs. No model client is built.
+        base_opts["no_triage"] = dry_run
         config_root = os.path.join(outdir, _model_slug(model)) if nested else outdir
         os.makedirs(config_root, exist_ok=True)
 
-        logger.info(
-            "running experiment configs for model %s (function_workers %d)",
-            model, function_workers,
-        )
+        if dry_run:
+            logger.info("running dry-run (no triage) to produce triage inputs")
+        else:
+            logger.info(
+                "running experiment configs for model %s (function_workers %d)",
+                model, function_workers,
+            )
 
         config_summaries = _run_experiment_configs(
             base_opts,
@@ -639,6 +775,7 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
             openwrt_pairs=openwrt_pairs,
             gt=gt,
             gt_path=gt_path,
+            dry_run=dry_run,
         )
 
         if nested:
@@ -655,4 +792,4 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     return experiment_summary
 
 
-exports = [run_experiments]
+exports = [run_experiments, run_drift]

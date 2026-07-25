@@ -26,6 +26,7 @@ opts_doc = {
     "include_added_callees": {"type": bool, "mangle": True, "default": True},
     "outdir": {"type": str, "mangle": True, "default": ""},
     "ground_truth": {"type": str, "mangle": True, "default": ""},
+    "gt_only": {"type": bool, "mangle": True, "default": False},
 }
 
 

@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Build unified diff text from opcodes and compact it for LLM context budgets.
+Build unified diff text from SequenceMatcher opcodes.
 
-Two sub-responsibilities:
-  Emit    — convert SequenceMatcher opcodes into unified diff lines, with
-            canonical-noise collapsing so trivial token changes appear as context.
-  Compact — strip context aggressively and hard-truncate when the diff exceeds
-            the LLM character budget.
+Three sub-responsibilities:
+  Canonicalize - collapse decompiler noise such as recovered type names, so blocks that
+                 differ only in that noise compare equal and are emitted as context.
+  Match        - build the SequenceMatcher over the normalized line sequences.
+  Emit         - convert opcodes into unified diff lines, and produce the unprocessed
+                 diff used by raw diff mode.
+
+The emitted diff is not truncated or size-capped here. Long diffs are handled downstream
+by the reviewing agent, which pages through the file in bounded reads.
 """
 
 import re

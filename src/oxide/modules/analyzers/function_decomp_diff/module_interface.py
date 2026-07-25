@@ -16,7 +16,6 @@ from align import (
     project_lab_tokens,
     project_var_tokens,
 )
-from annotate import annotate_with_tags, get_function_calls
 from emit import (
     emit_unified_header,
     emit_unified_raw,
@@ -32,7 +31,6 @@ logger.debug("init")
 opts_doc = {
     "target": {"type": str, "mangle": True, "default": "None"},
     "baseline": {"type": str, "mangle": True, "default": "None"},
-    "annotate": {"type": bool, "mangle": True, "default": False},
     "raw": {"type": bool, "mangle": True, "default": False},
 }
 
@@ -45,6 +43,50 @@ def documentation() -> Dict[str, Any]:
         "set": False,
         "atomic": True,
     }
+
+
+def _build_projection_call_diff(
+    target_oid: str,
+    baseline_oid: str,
+    target_addr: Any,
+    baseline_addr: Any,
+) -> Dict[str, Any]:
+    """
+    Build the minimal call-diff shape needed by build_maps() without paying for the
+    full function_call_diff analyzer. function_decomp_diff only needs paired callee
+    addresses so baseline FUN_ tokens can be projected into the target namespace.
+    """
+    bindiff = api.retrieve("bindiff", [target_oid, baseline_oid]) or {}
+    function_matches = bindiff.get("function_matches", {})
+
+    t2b: Dict[Any, Any] = {}
+    if isinstance(function_matches, dict):
+        items = function_matches.keys()
+    elif isinstance(function_matches, list):
+        items = function_matches
+    else:
+        items = []
+
+    for pair in items:
+        if isinstance(pair, tuple) and len(pair) == 2:
+            t2b[pair[0]] = pair[1]
+
+    target_calls = set(api.get_field("function_call_targets", target_oid, int(target_addr)) or [])
+    baseline_calls = set(api.get_field("function_call_targets", baseline_oid, int(baseline_addr)) or [])
+
+    fc_paired = []
+    for t_callee in target_calls:
+        b_callee = t2b.get(t_callee)
+        if b_callee is None or b_callee not in baseline_calls:
+            continue
+        fc_paired.append(
+            {
+                "target": {"addr": t_callee},
+                "baseline": {"addr": b_callee},
+            }
+        )
+
+    return {"fc_paired": fc_paired}
 
 
 def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
@@ -125,16 +167,14 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
     opcodes = sm.get_opcodes()
 
     try:
-        call_diff = api.retrieve(
-            "function_call_diff",
-            [target_oid, baseline_oid],
-            {"target": str(target_addr), "baseline": str(baseline_addr)},
-        ) or {}
+        projection_call_diff = _build_projection_call_diff(
+            target_oid, baseline_oid, target_addr, baseline_addr
+        )
     except Exception as e:
-        logger.warning(f"[{NAME}] function_call_diff retrieval failed: {e}")
-        call_diff = {}
+        logger.warning(f"[{NAME}] projection map construction failed: {e}")
+        projection_call_diff = {}
 
-    projmap = build_maps(baseline_addr, target_addr, call_diff)
+    projmap = build_maps(baseline_addr, target_addr, projection_call_diff)
     lab_map = build_lab_map(base_orig, tgt_orig, opcodes)
     var_map = build_var_map(base_orig, tgt_orig, base_norm, tgt_norm, opcodes)
 
@@ -160,11 +200,6 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
             emit_refined(out, base_slice, tgt_slice)
 
     unified = "\n".join(out) + ("\n" if out else "")
-
-    if opts.get("annotate", False):
-        name_to_addr = get_function_calls(call_diff)
-        if name_to_addr:
-            unified = annotate_with_tags(unified, name_to_addr, target_oid)
 
     output = {
         "unified": unified,
