@@ -64,7 +64,7 @@ def callee_type_recall_facts(call_tool, question) -> list:
         return []
     addr = m.group(1)
     vid_param = {}
-    for vm in re.finditer(r"\bV(\d+)\b[^)]*?\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
+    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
         k = _REGOFF_TO_ARG.get(int(vm.group(2), 16))
         if k:
             vid_param[f"V{vm.group(1)}"] = k
@@ -125,11 +125,11 @@ def decompiler_pointer_facts(call_tool, question) -> list:
         return []
     addr = m.group(1)
     vid_name = {}
-    for vm in re.finditer(r"\bV(\d+)\b[^)]*?\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
+    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
         nm = _REGOFF_TO_PARAM.get(int(vm.group(2), 16))
         if nm:
             vid_name[f"V{vm.group(1)}"] = nm
-    for vm in re.finditer(r"\bV(\d+)\b[^)]*?\bstack\s+(-?0x[0-9a-fA-F]+)", question or ""):
+    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*\bstack\s+(-?0x[0-9a-fA-F]+)", question or ""):
         off = abs(int(vm.group(2), 16))
         vid_name[f"V{vm.group(1)}"] = f"local_{off:x}"
     if not vid_name:
@@ -272,7 +272,7 @@ def interprocedural_param_usage_facts(call_tool, question) -> list:
     if not m:
         return []
     vid_param = {}
-    for vm in re.finditer(r"\bV(\d+)\b[^)]*?\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
+    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
         k = _REGOFF_TO_ARG.get(int(vm.group(2), 16))
         if k:
             vid_param[f"V{vm.group(1)}"] = k
