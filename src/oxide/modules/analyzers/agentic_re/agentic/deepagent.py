@@ -326,10 +326,15 @@ async def _load_mcp_tools(opts):
 
 
 def _collect_oracle_facts(oid: str, question: str, opts: dict) -> dict:
-    """Run the static + runtime type oracles IN-PROCESS and return {vid: (ctype, oracle, floor)}
-    (first oracle wins per vid). Reliable because it uses the full question (with the vaddr) — unlike
-    an LLM tool call, which was observed to drop the vaddr and get empty results. Used both to INJECT
-    certified facts into the prompt (so the agent reasons with them) and to build the trailer."""
+    """Run the static type oracles IN-PROCESS and return {vid: (ctype, oracle, floor)} (first oracle
+    wins per vid). Reliable because it uses the full question (with the vaddr) — unlike an LLM tool
+    call, which was observed to drop the vaddr and get empty results.
+
+    WHEN THIS RUNS: only AFTER the agents finish, from `_certified_trailer` (plus `_emit_flow_diagram`
+    for rendering). The oracles are NOT a pre-pass and their facts are NOT injected into any prompt —
+    the coordinator/worker/verifier never see them, they only get OVERRIDDEN by them. So the verifier
+    re-derives types the oracles already knew. Feeding these facts forward (prompt injection, or the
+    retype -> re-decompile loop) is an untested lever, not current behaviour."""
     from oxide.core.oxide import api
     from agentic import tools as T, grounding as G
     from agentic.tasks import type_recovery  # noqa: F401 registers the 4 static oracles (the default)
