@@ -272,7 +272,15 @@ def _cap_tool_loop(messages, kwargs):
     directive = HumanMessage(content=(
         f"You have already called tools {n} times — that is enough. Do NOT call any more tools. Using "
         f"the tool results already in this conversation, output ONLY your final answer NOW: one "
-        f"`<id>: <C type>` line per assigned variable, then the final JSON object on the last line."))
+        f"`<id>: <C type>` line per assigned variable, then the final JSON object on the last line.\n"
+        f"CRITICAL — honor each variable's byte SIZE (given in the task):\n"
+        f"  * 8 bytes  -> a POINTER (`T *`, `char *`, `FILE *`, `void *`, a struct pointer) OR a 64-bit "
+        f"integer (`long`/`size_t`/`unsigned long`). NEVER `int` — `int` is only 4 bytes.\n"
+        f"  * 4 bytes  -> `int` / `unsigned int` (or `float`).\n"
+        f"  * 2 bytes  -> `short`;  1 byte -> `char` / `signed char` / `_Bool`.\n"
+        f"If an 8-byte value is dereferenced, holds an address, stores a pointer returned by a call, or "
+        f"is passed where a struct/FILE/handle/array is expected, it IS a pointer — prefer the pointer "
+        f"type over a bare integer when unsure. Do NOT lazily default 8-byte variables to `int`."))
     return list(messages) + [directive], kwargs
 
 
