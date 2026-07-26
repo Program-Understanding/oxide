@@ -343,11 +343,27 @@ def _collect_oracle_facts(oid: str, question: str, opts: dict) -> dict:
         except Exception:  # noqa: BLE001
             pass
     _s, ct = T.build_tools(api, oid, memoize=False)
+    # Declared byte size per variable, straight from the question (ground-truth input, not inference).
+    sizes = {m.group(1): int(m.group(2))
+             for m in re.finditer(r"(?m)^\s*(V\d+)\s+(?:register|stack)\s+\S+\s+(\d+)\s*$", question or "")}
     facts: dict = {}                                         # vid -> (ctype, oname, floor); first wins
     for name, fn in G.resolve_domain_oracles(which, question):
         try:
             for f in fn(ct, question):
                 if f["vid"] in facts:
+                    continue
+                # SOUNDNESS GUARD: never certify a pointer for a slot too small to hold one. The
+                # oracles are the AUTHORITATIVE layer (the trailer applies them over the LLM), so an
+                # impossible certification is strictly worse than abstaining. Measured on
+                # chroot/mgetgroups: callee_signature certified V2 (4B) and spilled_param certified
+                # V13 (4B) as `void *` — physically impossible — overriding a verifier that had both
+                # correct as `int`. The size is GIVEN ground truth, so this check is exact, not
+                # heuristic. Disable with AGENTIC_NO_SIZE_GUARD=1.
+                sz = sizes.get(f["vid"])
+                if (sz and sz < 8 and "*" in str(f.get("ctype", ""))
+                        and os.environ.get("AGENTIC_NO_SIZE_GUARD", "") not in ("1", "true", "yes")):
+                    print(f"[size-guard] dropped unsound {name} certification "
+                          f"{f['vid']}={f['ctype']!r} on a {sz}-byte slot")
                     continue
                 facts[f["vid"]] = (f["ctype"], name, bool(f.get("floor", False)))
         except Exception:  # noqa: BLE001
