@@ -77,11 +77,6 @@ ORACLE_TOOLS = {"static_type_oracles"}
 # monotone and never corrupts a correct answer. The verifier's job is only its independent decomp lens.
 VERIFIER_TOOLS = {"decompile"}
 
-# The MCP server exposes ~38 tools; handing all of them (plus deepagents' built-in todo/fs/task
-# tools) to a small model causes long, exploratory, non-converging loops. Curate to the type-recovery
-# essentials + the oracle tools. This is the single biggest lever on multi-agent latency.
-ALLOWED_TOOLS = WORKER_TOOLS | ORACLE_TOOLS
-
 VERIFIER_PROMPT = """You are a type-recovery reviewer with access to the DECOMPILED C code of a \
 STRIPPED x86-64 binary (oid `{oid}`, function at virtual address `{vaddr}`). A first-pass worker typed \
 the variables from the ASSEMBLY only — WITHOUT the decompilation. Your job is to REFINE its candidate \
@@ -491,9 +486,14 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
             "system_prompt": TYPE_WORKER_PROMPT.format(oid=oid, vaddr=vaddr),
             "tools": tools,
         }
-        # A genuine verifier AGENT: adjudicates the workers' candidate claims against the deterministic
-        # oracles and verify_finding, correcting any that conflict with a certified type. The
-        # ORACLE-CERTIFIED trailer still runs afterward as the final deterministic guarantee.
+        # A genuine verifier AGENT: re-types the workers' candidate claims against the DECOMPILATION —
+        # the evidence the assembly-only worker never saw. The ORACLE-CERTIFIED trailer still runs
+        # afterward as the final deterministic guarantee.
+        # NOTE: the `description` below still says "verify_finding" (a tool deleted in the Phase-2
+        # simplification). It is left as-is ON PURPOSE: `description` is passed into the `task` tool
+        # schema the COORDINATOR model reads, so editing it perturbs a prompt on a model measured to be
+        # prompt-fragile (see the reverted subagent-tool-stripping A/B: -21.8 on hash_do_for_each).
+        # Fix it only together with an A/B.
         verifier = {
             "name": "verifier",
             "description": "Adjudicates candidate variable-type claims against the deterministic "
