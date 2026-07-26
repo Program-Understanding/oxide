@@ -355,6 +355,75 @@ def _collect_oracle_facts(oid: str, question: str, opts: dict) -> dict:
     return facts
 
 
+_UNDEF_RE = re.compile(r"^\s*undefined\d*\s*\**\s*$", re.I)
+
+
+def _claims_from_messages(messages) -> list:
+    """Every `V<n>: <type>` claim any subagent returned, in delegation order. Subagent answers come
+    back as the CONTENT of the `task` tool results, so this recovers the worker/verifier findings the
+    coordinator saw."""
+    out = []
+    for m in messages or []:
+        if getattr(m, "type", None) != "tool":
+            continue
+        txt = m.content if isinstance(m.content, str) else ""
+        d = {}
+        for mm in re.finditer(r"(?mi)^\s*-?\s*(V\d+)\s*[:=]\s*(.+?)\s*$", txt):
+            t = mm.group(2).strip().strip("`").split("(")[0].split(",")[0].strip()
+            if t and len(t) < 40:
+                d[mm.group(1)] = t
+        for jm in re.finditer(r"\{[^{}]*\}", txt):
+            try:
+                o = json.loads(jm.group(0))
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if re.fullmatch(r"V\d+", str(k)) and isinstance(v, str):
+                        d[str(k)] = v.strip()
+        if d:
+            out.append(d)
+    return out
+
+
+def _rescue_undefined(messages, answer: str) -> str:
+    """Never let a SPECIFIC type be replaced by an `undefinedN` one.
+
+    The verifier always wins arbitration, but its decompilation lens is not strictly superior: when
+    Ghidra emits `undefined8` for a slot the assembly worker had already typed concretely, the
+    verifier overwrites a CORRECT answer with a contentless one (measured on do_encode V2:
+    worker `char *` -> verifier `undefined8 *`, and the same failure is on record for get_8). This
+    restores the earlier specific claim whenever the final answer degenerated to `undefined*`.
+    Monotone and information-preserving — it can only replace a non-answer with an answer, never
+    change one concrete type into a different concrete type. Deterministic (no LLM).
+    Disable with AGENTIC_NO_UNDEF_RESCUE=1."""
+    if str(os.environ.get("AGENTIC_NO_UNDEF_RESCUE", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return answer
+    claims = _claims_from_messages(messages)
+    if not claims:
+        return answer
+    rescued = {}
+    for vid in {v for d in claims for v in d}:
+        cur = None
+        m = re.search(rf"(?mi)^\s*-?\s*{re.escape(vid)}\s*[:=]\s*(.+?)\s*$", answer)
+        if m:
+            cur = m.group(1).strip().strip("`")
+        if cur is None or not _UNDEF_RE.match(cur):
+            continue                                   # final answer is already specific -> leave it
+        for d in claims:                               # earliest specific claim wins
+            t = d.get(vid)
+            if t and not _UNDEF_RE.match(t):
+                rescued[vid] = t
+                break
+    if not rescued:
+        return answer
+    for vid, t in rescued.items():                     # rewrite BOTH representations consistently
+        answer = re.sub(rf"(?mi)^(\s*-?\s*{re.escape(vid)}\s*[:=]\s*).+?$", lambda mo: mo.group(1) + t, answer)
+        answer = re.sub(rf'("{re.escape(vid)}"\s*:\s*)"[^"]*"', lambda mo: mo.group(1) + json.dumps(t), answer)
+    print(f"[undef-rescue] restored specific types over `undefined`: {rescued}")
+    return answer
+
+
 def _certified_trailer(oid: str, question: str, answer: str, opts: dict) -> str:
     """Append the ORACLE-CERTIFIED trailer, computed DETERMINISTICALLY in-process (not via the LLM),
     reproducing pipeline._analyze_oid_impl exactly — including floor semantics. This guarantees the
@@ -553,6 +622,12 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     # clean gemma special tokens (thinking/channel markup) so only the answer text (+ its final JSON
     # line) remains. Same helper the per-turn salvage uses, applied once more to the final answer.
     answer = _strip_channel(answer)
+    # Undo verifier degeneration (specific type -> `undefinedN`) BEFORE the oracle trailer, so the
+    # oracles adjudicate against a concrete answer rather than a contentless one.
+    try:
+        answer = _rescue_undefined(result.get("messages") if isinstance(result, dict) else None, answer)
+    except Exception as e:  # noqa: BLE001  never let a post-pass break the run
+        print(f"[undef-rescue] skipped — {str(e)[:120]}")
     # The deterministic oracle trailer gets its OWN root span so its (main-process) decompile/stack_var
     # oracle calls collapse into one `oracle_certification` tree instead of ~60 orphan traces.
     with _root_run_span(_phoenix_on, oid, vaddr, name="oracle_certification"):
