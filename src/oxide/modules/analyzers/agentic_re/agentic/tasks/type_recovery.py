@@ -92,6 +92,17 @@ def _vid_stack_offsets(question: str) -> dict:
     return {f"V{vm.group(1)}": vm.group(2) for vm in _V_STACK.finditer(question or "")}
 
 
+# A pointer whose POINTEE is unknown (`undefined *`, `void **`, `undefined8 *`). Such a fact asserts
+# the CLASS only — "this is a pointer" — not what it points to, so it must be certified as a FLOOR
+# (a lower bound) rather than as an exact type. Certifying it exactly lets a decompiler `undefined *`
+# overwrite a correct `char *`: measured on printf/c_strcasecmp, 4 such overrides cost 12.12 points.
+_VAGUE_PTR = re.compile(r"^\s*(?:undefined\d*|void)\s*\*+\s*$", re.I)
+
+
+def _is_vague_pointer(ctype: str) -> bool:
+    return bool(_VAGUE_PTR.match(str(ctype or "")))
+
+
 def callee_type_recall_facts(call_tool, question) -> list:
     """For each register-passed PARAMETER named in the question, if the decompilation passes it
     (directly, or through a one-level local alias) to a known library function at a position whose ABI
@@ -351,6 +362,7 @@ def _oracle_callee_signature(call_tool, question) -> list:
     for vid, ctype, callee, argpos in callee_type_recall_facts(call_tool, question):
         out.append({
             "vid": vid, "ctype": ctype, "source": "deterministic_callee_signature",
+            "floor": _is_vague_pointer(ctype),
             "claim": (f"{vid} has C type `{ctype}` — it is passed as argument {argpos} to "
                       f"`{callee}`, whose library ABI signature fixes that parameter's type. "
                       f"Treat as established; this overrides any weaker guess for {vid}."),
@@ -363,6 +375,7 @@ def _oracle_decompiler_pointer(call_tool, question) -> list:
     for vid, ctype in decompiler_pointer_facts(call_tool, question):
         out.append({
             "vid": vid, "ctype": ctype, "source": "deterministic_decompiler_pointer",
+            "floor": _is_vague_pointer(ctype),
             "claim": (f"{vid} has C type `{ctype}` — this is the decompiler's own recovered POINTER "
                       f"type for the variable. Treat as established; the decompiler's pointer "
                       f"inference overrides a scalar guess for {vid}."),
@@ -375,6 +388,7 @@ def _oracle_interprocedural_param_usage(call_tool, question) -> list:
     for vid, ctype, callee, cparam, lc, apos in interprocedural_param_usage_facts(call_tool, question):
         out.append({
             "vid": vid, "ctype": ctype, "source": "deterministic_interprocedural_param_usage",
+            "floor": _is_vague_pointer(ctype),
             "claim": (f"{vid} has C type `{ctype}` — it is forwarded to user function `{callee}` "
                       f"(as its `{cparam}`), which passes it as argument {apos} to `{lc}`, whose "
                       f"library ABI signature fixes that parameter's type. Treat as established; this "
@@ -388,6 +402,7 @@ def _oracle_spilled_param(call_tool, question) -> list:
     for vid, ctype, pname, reg in spilled_param_facts(call_tool, question):
         out.append({
             "vid": vid, "ctype": ctype, "source": "deterministic_spilled_param",
+            "floor": _is_vague_pointer(ctype),
             "claim": (f"{vid} has C type `{ctype}` — its stack slot is where the prologue spills "
                       f"`{reg}` (`{pname}`), so it is a copy of that parameter and shares its type. "
                       f"Treat as established; this overrides a guess that mis-maps the slot to another "

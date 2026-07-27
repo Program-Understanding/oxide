@@ -93,6 +93,7 @@ ORACLE_TOOLS = {"static_type_oracles"}
 # monotone and never corrupts a correct answer. The verifier's job is only its independent decomp lens.
 VERIFIER_TOOLS = {"decompile"}
 
+
 VERIFIER_PROMPT = """You are a type-recovery reviewer with access to the DECOMPILED C code of a \
 STRIPPED x86-64 binary (oid `{oid}`, function at virtual address `{vaddr}`). A first-pass worker typed \
 the variables from the ASSEMBLY only — WITHOUT the decompilation. Your job is to REFINE its candidate \
@@ -508,6 +509,77 @@ def _rescue_undefined(messages, answer: str) -> str:
     return answer
 
 
+# --- size-consistency coercion (deterministic, no model) -----------------------------------------
+# The question states each entity's byte SIZE as a given. A reported type whose width contradicts that
+# size is a PROVABLE error -- an 8-byte slot cannot hold `int`, a 4-byte slot cannot hold a pointer --
+# detectable without ground truth. Measured 2026-07-26 over 30 functions: 17 such variables across
+# 11 functions; rewriting each to the same-family type of the DECLARED width scored 3 better / 0 worse
+# / 4 tied, mean +5.52 on affected functions (+1.29 amortized). Unlike a prompt change this is a pure
+# post-hoc transform of a fixed answer, so the +-11.8 run-to-run noise floor does not apply to it.
+_TYPE_WIDTH = {
+    "char": 1, "uchar": 1, "byte": 1, "bool": 1, "_bool": 1, "schar": 1, "signed char": 1,
+    "unsigned char": 1, "int8_t": 1, "uint8_t": 1, "undefined1": 1,
+    "short": 2, "ushort": 2, "unsigned short": 2, "word": 2, "int16_t": 2, "uint16_t": 2,
+    "undefined2": 2,
+    "int": 4, "uint": 4, "unsigned int": 4, "float": 4, "dword": 4, "int32_t": 4, "uint32_t": 4,
+    "undefined4": 4, "wchar_t": 4,
+    "long": 8, "ulong": 8, "unsigned long": 8, "size_t": 8, "ssize_t": 8, "double": 8, "qword": 8,
+    "longlong": 8, "ulonglong": 8, "uintmax_t": 8, "intmax_t": 8, "off_t": 8, "idx_t": 8,
+    "ptrdiff_t": 8, "int64_t": 8, "uint64_t": 8, "undefined8": 8,
+}
+_UNSIGNED = {"uchar", "byte", "unsigned char", "ushort", "unsigned short", "word", "uint",
+             "unsigned int", "dword", "ulong", "unsigned long", "size_t", "qword", "ulonglong",
+             "uintmax_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t"}
+_WIDTH_TYPE = {8: ("long", "ulong"), 4: ("int", "uint"), 2: ("short", "ushort"), 1: ("char", "uchar")}
+
+
+def _type_width(t: str):
+    """Byte width of a reported type, or None if unknown. Any pointer is 8 on x86-64."""
+    t = str(t or "").strip()
+    if t.endswith("*"):
+        return 8
+    return _TYPE_WIDTH.get(t.lower())
+
+
+def _coerce_sizes(question: str, answer: str) -> str:
+    """Rewrite every reported type whose width contradicts the entity's declared size."""
+    if os.environ.get("AGENTIC_NO_SIZE_COERCE", "") in ("1", "true", "yes"):
+        return answer
+    sizes = {m.group(1): int(m.group(2)) for m in re.finditer(
+        r"(?m)^\s*(V\d+)\s+(?:register|stack)\s+\S+\s+(\d+)\s*$", question or "")}
+    if not sizes:
+        return answer
+    fixed = {}
+    for vid, want in sizes.items():
+        m = re.search(rf'(?mi)^\s*-?\s*{re.escape(vid)}\s*[:=]\s*(.+?)\s*$', answer)
+        if not m:
+            m = re.search(rf'"{re.escape(vid)}"\s*:\s*"([^"]*)"', answer)
+        if not m:
+            continue
+        cur = m.group(1).strip()
+        w = _type_width(cur)
+        if w is None or want not in _WIDTH_TYPE:
+            continue
+        # NARROWING ONLY. A type WIDER than the slot is impossible -- a pointer cannot occupy 4 bytes --
+        # so rewriting it to an integer of the declared width is forced, not chosen. The reverse is a
+        # GUESS: `int` on an 8-byte slot may be `long` OR any pointer, and picking the integer family
+        # loses. Measured on comm/readlinebuffer_delim V7 (GT `char *`): coercing int -> long cost
+        # 86.21 -> 79.31, while the three narrowing fixes gained +25.00, +11.91 and +1.75.
+        if w <= want:
+            continue
+        signed_t, unsigned_t = _WIDTH_TYPE[want]
+        new = unsigned_t if cur.lower() in _UNSIGNED else signed_t
+        fixed[vid] = (cur, new)
+        answer = re.sub(rf'(?mi)^(\s*-?\s*{re.escape(vid)}\s*[:=]\s*).+?$',
+                        lambda mo: mo.group(1) + new, answer)
+        answer = re.sub(rf'("{re.escape(vid)}"\s*:\s*)"[^"]*"',
+                        lambda mo: mo.group(1) + json.dumps(new), answer)
+    if fixed:
+        print("[size-coerce] " + ", ".join(f"{v}: {a} -> {b} ({sizes[v]}B slot)"
+                                           for v, (a, b) in sorted(fixed.items())))
+    return answer
+
+
 def _certified_trailer(oid: str, question: str, answer: str, opts: dict) -> str:
     """Append the ORACLE-CERTIFIED trailer, computed DETERMINISTICALLY in-process (not via the LLM),
     reproducing pipeline._analyze_oid_impl exactly — including floor semantics. This guarantees the
@@ -530,7 +602,22 @@ def _certified_trailer(oid: str, question: str, answer: str, opts: dict) -> str:
 
     lines = []
     for vid, (ctype, _c, _floor) in sorted(oracle_facts.items(), key=lambda kv: kv[0]):
-        if _floor and "*" in _synth_ty(vid):                 # floor defers to a more specific pointer
+        # A FLOOR is a lower bound — "this is a pointer", pointee unknown — not an exact type, so it
+        # defers whenever the model already answered with a pointer.
+        #
+        # ORDERING CONSTRAINT: any model-driven pass that runs BEFORE this one can preempt a correct
+        # certification through exactly this rule. A targeted re-query stage (since removed) upgraded
+        # sum/argmatch_to_argument V6 from `int` to `char *`; that pointer then made this floor defer,
+        # suppressing a `void *` certification that was exactly right (63.89 -> 61.11). Keep model
+        # passes after certification, or have them skip entities an oracle already claims.
+        #
+        # Deliberately NOT depth-aware. Requiring the model to match the floor's indirection depth was
+        # tried and MEASURED WORSE (ginstall/hash_rehash 45.10 -> 37.25): the certifying oracle's depth
+        # is itself unreliable. There, GT is `Hash_table *` (one level) while decompiler_pointer
+        # certified `void **`; the depth rule trusted that and overrode the model's correctly-shaped
+        # `struct *`. For a pointee-unknown fact the sound content is only ">= pointer", never the
+        # exact level — so any model pointer satisfies it.
+        if _floor and "*" in _synth_ty(vid):
             continue
         lines.append(f"- {vid}: {ctype}")
     if lines:
@@ -724,6 +811,9 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     # oracle calls collapse into one `oracle_certification` tree instead of ~60 orphan traces.
     with _root_run_span(_phoenix_on, oid, vaddr, name="oracle_certification"):
         final = _certified_trailer(oid, question, answer, opts)
+    # Last: enforce the one constraint the question states outright. Runs AFTER certification so an
+    # oracle fact is coerced too if it somehow contradicts the declared size.
+    final = _coerce_sizes(question, final)
 
     if _flow_rec is not None:
         _emit_flow_diagram(_flow_rec, oid, vaddr, question, final, opts)
