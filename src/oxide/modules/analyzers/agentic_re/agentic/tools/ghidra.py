@@ -490,48 +490,109 @@ def register_usage(ctx, addr: str, reg: str) -> dict:
                         + (f" (question offset {'-' if home - delta < 0 else ''}0x{abs(home - delta):x})"
                            if has_rbp else ""))
 
-    # 2. follow the value: a load into <r2> makes it hold the value until <r2> is redefined
-    tracked, offs = set(), set()
-    lost = False                      # a tracked register was redefined before any use was seen
+    # 2. follow the value over the CONTROL-FLOW GRAPH, not the instruction listing.
+    #
+    # A linear scan cannot do this. The `if (p == NULL) p = &default;` idiom compiles to two blocks
+    # that are ADJACENT IN THE LISTING but on MUTUALLY EXCLUSIVE PATHS: `mov rax,[home]` then, three
+    # bytes later, `lea rax,[default]`. A text scan sees the second as a redefinition and drops the
+    # value, missing every use after the join -- reporting INCONCLUSIVE (or, worse, "scalar") for a
+    # pointer. Observed on mv/set_char_quoting param_1, GT `quoting_options *`.
+    #
+    # This is a standard forward MAY-analysis: state is the set of registers that MAY hold the
+    # parameter, transfer is per instruction, and control-flow joins take the UNION, so a value
+    # reaching a join on any path is still tracked through it. Iterated to a fixed point with a
+    # worklist, so loops converge. MAY (not MUST) means a use is reported when the value could reach
+    # it on SOME path -- the safe direction here, since missing a dereference yields a wrong scalar
+    # answer while an extra one only widens the evidence.
+    cfgs = ctx.retrieve_oid("mcp_control_flow_graph") or {}
+    func = next((c for c in cfgs.values()
+                 if isinstance(c, dict) and c.get("name") == name), None)
+    blocks, succ = {}, {}
+    if isinstance(func, dict) and func.get("nodes"):
+        for boff, ins in func["nodes"].items():
+            blocks[int(boff)] = sorted((int(o) for o in ins), key=int)
+        for k, v in (func.get("edges") or {}).items():
+            try:
+                succ[int(k)] = [int(d) for d in v]
+            except (ValueError, TypeError):
+                pass
+    if not blocks:                                   # no CFG: fall back to one straight-line block
+        blocks = {int(keys[0]): [int(k) for k in keys]}
+        succ = {}
+    out["analysis"] = "cfg-dataflow" if func else "linear (no CFG available)"
+    preds = {b: [] for b in blocks}
+    for b, ds in succ.items():
+        for d in ds:
+            if d in preds:
+                preds[d].append(b)
+
     homepat = f"[rbp + {'-' if home < 0 else ''}0x{abs(home):x}]"
-    for k in keys:
-        t = insns[k]
-        if homepat in t:
-            out["accesses"].append(f"{hex(va(k))}: {t}")
-        m = re.search(rf"mov\s+(\w+)\s*,\s*(?:qword|dword|word|byte)?\s*ptr\s*{re.escape(homepat)}", t)
-        if m:
-            tracked.add(_ALIAS_TO_BASE.get(m.group(1).lower(), m.group(1).lower()))
-            continue
-        for tr in sorted(tracked):
+    offs, ev = set(), []
+    entry = min(blocks)
+
+    def step(state, t, k):
+        """Transfer one instruction. Returns the new state; records uses as a side effect."""
+        st = set(state)
+        # USE first — a use in this instruction refers to the value BEFORE any redefinition here
+        for tr in sorted(st):
             for a in _REG_ALIASES.get(tr, {tr}):
-                # dereference: [tr] or [tr + N] as a MEMORY operand
                 d = re.search(rf"ptr\s*\[{a}(?:\s*\+\s*(0x[0-9a-fA-F]+))?\]", t)
                 if d:
                     out["dereferenced"] = True
                     offs.add(d.group(1) or "0x0")
-                    out["evidence"].append(f"{hex(va(k))}: {t}")
-                # address arithmetic: lea r2, [tr + N]  -> the value is a base address
+                    ev.append(f"{hex(va(k))}: {t}")
                 if re.search(rf"lea\s+\w+\s*,\s*\[{a}(?:\s*\+\s*0x[0-9a-fA-F]+)?\]", t):
                     out["address_arith"] = True
-                    out["evidence"].append(f"{hex(va(k))}: {t}")
-                # moved into an argument register, then a call -> passed to that callee
-                mv = re.match(rf"\s*mov\s+(\w+)\s*,\s*{a}\s*$", t)
-                if mv and _ALIAS_TO_BASE.get(mv.group(1).lower()) in _ARGREGS:
-                    tracked.add(_ALIAS_TO_BASE[mv.group(1).lower()])
+                    ev.append(f"{hex(va(k))}: {t}")
         cm = re.search(r"\bcall\s+(0x[0-9a-fA-F]+)", t)
-        if cm and tracked:
+        if cm and (st & set(_ARGREGS)):
             tgt = callmap.get(int(cm.group(1), 16)) or ctx.resolve_func(cm.group(1))
-            for tr in sorted(tracked & set(_ARGREGS)):
-                out["passed_to"].append({"callee": str(tgt), "arg_position": _ARGREGS.index(tr) + 1})
-            tracked -= set(_ARGREGS)
-        # invalidate a tracked register when it is redefined by something else
-        w = re.match(r"\s*(?:mov|lea|add|sub|xor|and|or|shl|shr|movzx|movsx|imul)\s+(\w+)\s*,", t)
+            for tr in sorted(st & set(_ARGREGS)):
+                rec = {"callee": str(tgt), "arg_position": _ARGREGS.index(tr) + 1}
+                if rec not in out["passed_to"]:
+                    out["passed_to"].append(rec)
+            st -= set(_ARGREGS)                      # the call consumes the argument registers
+            return st
+        # GEN: a load from the home slot, or a copy of a tracked register
+        m = re.search(rf"mov\s+(\w+)\s*,\s*(?:qword|dword|word|byte)?\s*ptr\s*{re.escape(homepat)}", t)
+        if m:
+            st.add(_ALIAS_TO_BASE.get(m.group(1).lower(), m.group(1).lower()))
+            return st
+        mv = re.match(r"\s*mov\s+(\w+)\s*,\s*(\w+)\s*$", t)
+        if mv:
+            src = _ALIAS_TO_BASE.get(mv.group(2).lower(), mv.group(2).lower())
+            dst = _ALIAS_TO_BASE.get(mv.group(1).lower(), mv.group(1).lower())
+            if src in st:
+                st.add(dst)
+                return st
+        # KILL: any other definition of a tracked register
+        w = re.match(r"\s*(?:mov|lea|add|sub|xor|and|or|shl|shr|movzx|movsx|imul|pop)\s+(\w+)\s*,?", t)
         if w:
-            b = _ALIAS_TO_BASE.get(w.group(1).lower(), w.group(1).lower())
-            if b in tracked and not re.search(re.escape(homepat), t):
-                tracked.discard(b)
-                if not out["dereferenced"] and not out["address_arith"]:
-                    lost = True
+            st.discard(_ALIAS_TO_BASE.get(w.group(1).lower(), w.group(1).lower()))
+        return st
+
+    IN = {b: set() for b in blocks}
+    # Seed the worklist with EVERY block, not just the entry: propagating only on change means a block
+    # whose predecessor produces an empty state is never enqueued, so most of the function is never
+    # visited at all. Every block must be transferred at least once; the change-propagation below then
+    # drives it to a fixed point.
+    work = sorted(blocks, reverse=True)
+    seen_iters = 0
+    while work and seen_iters < 500:                 # bounded; converges in a few passes in practice
+        seen_iters += 1
+        b = work.pop()
+        st = set(IN[b])
+        for k in blocks[b]:
+            st = step(st, insns[str(k)] if str(k) in insns else insns.get(k, ""), k)
+        for d in succ.get(b, []):
+            if d in IN and not st <= IN[d]:
+                IN[d] |= st
+                work.append(d)
+    for k in sorted({k for blk in blocks.values() for k in blk}):
+        t = insns[str(k)] if str(k) in insns else insns.get(k, "")
+        if homepat in t:
+            out["accesses"].append(f"{hex(va(k))}: {t}")
+    out["evidence"] = ev
     out["access_offsets"] = sorted(offs)
     out["evidence"] = out["evidence"][:8]
     bits = []
@@ -543,7 +604,7 @@ def register_usage(ctx, addr: str, reg: str) -> dict:
         bits.append("passed to " + ", ".join(f"{p['callee']}(arg {p['arg_position']})"
                                              for p in out["passed_to"][:4]))
     if not bits:
-        if lost:
+        if out["analysis"].startswith("linear"):
             # The value was loaded into a register that was then redefined on another path (the
             # `cmp [home],0 / jz / mov r,[home] / jmp / lea r,default` idiom). Linear tracking cannot
             # merge branches, so silence here is NOT evidence of a scalar -- saying so would be a
