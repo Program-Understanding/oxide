@@ -342,7 +342,16 @@ def _mcp_env():
     (uncapped tool output) and trex_env.sh exports 40000, so a blanket pass-through would start
     truncating every tool result. Returns None when none are set, so the client keeps its exact
     default environment."""
-    passthru = {k: os.environ[k] for k in ("AGENTIC_TOOL_LOG", "AGENTIC_REPEAT_BREAKER")
+    # EVERY knob read inside the MCP server process must be listed here or it is SILENTLY DEAD: the
+    # client builds a minimal child environment, so an unlisted flag never arrives, and an A/B that
+    # toggles it runs two identical arms. `AGENTIC_DISASM_PAGING_HINT` (read in tools/ghidra.py, which
+    # executes in the server) was dead from the day it was added for exactly this reason, and a later
+    # experiment burned 20 runs before the byte-identical tool counts gave it away. When adding a flag
+    # read anywhere under tools/ or mcp_agentic.py, add it here in the same change.
+    #   mcp_agentic.py   : AGENTIC_TOOL_LOG, AGENTIC_REPEAT_BREAKER
+    #   tools/ghidra.py  : AGENTIC_DISASM_PAGING_HINT
+    passthru = {k: os.environ[k] for k in ("AGENTIC_TOOL_LOG", "AGENTIC_REPEAT_BREAKER",
+                                           "AGENTIC_DISASM_PAGING_HINT")
                 if os.environ.get(k)}
     if not passthru:
         return None
