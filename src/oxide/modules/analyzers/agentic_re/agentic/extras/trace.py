@@ -60,13 +60,9 @@ def file_tracing() -> bool:
     return _TRACE_FH is not None
 
 
-def _file_emit(kind, name, inp, out, t0):
-    if _TRACE_FH is None:
-        return
-    rec = {"kind": kind, "name": name,
-           "input": str(inp)[:8000], "output": str(out)[:20000],
-           "t": round(time.time(), 3), "dur": round(time.time() - t0, 3),
-           "thread": threading.current_thread().name}
+def _write(rec):
+    """Stamp a sequence number and append one JSON record. The lock also re-checks _TRACE_FH: the sink
+    can be closed by another thread between the caller's check and this write."""
     with _TRACE_LOCK:
         if _TRACE_FH is None:
             return
@@ -79,12 +75,14 @@ def _file_emit(kind, name, inp, out, t0):
             pass
 
 
-def record_llm(name, request, response, t0):
-    """Append one LLM request/response record to the file trace (no-op if file tracing is off).
-    Used by llm.py to capture every model call (messages in, content/tool_calls out)."""
+def _file_emit(kind, name, inp, out, t0):
     if _TRACE_FH is None:
         return
-    _file_emit("LLM", name, request, response, t0)
+    rec = {"kind": kind, "name": name,
+           "input": str(inp)[:8000], "output": str(out)[:20000],
+           "t": round(time.time(), 3), "dur": round(time.time() - t0, 3),
+           "thread": threading.current_thread().name}
+    _write(rec)
 
 
 def note(tag, data):
@@ -96,16 +94,7 @@ def note(tag, data):
         return
     rec = {"kind": "NOTE", "name": tag, "data": data,
            "t": round(time.time(), 3), "thread": threading.current_thread().name}
-    with _TRACE_LOCK:
-        if _TRACE_FH is None:
-            return
-        rec["seq"] = _SEQ[0]
-        _SEQ[0] += 1
-        try:
-            _TRACE_FH.write(json.dumps(rec, default=str) + "\n")
-            _TRACE_FH.flush()
-        except Exception:  # noqa: BLE001
-            pass
+    _write(rec)
 
 
 def setup_phoenix(endpoint: str = "http://localhost:6006/v1/traces",

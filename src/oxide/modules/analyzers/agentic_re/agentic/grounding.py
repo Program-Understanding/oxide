@@ -23,6 +23,31 @@ def register_domain_oracle(name: str, fn) -> None:
     DOMAIN_ORACLES[name] = fn
 
 
+DOMAIN_EVIDENCE: dict = {}         # name -> evidence-gatherer fn; populated by task modules on import
+
+
+def register_domain_evidence(name: str, fn) -> None:
+    """Register a task-specific deterministic EVIDENCE GATHERER under `name`.
+
+    Distinct from an oracle: an oracle CERTIFIES an answer and overrides the model, whereas a gatherer
+    only assembles facts and hands them to the model to reason over. Measured 2026-07-26: the model
+    never chooses the tools that would surface these facts (`xrefs_to`/`read_values`/`compute`: 0 calls
+    in 72), and telling it to is ineffective — so the gathering is done for it, in code."""
+    DOMAIN_EVIDENCE[name] = fn
+
+
+def resolve_domain_evidence(spec) -> list:
+    """Map a task's evidence specification to an ordered list of (name, fn) pairs (same spec grammar as
+    `resolve_domain_oracles`: list, comma/space string, or "auto" = all registered)."""
+    if isinstance(spec, str):
+        names = [s for s in re.split(r"[,\s]+", spec.strip()) if s]
+    else:
+        names = list(spec or [])
+    if names == ["auto"]:
+        names = list(DOMAIN_EVIDENCE.keys())
+    return [(n, DOMAIN_EVIDENCE[n]) for n in names if n in DOMAIN_EVIDENCE]
+
+
 def resolve_domain_oracles(spec, question: str = "") -> list:
     """Map a task's Ω specification to an ordered list of (name, fn) pairs to dispatch. `spec` is a
     list of names, a comma/space-separated string, or the literal ``"auto"`` (= every currently

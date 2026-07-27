@@ -202,9 +202,6 @@ def summarize_output(name, text):
         if found:
             parts.append("found" if found.group(1) == "true" else "NOT found")
         return ", ".join(parts) or _short(t, 70)
-    if name == "verify_finding":
-        c = re.search(r'"consensus":\s*"([^"]+)"', t)
-        return f"consensus: {c.group(1)}" if c else _short(t, 70)
     if name == "xrefs_to":
         return f"{t.count('0x')} xref(s)"
     if name in ("read_values", "compute"):

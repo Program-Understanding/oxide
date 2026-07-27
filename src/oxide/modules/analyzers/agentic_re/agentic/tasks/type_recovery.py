@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import re
 
-from agentic.grounding import register_domain_oracle
+from agentic.grounding import register_domain_oracle, register_domain_evidence
 
 # C-library ABI facts: callee -> per-argument fixed type ("" = unconstrained/vararg). These hold for
 # ANY binary linking libc (a decompiler ships the same prototypes), so this is generic type-recovery
 # knowledge, not benchmark-specific. When a variable reaches one of these at a fixed-type position, its
 # type is pinned deterministically — no model inference.
+DEFAULT_ORACLES = "callee_signature,decompiler_pointer,interprocedural_param_usage,spilled_param"
+
 _LIBC_SIG = {
     "fclose": ["FILE *"], "fflush": ["FILE *"], "fileno": ["FILE *"], "feof": ["FILE *"],
     "ferror": ["FILE *"], "clearerr": ["FILE *"], "rewind": ["FILE *"], "ftello": ["FILE *"],
@@ -47,12 +49,47 @@ _LIBC_SIG = {
     "vprintf": ["char *"], "sprintf": ["char *", "char *"], "snprintf": ["char *", "size_t", "char *"],
     "vsnprintf": ["char *", "size_t", "char *"], "error": ["int", "int", "char *"],
     "dprintf": ["int", "char *"], "asprintf": ["char **", "char *"],
+    # The *_unlocked stdio family + ungetc. coreutils uses these almost EXCLUSIVELY (they are the
+    # single-threaded fast paths), so their absence blanked the callee-signature signal across the
+    # whole benchmark: `cut_fields` calls getc_unlocked/putchar_unlocked/fwrite_unlocked/feof_unlocked/
+    # ferror_unlocked/ungetc and matched NONE of them. Same fixed ABI as the locking variants.
+    "getc_unlocked": ["FILE *"], "fgetc_unlocked": ["FILE *"], "getchar_unlocked": [],
+    "putc_unlocked": ["int", "FILE *"], "fputc_unlocked": ["int", "FILE *"],
+    "putchar_unlocked": ["int"],
+    "fwrite_unlocked": ["void *", "size_t", "size_t", "FILE *"],
+    "fread_unlocked": ["void *", "size_t", "size_t", "FILE *"],
+    "fputs_unlocked": ["char *", "FILE *"], "fgets_unlocked": ["char *", "int", "FILE *"],
+    "feof_unlocked": ["FILE *"], "ferror_unlocked": ["FILE *"], "fflush_unlocked": ["FILE *"],
+    "clearerr_unlocked": ["FILE *"], "fileno_unlocked": ["FILE *"],
+    "ungetc": ["int", "FILE *"],
 }
 # Ghidra x86-64 register-space offsets -> SysV integer argument position (1-based): rdi,rsi,rdx,rcx,r8,r9.
 _REGOFF_TO_ARG = {0x38: 1, 0x30: 2, 0x10: 3, 0x08: 4, 0x80: 5, 0x88: 6}
 # ... and -> the decompiler's SysV parameter identifier.
 _REGOFF_TO_PARAM = {0x38: "param_1", 0x30: "param_2", 0x10: "param_3", 0x08: "param_4",
                     0x80: "param_5", 0x88: "param_6"}
+
+
+# The question's variable lines are parsed in FOUR places; keep ONE pattern per storage kind so the
+# oracles cannot drift apart. (They already had: `spilled_param` used `[ \t(]*stack` while the others
+# used `[ \t(]*\bstack` — the same anchoring family that caused the 775ca3f mis-mapping bug.)
+_V_REGISTER = re.compile(r"\bV(\d+)\b[ \t(]*\bregister\s+(0x[0-9a-fA-F]+)")
+_V_STACK = re.compile(r"\bV(\d+)\b[ \t(]*\bstack\s+(-?0x[0-9a-fA-F]+)")
+
+
+def _vid_to_arg(question: str) -> dict:
+    """{'V1': 1, ...} — a REGISTER variable's 1-based System V integer-argument position."""
+    out = {}
+    for vm in _V_REGISTER.finditer(question or ""):
+        k = _REGOFF_TO_ARG.get(int(vm.group(2), 16))
+        if k:
+            out[f"V{vm.group(1)}"] = k
+    return out
+
+
+def _vid_stack_offsets(question: str) -> dict:
+    """{'V4': '-0x28', ...} — a STACK variable's frame offset, verbatim from the question."""
+    return {f"V{vm.group(1)}": vm.group(2) for vm in _V_STACK.finditer(question or "")}
 
 
 def callee_type_recall_facts(call_tool, question) -> list:
@@ -63,11 +100,7 @@ def callee_type_recall_facts(call_tool, question) -> list:
     if not m:
         return []
     addr = m.group(1)
-    vid_param = {}
-    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
-        k = _REGOFF_TO_ARG.get(int(vm.group(2), 16))
-        if k:
-            vid_param[f"V{vm.group(1)}"] = k
+    vid_param = _vid_to_arg(question)
     if not vid_param:
         return []
     try:
@@ -124,14 +157,7 @@ def decompiler_pointer_facts(call_tool, question) -> list:
     if not m:
         return []
     addr = m.group(1)
-    vid_name = {}
-    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
-        nm = _REGOFF_TO_PARAM.get(int(vm.group(2), 16))
-        if nm:
-            vid_name[f"V{vm.group(1)}"] = nm
-    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*\bstack\s+(-?0x[0-9a-fA-F]+)", question or ""):
-        off = abs(int(vm.group(2), 16))
-        vid_name[f"V{vm.group(1)}"] = f"local_{off:x}"
+    vid_name = _vid_to_ghidra_name(question)
     if not vid_name:
         return []
     try:
@@ -160,9 +186,7 @@ def spilled_param_facts(call_tool, question) -> list:
     if not m:
         return []
     addr = m.group(1)
-    slots = {}
-    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*stack\s+(-?0x[0-9a-fA-F]+)", question or ""):
-        slots[f"V{vm.group(1)}"] = vm.group(2)
+    slots = _vid_stack_offsets(question)
     if not slots:
         return []
     try:
@@ -271,11 +295,7 @@ def interprocedural_param_usage_facts(call_tool, question) -> list:
     m = re.search(r"at\s+(?:vaddr\s+)?(0x[0-9a-fA-F]+)", question or "")
     if not m:
         return []
-    vid_param = {}
-    for vm in re.finditer(r"\bV(\d+)\b[ \t(]*\bregister\s+(0x[0-9a-fA-F]+)", question or ""):
-        k = _REGOFF_TO_ARG.get(int(vm.group(2), 16))
-        if k:
-            vid_param[f"V{vm.group(1)}"] = k
+    vid_param = _vid_to_arg(question)
     if not vid_param:
         return []
     try:
@@ -375,6 +395,88 @@ def _oracle_spilled_param(call_tool, question) -> list:
             "reason": f"prologue spills {reg} ({pname}) into this slot"})
     return out
 
+
+def _vid_to_ghidra_name(question: str) -> dict:
+    """{'V1': 'param_1', 'V4': 'local_28', ...} — a queried variable's storage resolved to the
+    decompiler's identifier. A register maps by the SysV calling convention, a stack slot -0xNN to
+    Ghidra's `local_NN`. (Same rules the oracles use, factored out so the evidence gatherer and the
+    oracles cannot drift apart.)"""
+    vid_name = {}
+    for vm in _V_REGISTER.finditer(question or ""):
+        nm = _REGOFF_TO_PARAM.get(int(vm.group(2), 16))
+        if nm:
+            vid_name[f"V{vm.group(1)}"] = nm
+    for vm in _V_STACK.finditer(question or ""):
+        vid_name[f"V{vm.group(1)}"] = f"local_{abs(int(vm.group(2), 16)):x}"
+    return vid_name
+
+
+def variable_evidence(call_tool, question) -> str:
+    """Assemble, deterministically, the per-variable evidence the model provably never gathers itself.
+
+    Measured 2026-07-26 over 72 logged agent tool calls on 4 functions: `xrefs_to`, `read_values` and
+    `compute` were chosen ZERO times, and no worker ever followed a value into a callee — even though
+    every `disassemble` result opens with the callee list. The agent is competent at INFERRING a type
+    from evidence in hand and has no policy for DECIDING what to gather; so the gathering happens here,
+    in code, and the model is left with only the inference.
+
+    One line per variable, deliberately: a partial-but-bulky context measurably HURTS this model (the
+    disassemble-window A/B: doubling the assembly cost -5.6 and -11.8 on the two functions that already
+    worked). The aim is completeness per variable, not volume.
+    """
+    m = re.search(r"at\s+(?:vaddr\s+)?(0x[0-9a-fA-F]+)", question or "")
+    if not m:
+        return ""
+    vid_name = _vid_to_ghidra_name(question)
+    if not vid_name:
+        return ""
+    try:
+        dec = call_tool("decompile", {"addr": m.group(1)})
+    except Exception:  # noqa: BLE001
+        return ""
+    if not isinstance(dec, str) or dec.startswith("(no"):
+        return ""
+    decl = dict(_decl_pointer_map(dec))
+    # ...plus every NON-pointer local/param declaration. `_decl_pointer_map` deliberately keeps only
+    # pointers (it feeds an oracle that certifies pointer types); for evidence we want the whole
+    # declaration table. Verified on cut_fields against ground truth: local_18->size_t, local_20->size_t,
+    # local_28->long, local_34/local_38->uint are all right, and the model currently has to re-derive
+    # them from the decompilation by hand.
+    for dm in re.finditer(r"^\s*([A-Za-z_][\w ]*?[\w])\s+(param_\d+|local_[0-9a-f]+)\s*;", dec, re.M):
+        base = re.sub(r"\s+", " ", dm.group(1)).strip()
+        if base not in ("return", "else", "goto", "case"):
+            decl.setdefault(dm.group(2), base)
+    # the signature line carries the parameter declarations (they are not in the body)
+    sm = re.search(r"^[\w \*]+\s+\w+\s*\((.*?)\)\s*$", dec, re.M)
+    if sm:
+        for a in sm.group(1).split(","):
+            am = re.match(r"\s*([A-Za-z_][\w ]*?[\w])\s*(\**)\s*(param_\d+)\s*$", a)
+            if am:
+                decl.setdefault(am.group(3), (am.group(1) + " " + am.group(2)).strip())
+    lines = []
+    for vid in sorted(vid_name, key=lambda v: int(v[1:])):
+        nm = vid_name[vid]
+        bits = []
+        # (a) the call the value flows into — the signal the agent never goes and gets. Applied to
+        #     STACK LOCALS too, not just register params (the callee_signature oracle covers only
+        #     the register case), which is what makes this more than a restatement of the oracles.
+        hit = _libc_type_of_param(dec, nm)
+        if hit:
+            ctype, callee, apos = hit
+            bits.append(f"passed to {callee}() as argument {apos}, whose ABI fixes that parameter as `{ctype}`")
+        # (b) what the decompiler itself declared for the slot
+        if nm in decl:
+            bits.append(f"decompiler declares it `{decl[nm]}`")
+        if not bits:
+            bits.append("no call-flow or pointer declaration found — infer from its access pattern")
+        lines.append(f"{vid} ({nm}): " + "; ".join(bits))
+    if not lines:
+        return ""
+    return ("DETERMINISTIC EVIDENCE (already gathered for you from the decompilation and the callees' "
+            "ABI signatures — this is factual, do NOT re-derive it with tools):\n" + "\n".join(lines))
+
+
+register_domain_evidence("variable_evidence", variable_evidence)
 
 register_domain_oracle("callee_signature", _oracle_callee_signature)
 register_domain_oracle("decompiler_pointer", _oracle_decompiler_pointer)

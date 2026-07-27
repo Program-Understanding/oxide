@@ -67,10 +67,6 @@ def cfg_int(key: str, default: int) -> int:
         return default
 
 
-def cfg_bool(key: str) -> bool:
-    return str(cfg_get(key, "")).strip().lower() in ("1", "true", "yes", "on")
-
-
 def _missing(key: str):
     raise RuntimeError(
         f"agentic: required setting '{key}' is not configured. Add it under [agentic] in "

@@ -9,6 +9,7 @@ from typing import Any, Literal  # noqa: F401
 import argparse
 import sys
 import os
+import re
 import json  # noqa: F401
 
 parser = argparse.ArgumentParser('oxide agentic MCP server')
@@ -96,14 +97,111 @@ def _norm_off(o):
     return f"-0x{v:x}" if neg else f"0x{v:x}"
 
 
+def _log_call(tool: str, args: dict, cached: bool, out):
+    """Append one JSONL record per tool INVOCATION to $AGENTIC_TOOL_LOG (no-op when unset).
+
+    The agent's tools run in THIS process (the MCP server child), so the client-side trace file never
+    sees them — it only records the in-process oracle calls. This log is the only place the agent's
+    actual tool SELECTION is observable. Logged before the memo is consulted, so a repeated call is
+    recorded as a repeat (`cached: true`) rather than silently absorbed."""
+    p = os.environ.get("AGENTIC_TOOL_LOG", "")
+    if not p:
+        return
+    try:
+        import time
+        with open(p, "a") as fh:
+            fh.write(json.dumps({"tool": tool, "args": args, "cached": cached, "t": time.time(),
+                                 "out": str(out)[:400]}) + "\n")
+    except Exception:  # noqa: BLE001  never let logging break a tool call
+        pass
+
+
+# --- repeat-breaker state (opt-in via AGENTIC_REPEAT_BREAKER) -----------------------------------
+# Measured 2026-07-26 over 72 logged agent tool calls: 32% are EXACT repeats (same tool, same args),
+# and the repeat rate tracks the score inversely (0%/29%/37%/48% -> 91.67/93.14/70.83/47.44). The
+# model's response to uncertainty is not to pick a DIFFERENT tool — it re-calls the same one. The memo
+# above hides that from it: a repeat silently returns the identical result, so the model never learns
+# it is looping. These helpers make the repeat visible and hand back the concrete unexplored work,
+# computed deterministically from the binary — no model judgement involved in deciding what to suggest.
+_SEEN: dict = {}       # oid -> {"offsets": set(str), "disas_addrs": set(str)}
+_FN_FACTS: dict = {}   # (oid, faddr) -> {"slots": [str], "callees": [str]}
+_NOISE_CALLEES = {"__stack_chk_fail", "__assert_fail", "abort", "__errno_location",
+                  "__cxa_finalize", "_exit", "exit"}
+
+
+def _fn_facts(oid: str, addr: str) -> dict:
+    """Every rbp stack slot and every callee of the function at `addr`. Uses the raw dispatcher (not
+    _call) so building the hint can never recurse back into the memo/repeat path."""
+    key = (oid, _norm_addr(addr))
+    if key not in _FN_FACTS:
+        slots, callees = [], []
+        try:
+            # _ct returns the tool's TEXT; _as_json is what turns it back into the dict (the same
+            # step _call does). Without it `slots` silently stayed empty.
+            sv = _as_json(_ct(oid)("stack_var", {"addr": _norm_addr(addr)}))
+            if isinstance(sv, str):
+                sv = _as_json(sv.replace("'", '"'))
+            if isinstance(sv, dict):
+                slots = [s["offset"] for s in sv.get("slots", []) if "offset" in s]
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            d = str(_ct(oid)("disassemble", {"addr": _norm_addr(addr), "n_instructions": 8}))
+            m = re.match(r"CALLS:\s*([^\n]+)", d)
+            if m:
+                # Drop the compiler-inserted callees — they take no meaningful argument and pointing
+                # the agent at them is a wasted tool turn.
+                callees = [c.strip() for c in m.group(1).split(",")
+                           if c.strip() and c.strip() not in _NOISE_CALLEES]
+        except Exception:  # noqa: BLE001
+            pass
+        _FN_FACTS[key] = {"slots": slots, "callees": callees}
+    return _FN_FACTS[key]
+
+
+def _repeat_hint(oid: str, tool: str, args: dict) -> str:
+    """What the agent has demonstrably NOT looked at yet, as an appendable directive."""
+    addr = args.get("addr")
+    if not addr:
+        return ""
+    facts = _fn_facts(oid, addr)
+    seen = _SEEN.setdefault(oid, {"offsets": set(), "disas_addrs": set()})
+    todo = [s for s in facts["slots"] if s not in seen["offsets"]]
+    parts = []
+    if todo:
+        parts.append("stack slots you have NOT queried yet: "
+                     + ", ".join(todo[:12])
+                     + "  (call stack_var with one of these offsets)")
+    # A callee is "uninspected" while the agent has disassembled nothing but the function itself.
+    if facts["callees"] and len(seen["disas_addrs"]) <= 1:
+        parts.append("you have not inspected ANY callee; the value may flow into one of: "
+                     + ", ".join(facts["callees"][:8]))
+    if not parts:
+        return ("\n\n[REPEAT] You already made this exact call and the result has not changed. You have "
+                "queried every stack slot. Stop calling tools and report your findings now.")
+    return ("\n\n[REPEAT] You already made this exact call and the result has not changed. Do NOT repeat "
+            "it. " + "  ".join(parts))
+
+
 def _call(oid: str, tool: str, args: dict):
     """Dispatch a tool with per-process memoization on (oid, tool, normalized args). Repeats return the
     cached, byte-identical result instead of re-running the backend."""
     key = (oid, tool, tuple(sorted((k, str(v)) for k, v in args.items())))
+    seen = _SEEN.setdefault(oid, {"offsets": set(), "disas_addrs": set()})
+    if tool == "stack_var" and str(args.get("offset", "")).strip():
+        seen["offsets"].add(_norm_off(args["offset"]))
+    if tool in ("disassemble", "decompile") and args.get("addr"):
+        seen["disas_addrs"].add(_norm_addr(args["addr"]))
     if key in _TOOL_RESULT_CACHE:
-        return _TOOL_RESULT_CACHE[key]
+        res = _TOOL_RESULT_CACHE[key]
+        if os.environ.get("AGENTIC_REPEAT_BREAKER", "") in ("1", "true", "yes"):
+            # Return a STRING so the directive survives; the memo keeps the pristine value.
+            res = f"{res}{_repeat_hint(oid, tool, args)}"
+        _log_call(tool, args, True, res)
+        return res
     res = _as_json(_ct(oid)(tool, args))
     _TOOL_RESULT_CACHE[key] = res
+    _log_call(tool, args, False, res)
     return res
 
 
@@ -161,12 +259,13 @@ def _canon_question(vaddr: str, variables: str) -> str:
 @mcp.tool()
 async def static_type_oracles(
         oid: str, vaddr: str, variables: str,
-        which: str = "callee_signature,decompiler_pointer,interprocedural_param_usage,spilled_param") -> Any:
+        which: str = "") -> Any:
     """Run the deterministic STATIC type oracles and return CERTIFIED per-variable facts
     [{vid, ctype, source, claim, reason, floor, oracle}] — ABI/decompiler-certain and AUTHORITATIVE
     (override model guesses). `vaddr`: the function's virtual address, e.g. '0x107d3e'. `variables`:
     the variable list, one per line as `V<n>  <register 0x..|stack -0x..>  <size>`. Earlier oracles
     win on the same variable."""
+    which = which or _type_recovery.DEFAULT_ORACLES
     question = _canon_question(vaddr, variables)
     key = ("static", oid, which, question)
     if key in _ORACLE_CACHE:

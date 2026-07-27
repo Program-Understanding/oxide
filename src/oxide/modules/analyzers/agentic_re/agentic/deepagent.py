@@ -27,6 +27,14 @@ from agentic import config as C
 WORKER_TOOLS = {
     "disassemble", "stack_var", "xrefs_to", "read_values", "compute",
 }
+# `compute` is never actually selected (0 calls out of 1049 over 30 functions x 2 prompt regimes —
+# the only such tool; xrefs_to 17 and read_values 7 ARE used, just rarely). Dropping it from the menu
+# was TRIED and REVERTED on 2026-07-26: paired 30-function A/B gave mean −0.32 (95% CI −4.54..+3.91),
+# i.e. no measurable gain — while still swinging 13 of 30 functions, one by 50 points (seq/xsum3
+# 66.67->16.67), purely from perturbing a prompt-fragile model with a change it never acts on. Not
+# worth re-rolling every benchmark number for zero benefit. That null A/B is also the cleanest
+# NOISE-FLOOR measurement we have: sigma ~= 11.8 per function, so at n=30 nothing below ~+-4.3 is
+# resolvable. See [[agent-tool-selection-audit]].
 
 COORDINATOR_PROMPT = """You are the COORDINATOR of a type-recovery team for a STRIPPED x86-64 binary \
 (oid `{oid}`, target function at virtual address `{vaddr}`). You do NOT analyze code yourself — you \
@@ -63,6 +71,14 @@ value flows into — infer the C type. The byte size constrains it (a pointer is
 
 Report EXACTLY one `<id>: <C type>` line per assigned variable. Report ONLY your assigned ids. Do not \
 re-call a tool with identical arguments; finish promptly."""
+
+# TOOL-SELECTION EXPERIMENT, SETTLED 2026-07-26 — two alternative worker prompts were tried and
+# REMOVED. `even` gave all five tools identical fully-formed call syntax; `neutral` dropped the recipe
+# entirely and told the model to pick from the tools' own MCP descriptions. Across 3 regimes / 204 tool
+# calls, `xrefs_to`+`read_values`+`compute` were selected ZERO times in every one, and `neutral` lost a
+# paired 30-function A/B (mean -2.08, 5 better / 12 worse / 13 tied). Conclusion: tool selection is not
+# reachable through the prompt surface or the tool descriptions on this model — do not retry it here.
+# See [[agent-tool-selection-audit]].
 
 # the deterministic oracle tool exposed on the MCP server. The oracles' VALUES are applied in-process by
 # the certified trailer (_collect_oracle_facts), not by the LLM — this is only what the server publishes.
@@ -315,14 +331,56 @@ def _model(opts):
     )
 
 
-async def _load_mcp_tools(opts):
-    from langchain_mcp_adapters.client import MultiServerMCPClient
-    client = MultiServerMCPClient({"oxide": {
-        "command": sys.executable,
-        "args": [_mcp_server_path(opts), f"--oxidepath={_oxidepath(opts)}"],
-        "transport": "stdio",
-    }})
-    return await client.get_tools()
+def _mcp_env():
+    """Extra environment for the MCP server subprocess.
+
+    The MCP stdio client does NOT inherit our environment — it builds a minimal one (HOME/PATH/USER/
+    ...), so no `AGENTIC_*` setting reaches the server. Pass through only the server-side knobs we
+    explicitly want: `AGENTIC_TOOL_LOG` (tool-call audit log) and `AGENTIC_REPEAT_BREAKER`. Forwarding
+    the rest would silently change the server's behaviour: it `setdefault`s `AGENTIC_OUT_CAP=0`
+    (uncapped tool output) and trex_env.sh exports 40000, so a blanket pass-through would start
+    truncating every tool result. Returns None when none are set, so the client keeps its exact
+    default environment."""
+    passthru = {k: os.environ[k] for k in ("AGENTIC_TOOL_LOG", "AGENTIC_REPEAT_BREAKER")
+                if os.environ.get(k)}
+    if not passthru:
+        return None
+    from mcp.client.stdio import get_default_environment
+    return {**get_default_environment(), **passthru}
+
+
+def _DEFAULT_ORACLES():
+    """The task module owns the default oracle set; the library must not hardcode task knowledge."""
+    from agentic.tasks import type_recovery
+    return type_recovery.DEFAULT_ORACLES
+
+
+def _collect_evidence(oid: str, question: str, opts: dict) -> str:
+    """Run the task's deterministic EVIDENCE GATHERERS in-process and return the text to prepend to the
+    worker's prompt (empty string when disabled or when nothing is found).
+
+    Unlike `_collect_oracle_facts` (which runs AFTER the agents and OVERRIDES them), this is a genuine
+    PRE-pass whose output the worker reads. The two are complementary: an oracle answers a variable
+    outright; a gatherer supplies evidence for the ~75% no oracle can certify.
+
+    Opt-in via AGENTIC_EVIDENCE_BUNDLE=1 — it changes what the model sees, and model-facing changes
+    have a poor record here, so it ships off until an A/B says otherwise."""
+    if os.environ.get("AGENTIC_EVIDENCE_BUNDLE", "") not in ("1", "true", "yes"):
+        return ""
+    from oxide.core.oxide import api
+    from agentic import tools as T, grounding as G
+    from agentic.tasks import type_recovery  # noqa: F401 registers the gatherer
+    _s, ct = T.build_tools(api, oid, memoize=False)
+    out = []
+    for name, fn in G.resolve_domain_evidence(opts.get("domain_evidence") or "auto"):
+        try:
+            txt = fn(ct, question)
+        except Exception as e:  # noqa: BLE001  a gatherer must never break the run
+            print(f"[evidence] {name} failed: {e}")
+            continue
+        if txt:
+            out.append(txt)
+    return "\n\n".join(out)
 
 
 def _collect_oracle_facts(oid: str, question: str, opts: dict) -> dict:
@@ -333,13 +391,18 @@ def _collect_oracle_facts(oid: str, question: str, opts: dict) -> dict:
     WHEN THIS RUNS: only AFTER the agents finish, from `_certified_trailer` (plus `_emit_flow_diagram`
     for rendering). The oracles are NOT a pre-pass and their facts are NOT injected into any prompt —
     the coordinator/worker/verifier never see them, they only get OVERRIDDEN by them. So the verifier
-    re-derives types the oracles already knew. Feeding these facts forward (prompt injection, or the
-    retype -> re-decompile loop) is an untested lever, not current behaviour."""
+    re-derives types the oracles already knew. Feeding these facts FORWARD into a prompt is an untested
+    lever, not current behaviour (`_collect_evidence` is the opt-in pre-pass that does something like
+    it)."""
     from oxide.core.oxide import api
     from agentic import tools as T, grounding as G
     from agentic.tasks import type_recovery  # noqa: F401 registers the 4 static oracles (the default)
+    # env is consulted too: the harness/CLI has no opts dict, so without this AGENTIC_DOMAIN_ORACLES
+    # was silently inert — which also made the registered `runtime_type_probe` oracle unreachable
+    # from run_trex_one.py (it is imported, registered, and then never named).
     which = (opts.get("domain_oracles")
-             or "callee_signature,decompiler_pointer,interprocedural_param_usage,spilled_param")
+             or os.environ.get("AGENTIC_DOMAIN_ORACLES")
+             or type_recovery.DEFAULT_ORACLES)
     # runtime_type_probe is OPT-IN and lives in extras/ (the expensive, ~5%-coverage dynamic angr probe);
     # import it only when named, so the minimal pipeline never pulls angr.
     if "runtime_type_probe" in str(which):
@@ -554,6 +617,7 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
         "command": sys.executable,
         "args": [_mcp_server_path(opts), f"--oxidepath={_oxidepath(opts)}"],
         "transport": "stdio",
+        "env": _mcp_env(),
     }})
     user = f"oid: {oid}   function vaddr: {vaddr}\n\n{question}"
     # langgraph counts SUPER-STEPS (each LLM turn + each tool node), which is unrelated to the old
@@ -569,11 +633,18 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
         # stack_var, xrefs, ...) plus the oracle tools. All are addr-based so they work on the stripped
         # function. The deterministic trailer still pins the certified facts as a final guarantee.
         tools = [t for t in all_tools if getattr(t, "name", "") in WORKER_TOOLS]
+        # Deterministic pre-gathered evidence (opt-in). Appended to the worker's system prompt so the
+        # facts are present WITHOUT the worker having to decide to go and get them — it never does.
+        _evidence = _collect_evidence(oid, question, opts)
+        _worker_sys = TYPE_WORKER_PROMPT.format(oid=oid, vaddr=vaddr)
+        if _evidence:
+            _worker_sys = f"{_worker_sys}\n\n{_evidence}"
+            print(f"[evidence] injected {len(_evidence)} chars into the type_worker prompt")
         type_worker = {
             "name": "type_worker",
             "description": "Recovers the precise C type of a group of variables by decompiling and "
                            "analysing the function at the given vaddr, and consulting the oracle tools.",
-            "system_prompt": TYPE_WORKER_PROMPT.format(oid=oid, vaddr=vaddr),
+            "system_prompt": _worker_sys,
             "tools": tools,
         }
         # A genuine verifier AGENT: re-types the workers' candidate claims against the DECOMPILATION —
@@ -675,7 +746,8 @@ def _emit_flow_diagram(recorder, oid: str, vaddr: str, question: str, answer: st
         # resolution) so the diagram can show which ran-and-abstained (e.g. runtime_type_probe) vs which
         # certified — an oracle producing no fact must not look like it was skipped.
         _which = (opts.get("domain_oracles")
-                  or "callee_signature,decompiler_pointer,interprocedural_param_usage,spilled_param")
+                   or os.environ.get("AGENTIC_DOMAIN_ORACLES")
+                   or _DEFAULT_ORACLES())
         consulted = [x.strip() for x in str(_which).split(",") if x.strip()]
         variables = _FR.input_vars_from_question(question)
         meta = {"vaddr": vaddr, "nvars": len(variables) or len(set(re.findall(r"\bV\d+\b", question))),

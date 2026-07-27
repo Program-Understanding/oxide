@@ -16,8 +16,11 @@ opts_doc = {
     "worker_model":    {"type": str, "mangle": True,  "default": ""},   # optional per-role override
     "verifier_model":  {"type": str, "mangle": True,  "default": ""},
     "endpoint":        {"type": str, "mangle": False, "default": ""},   # OpenAI-compatible server (else env/config)
-    "domain_oracles":  {"type": str, "mangle": True,
-                        "default": "callee_signature,decompiler_pointer,interprocedural_param_usage,spilled_param"},
+    # empty => the task module's own default set (tasks/type_recovery.DEFAULT_ORACLES:
+    # callee_signature, decompiler_pointer, interprocedural_param_usage, spilled_param). Kept empty
+    # rather than duplicating that list here: opts_doc is evaluated at module-SCAN time, so importing
+    # the task module just to read a default would load it for every Oxide module listing.
+    "domain_oracles":  {"type": str, "mangle": True, "default": ""},
     "mcp_server_path": {"type": str, "mangle": False, "default": ""},   # path to oxide/mcp_server.py (auto if empty)
     "oxidepath":       {"type": str, "mangle": False, "default": ""},   # oxide repo root (auto if empty)
     "max_iter":        {"type": int, "mangle": False, "default": 40},

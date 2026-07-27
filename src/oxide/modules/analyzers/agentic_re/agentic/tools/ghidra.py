@@ -3,6 +3,7 @@ function_extract, mcp_control_flow_graph, call_graph, ghidra_decmap, function_su
 ghidra_data, call_mapping."""
 from __future__ import annotations
 
+import os
 import re
 
 from .registry import tool
@@ -63,17 +64,39 @@ def disassemble(ctx, addr: str, n_instructions: int = 128) -> str:
         pass
     note = ""
     if center is not None and len(keys) > n:
+        # Window of n instructions centred on the requested address, SLID (not clipped) when the
+        # centre is near either end so the caller always gets the full n it asked for.
+        # The old form computed `hi = idx + n//2; lo = hi - n` and clamped lo at 0, which silently
+        # halved the window whenever idx < n//2 — i.e. on EVERY call that passes the function's own
+        # entry address, which is exactly what the worker prompt tells the agent to do. A 290-insn
+        # function returned 50 of 290 instructions for n=100.
         idx = keys.index(center)
-        hi = min(len(keys), idx + n // 2)
-        lo = max(0, hi - n)
+        lo = max(0, idx - n // 2)
+        hi = min(len(keys), lo + n)
+        lo = max(0, hi - n)          # slide back when clipped at the end, to keep the full budget
         chosen = keys[lo:hi]
-        note = (f"(window: instructions {lo}-{hi} of {len(keys)}, centered on the requested address; "
-                "disassemble a function name/start for the top)\n")
+        note = f"(window: instructions {lo}-{hi} of {len(keys)}"
     elif len(keys) > n:
+        lo, hi = 0, n
         chosen = keys[:n]
-        note = (f"(first {n} of {len(keys)} instructions; pass an inner address to window there)\n")
+        note = f"(window: instructions {lo}-{hi} of {len(keys)}"
     else:
+        lo, hi = 0, len(keys)
         chosen = keys
+    if note:
+        if hi < len(keys):
+            note += f"; {len(keys) - hi} not shown"
+            # OPT-IN paging hint. Naming the next address is what would let a caller actually
+            # continue — the old text ("disassemble a function name/start for the top") gave it
+            # nowhere to go, so it never paged. But it is a MODEL-FACING instruction and the worker
+            # runs under a hard 10-tool-turn cap that it already saturates, so every disassemble it
+            # spends paging is a stack_var it does not spend on a variable. Default OFF: the window
+            # fix above is deterministic and strictly additive, this is not. A/B before enabling.
+            if os.environ.get("AGENTIC_DISASM_PAGING_HINT", "") in ("1", "true", "yes"):
+                nxt = ctx.off_to_vaddr(int(keys[hi]))
+                if nxt is not None:
+                    note += f" — to read them call disassemble with addr=\"{hex(nxt)}\""
+        note += ")\n"
     lines = []
     for off in chosen:
         va = ctx.off_to_vaddr(int(off))
