@@ -25,8 +25,15 @@ from agentic import config as C
 # guessing function names for name-based tools like disasm_and_info_for_func). Includes the two
 # deterministic oracle tools (the hybrid trust layer).
 WORKER_TOOLS = {
-    "disassemble", "stack_var", "xrefs_to", "read_values", "compute",
+    "disassemble", "stack_var", "xrefs_to", "read_values", "compute", "register_usage",
 }
+# `register_usage` added 2026-07-27: the worker had NO tool answering "how is this REGISTER used?"
+# (`stack_var` covers stack slots only), so on register groups it queried stack offsets that cannot
+# exist — measured on mv/set_char_quoting: 9 calls, 6 `NOT found`, zero registers examined.
+# It reads the INSTRUCTION STREAM only. Its decompiler-based counterpart `value_usage` is deliberately
+# NOT here: that one calls decompile() internally, so giving it to the worker would hand the assembly
+# lens the reviewer's evidence (including the function signature) through a side door and collapse the
+# two-lens split. `value_usage` belongs to the reviewer, which already holds that lens.
 # `compute` is never actually selected (0 calls out of 1049 over 30 functions x 2 prompt regimes —
 # the only such tool; xrefs_to 17 and read_values 7 ARE used, just rarely). Dropping it from the menu
 # was TRIED and REVERTED on 2026-07-26: paired 30-function A/B gave mean −0.32 (95% CI −4.54..+3.91),
@@ -65,6 +72,9 @@ code — infer each variable's type from the machine code alone.
 
 For the variables you are assigned: use `disassemble(oid, addr="{vaddr}")` to read the instructions, \
 `stack_var(oid, addr="{vaddr}", offset="-0x..")` to see how a stack slot is accessed, and \
+`register_usage(oid, addr="{vaddr}", reg="0x..")` to see how a REGISTER PARAMETER is used \
+(dereferenced? used as an address? passed to which callee?) — pass the register offset from the \
+task verbatim, e.g. `reg="0x38"`; `stack_var` does NOT work for registers. Use \
 `xrefs_to`/`read_values`/`compute` (addr="{vaddr}") as needed. From the instruction-level evidence — \
 operand widths, sign-extension (`movsx` vs `movzx`), dereferences (`mov reg,[reg]`), and the calls a \
 value flows into — infer the C type. The byte size constrains it (a pointer is 8 bytes).
@@ -91,7 +101,7 @@ ORACLE_TOOLS = {"static_type_oracles"}
 # explicit "never downgrade" instruction). The oracles' *values* are still applied — but SOUNDLY, by
 # the deterministic ORACLE-CERTIFIED trailer (`_certified_trailer` / `_collect_oracle_facts`), which is
 # monotone and never corrupts a correct answer. The verifier's job is only its independent decomp lens.
-VERIFIER_TOOLS = {"decompile"}
+VERIFIER_TOOLS = {"decompile", "value_usage"}
 
 
 VERIFIER_PROMPT = """You are a type-recovery reviewer with access to the DECOMPILED C code of a \
@@ -124,7 +134,9 @@ the variables from the ASSEMBLY only — WITHOUT the decompilation. Your job is 
 types using the higher-level C code it could not see.
 
 1. Call `decompile(oid, addr="{vaddr}")` to read the function's C signature (parameter types) and the \
-declared locals.
+declared locals. If a variable's role is still unclear, `value_usage(oid, addr="{vaddr}", \
+var="param_N"|"local_NN")` reports how it is used (dereferenced at which offsets, indexed, which \
+callees receive it).
 2. MAP REGISTER PARAMETERS TO ABI POSITIONS. A variable whose location is `register <off>` is an \
 incoming argument passed in a System V AMD64 integer register. Translate the register slot to the \
 parameter position, then assign it the decompiler's type for THAT parameter:

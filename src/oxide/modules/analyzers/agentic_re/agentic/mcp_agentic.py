@@ -228,6 +228,29 @@ async def stack_var(oid: str, addr: str, offset: str = "") -> Any:
 
 
 @mcp.tool()
+async def register_usage(oid: str, addr: str, reg: str) -> Any:
+    """How a REGISTER PARAMETER is used, read from the ASSEMBLY: where the prologue spills it to its
+    home stack slot, every access to that slot, whether the value is DEREFERENCED (and at which byte
+    offsets -> it holds an address), whether it is used in address arithmetic, and which callees
+    receive it at which argument position. `reg` is the register-space offset from the question
+    ("0x38" = 1st arg, "0x30" = 2nd, "0x10" = 3rd, "0x8" = 4th) or a name ("rdi"). `stack_var` does
+    NOT work for registers -- use this. Returns INCONCLUSIVE rather than guessing when the value
+    cannot be followed across control flow."""
+    return _call(oid, "register_usage", {"addr": _norm_addr(addr), "reg": reg})
+
+
+@mcp.tool()
+async def value_usage(oid: str, addr: str, var: str) -> Any:
+    """How a REGISTER PARAMETER or named local is USED in the function at `addr`: whether it is
+    dereferenced (and at which byte offsets), indexed as an array, used in address vs. scalar
+    arithmetic, and which callees receive it at which argument position. `var` is a decompiler
+    identifier — a variable at `register 0x38` is `param_1`, `0x30` is `param_2`, `0x10` is `param_3`,
+    `0x8` is `param_4`. `stack_var` does NOT work for registers; use this instead. Passing a raw
+    register name returns a hint naming the right identifier."""
+    return _call(oid, "value_usage", {"addr": _norm_addr(addr), "var": var})
+
+
+@mcp.tool()
 async def xrefs_to(oid: str, addr: str) -> Any:
     """Cross-references (callers / code references) to the address or function `addr`."""
     return _call(oid, "xrefs_to", {"addr": _norm_addr(addr)})

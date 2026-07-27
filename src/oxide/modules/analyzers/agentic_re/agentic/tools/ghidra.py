@@ -41,6 +41,37 @@ def function_summary(ctx, name: str = "") -> dict:
     return fsum
 
 
+# Both annotations below close a JOIN the listing leaves open. The information is already in the
+# binary; only the correlation is missing, and the agent has been measured not to perform it.
+def _frame_delta(insns, keys):
+    """Bytes pushed before `mov rbp,rsp` — the offset between the question's CFA-style frame
+    coordinates and the rbp-relative ones the disassembly prints. Same rule as `stack_var`."""
+    delta = 0
+    for k in keys[:16]:
+        t = insns[k]
+        if re.match(r"\s*push\b", t):
+            delta += 8
+        if re.search(r"\bmov\b\s+rbp\s*,\s*rsp\b", t):
+            return delta, True
+    return delta, False
+
+
+def _callsite_names(ctx, fname):
+    """{call-target vaddr -> callee name}. `resolve_func` covers local functions but NOT imported
+    ones: a `call 0x00102350` to a PLT stub resolves to nothing, so the listing shows a bare address
+    while the CALLS header shows `__fpending`, and nothing says they are the same call. Invert the
+    PLT stub map to close that."""
+    out = {}
+    for c in set(ctx.callees(fname) or []):
+        try:
+            stub = ctx.import_plt_stub(c)
+        except Exception:  # noqa: BLE001
+            stub = None
+        if stub:
+            out[int(stub)] = c
+    return out
+
+
 @tool(group="ghidra", params={"addr": {"type": "string"}, "n_instructions": {"type": "integer"}},
       required=["addr"],
       desc="Disassemble the function at addr (windowed around an inner address for large fns).")
@@ -97,6 +128,11 @@ def disassemble(ctx, addr: str, n_instructions: int = 128) -> str:
                 if nxt is not None:
                     note += f" — to read them call disassemble with addr=\"{hex(nxt)}\""
         note += ")\n"
+    # NOTE: annotating this listing in place -- naming call targets (`call 0x102350  ; __fpending`)
+    # and tagging each `[rbp + N]` with its question-coordinate slot -- was implemented and MEASURED
+    # (10-function paired A/B): it cut stack_var's found:false rate 21% -> 12% but scored -0.92, and
+    # cost +22% on the largest consumer of the model's context. Removed. `register_usage` below
+    # addresses the same failure more directly and took found:false to 2%.
     lines = []
     for off in chosen:
         va = ctx.off_to_vaddr(int(off))
@@ -372,6 +408,155 @@ def _parse_stack_off(o):
     if v >= (1 << 63):
         v -= (1 << 64)
     return v
+
+
+# x86-64 SysV: the question gives a register variable as a Ghidra register-space offset; map it to the
+# argument register and its 1-based position.
+_ARGREGS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+_REGOFF_TO_REG = {0x38: "rdi", 0x30: "rsi", 0x10: "rdx", 0x08: "rcx", 0x80: "r8", 0x88: "r9"}
+_REG_ALIASES = {
+    "rdi": {"rdi", "edi", "di", "dil"}, "rsi": {"rsi", "esi", "si", "sil"},
+    "rdx": {"rdx", "edx", "dx", "dl"},  "rcx": {"rcx", "ecx", "cx", "cl"},
+    "r8":  {"r8", "r8d", "r8w", "r8b"}, "r9":  {"r9", "r9d", "r9w", "r9b"},
+    "rax": {"rax", "eax", "ax", "al"},
+}
+_ALIAS_TO_BASE = {a: b for b, al in _REG_ALIASES.items() for a in al}
+
+
+@tool(group="ghidra", params={"addr": {"type": "string"}, "reg": {"type": "string"}},
+      required=["addr", "reg"],
+      desc="How a REGISTER PARAMETER is used, read from the ASSEMBLY only: where the prologue spills "
+           "it, every access to that home slot, whether the value is dereferenced (and at which byte "
+           "offsets), whether it is used in address arithmetic, and which callees receive it. Give the "
+           "register-space offset from the question (e.g. \"0x38\") or a name (\"rdi\"). "
+           "`stack_var` does not work for registers; use this.")
+def register_usage(ctx, addr: str, reg: str) -> dict:
+    """Assembly-side counterpart to `value_usage`, which reads the DECOMPILATION and therefore cannot
+    be given to the assembly-lens worker without collapsing the two-lens split. Everything here comes
+    from the instruction stream.
+
+    Method: find the prologue store of the argument register into its home stack slot, then follow the
+    value linearly — a `mov <r>, [home]` makes <r> hold it until <r> is redefined, and any `[<r>]` /
+    `[<r>+N]` memory operand while tracked is a DEREFERENCE (i.e. the value is a pointer). Linear and
+    intra-procedural: no branch merging, so a use only reachable on another path can be missed. Reports
+    observed facts; it does not name a type."""
+    name = ctx.resolve_func(addr)
+    info = ctx._fext().get(name)
+    if not isinstance(info, dict) or not info.get("instructions"):
+        return {"error": f"no function at {addr}; try list_functions"}
+    r = str(reg or "").strip().lower()
+    if r.startswith("param_"):
+        try:
+            r = _ARGREGS[int(r.split("_")[1]) - 1]
+        except (ValueError, IndexError):
+            return {"error": f"could not map {reg!r} to an argument register"}
+    elif r.startswith("0x") or r.isdigit():
+        try:
+            r = _REGOFF_TO_REG[int(r, 16)]
+        except (ValueError, KeyError):
+            return {"error": f"register offset {reg!r} is not a SysV argument register",
+                    "hint": f"integer arguments live at {', '.join(hex(k) for k in _REGOFF_TO_REG)}"}
+    r = _ALIAS_TO_BASE.get(r, r)
+    if r not in _ARGREGS:
+        return {"error": f"{reg!r} is not an x86-64 SysV argument register"}
+    argpos = _ARGREGS.index(r) + 1
+
+    insns = info["instructions"]
+    keys = sorted(insns, key=lambda o: int(o))
+    delta, has_rbp = _frame_delta(insns, keys)
+    callmap = _callsite_names(ctx, name)
+    alias = _REG_ALIASES[r]
+    va = lambda k: ctx.off_to_vaddr(int(k))
+
+    # 1. the prologue spill: mov [rbp-N], <argreg>
+    home = None
+    for k in keys[:24]:
+        m = re.search(r"mov\s+(?:qword|dword|word|byte)?\s*ptr\s*\[rbp \+ (-?0x[0-9a-fA-F]+)\]\s*,\s*(\w+)",
+                      insns[k])
+        if m and m.group(2).lower() in alias:
+            home = int(m.group(1), 16)
+            break
+
+    out = {"register": r, "arg_position": argpos,
+           "home_slot": None, "accesses": [], "dereferenced": False,
+           "access_offsets": [], "address_arith": False, "passed_to": [], "evidence": []}
+    if home is None:
+        out["summary"] = (f"{r} is never spilled to a stack slot in the prologue — it is consumed "
+                          f"directly in registers (or moved via another register, e.g. "
+                          f"`mov eax,esi` then a store from `al`). Read the disassembly around the "
+                          f"entry point; this tool cannot follow it.")
+        return out
+    out["home_slot"] = (f"[rbp + {'-' if home < 0 else ''}0x{abs(home):x}]"
+                        + (f" (question offset {'-' if home - delta < 0 else ''}0x{abs(home - delta):x})"
+                           if has_rbp else ""))
+
+    # 2. follow the value: a load into <r2> makes it hold the value until <r2> is redefined
+    tracked, offs = set(), set()
+    lost = False                      # a tracked register was redefined before any use was seen
+    homepat = f"[rbp + {'-' if home < 0 else ''}0x{abs(home):x}]"
+    for k in keys:
+        t = insns[k]
+        if homepat in t:
+            out["accesses"].append(f"{hex(va(k))}: {t}")
+        m = re.search(rf"mov\s+(\w+)\s*,\s*(?:qword|dword|word|byte)?\s*ptr\s*{re.escape(homepat)}", t)
+        if m:
+            tracked.add(_ALIAS_TO_BASE.get(m.group(1).lower(), m.group(1).lower()))
+            continue
+        for tr in sorted(tracked):
+            for a in _REG_ALIASES.get(tr, {tr}):
+                # dereference: [tr] or [tr + N] as a MEMORY operand
+                d = re.search(rf"ptr\s*\[{a}(?:\s*\+\s*(0x[0-9a-fA-F]+))?\]", t)
+                if d:
+                    out["dereferenced"] = True
+                    offs.add(d.group(1) or "0x0")
+                    out["evidence"].append(f"{hex(va(k))}: {t}")
+                # address arithmetic: lea r2, [tr + N]  -> the value is a base address
+                if re.search(rf"lea\s+\w+\s*,\s*\[{a}(?:\s*\+\s*0x[0-9a-fA-F]+)?\]", t):
+                    out["address_arith"] = True
+                    out["evidence"].append(f"{hex(va(k))}: {t}")
+                # moved into an argument register, then a call -> passed to that callee
+                mv = re.match(rf"\s*mov\s+(\w+)\s*,\s*{a}\s*$", t)
+                if mv and _ALIAS_TO_BASE.get(mv.group(1).lower()) in _ARGREGS:
+                    tracked.add(_ALIAS_TO_BASE[mv.group(1).lower()])
+        cm = re.search(r"\bcall\s+(0x[0-9a-fA-F]+)", t)
+        if cm and tracked:
+            tgt = callmap.get(int(cm.group(1), 16)) or ctx.resolve_func(cm.group(1))
+            for tr in sorted(tracked & set(_ARGREGS)):
+                out["passed_to"].append({"callee": str(tgt), "arg_position": _ARGREGS.index(tr) + 1})
+            tracked -= set(_ARGREGS)
+        # invalidate a tracked register when it is redefined by something else
+        w = re.match(r"\s*(?:mov|lea|add|sub|xor|and|or|shl|shr|movzx|movsx|imul)\s+(\w+)\s*,", t)
+        if w:
+            b = _ALIAS_TO_BASE.get(w.group(1).lower(), w.group(1).lower())
+            if b in tracked and not re.search(re.escape(homepat), t):
+                tracked.discard(b)
+                if not out["dereferenced"] and not out["address_arith"]:
+                    lost = True
+    out["access_offsets"] = sorted(offs)
+    out["evidence"] = out["evidence"][:8]
+    bits = []
+    if out["dereferenced"]:
+        bits.append(f"dereferenced at offset(s) {out['access_offsets']} -> it holds an ADDRESS")
+    if out["address_arith"]:
+        bits.append("used as a base in address arithmetic")
+    if out["passed_to"]:
+        bits.append("passed to " + ", ".join(f"{p['callee']}(arg {p['arg_position']})"
+                                             for p in out["passed_to"][:4]))
+    if not bits:
+        if lost:
+            # The value was loaded into a register that was then redefined on another path (the
+            # `cmp [home],0 / jz / mov r,[home] / jmp / lea r,default` idiom). Linear tracking cannot
+            # merge branches, so silence here is NOT evidence of a scalar -- saying so would be a
+            # confident wrong answer on a pointer (observed on mv/set_char_quoting param_1, GT
+            # `quoting_options *`). Report inconclusive and hand back the raw accesses.
+            bits.append("INCONCLUSIVE — the value is loaded but the register is redefined on another "
+                        "control-flow path, so its uses could not be followed. Read `accesses` and the "
+                        "disassembly directly; do NOT infer 'scalar' from this")
+        else:
+            bits.append("no dereference or call flow observed; the slot is only read/written whole, "
+                        "which is consistent with a scalar")
+    out["summary"] = "; ".join(bits)
+    return out
 
 
 @tool(group="ghidra", params={"addr": {"type": "string"}, "offset": {"type": "string"}},
