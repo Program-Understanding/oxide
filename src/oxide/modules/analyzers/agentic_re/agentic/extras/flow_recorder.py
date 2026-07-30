@@ -218,7 +218,7 @@ def summarize_output(name, text):
         return ", ".join(parts) or _short(t, 70)
     if name == "xrefs_to":
         return f"{t.count('0x')} xref(s)"
-    if name in ("read_values", "compute"):
+    if name == "read_values":
         return _short(t, 70)
     return _short(t, 70)
 

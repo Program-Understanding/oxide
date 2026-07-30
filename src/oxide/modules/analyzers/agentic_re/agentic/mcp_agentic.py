@@ -304,21 +304,6 @@ async def read_values(oid: str, addr: str, type: str = "int32", count: int = 16,
 
 
 @mcp.tool()
-async def compute(oid: str, expr: str) -> Any:
-    """Exact arithmetic/bitwise evaluation of an integer expression (safe AST eval, no code run).
-    Use for offset/address math instead of guessing."""
-    return _as_json(_ct(oid)("compute", {"expr": expr}))
-
-
-# ---- deterministic oracle tools (the hybrid trust layer) ---------------------------------------
-def _canon_question(vaddr: str, variables: str) -> str:
-    """Canonical oracle question 'function at vaddr <va>.\\n<variable lines>' from explicit args, so
-    the caller cannot omit the vaddr (which makes the oracles silently return [])."""
-    va = vaddr if str(vaddr).startswith("0x") else ("0x" + str(vaddr) if vaddr else "")
-    return f"function at vaddr {va}.\n{variables}\n"
-
-
-@mcp.tool()
 async def static_type_oracles(oid: str, addr: str, variables: str, which: str = "") -> Any:
     """CERTIFIED and deterministic — re-derived from the binary and public ABI knowledge, not guessed, so it outranks your own reading of the decompilation.
     EVIDENCE: all four oracles above, in one call; earlier ones win on the same variable.

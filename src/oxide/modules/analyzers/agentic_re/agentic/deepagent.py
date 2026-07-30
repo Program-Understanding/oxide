@@ -25,8 +25,12 @@ from agentic import config as C
 # guessing function names for name-based tools like disasm_and_info_for_func). Includes the two
 # deterministic oracle tools (the hybrid trust layer).
 WORKER_TOOLS = {
-    "disassemble", "stack_var", "xrefs_to", "read_values", "compute", "register_usage",
+    "disassemble", "stack_var", "xrefs_to", "read_values", "register_usage",
 }
+# `compute` (exact integer/bitwise arithmetic) was REMOVED 2026-07-30: it was selected 0 times in
+# 321 tool calls across this session and 0 times in the earlier 1049-call audit. The arithmetic it
+# existed to make safe -- converting a ground-truth frame offset to an rbp offset -- is done inside
+# `stack_var` itself (`frame_delta`), so the model never needed a calculator to reach a slot.
 # `register_usage` added 2026-07-27: the worker had NO tool answering "how is this REGISTER used?"
 # (`stack_var` covers stack slots only), so on register groups it queried stack offsets that cannot
 # exist — measured on mv/set_char_quoting: 9 calls, 6 `NOT found`, zero registers examined.
@@ -74,7 +78,7 @@ For the variables you are assigned: use `disassemble(oid, addr="{vaddr}")` to re
 `register_usage(oid, addr="{vaddr}", reg="0x..")` to see how a REGISTER PARAMETER is used \
 (dereferenced? used as an address? passed to which callee?) — pass the register offset from the \
 task verbatim, e.g. `reg="0x38"`; `stack_var` does NOT work for registers. Use \
-`xrefs_to`/`read_values`/`compute` (addr="{vaddr}") as needed. From the instruction-level evidence — \
+`xrefs_to`/`read_values` (addr="{vaddr}") as needed. From the instruction-level evidence — \
 operand widths, sign-extension (`movsx` vs `movzx`), dereferences (`mov reg,[reg]`), and the calls a \
 value flows into — infer the C type. The byte size constrains it (a pointer is 8 bytes).
 

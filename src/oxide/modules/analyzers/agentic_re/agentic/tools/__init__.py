@@ -6,7 +6,7 @@ from .registry import build_tools, all_schemas, REGISTRY, ToolSpec, tool  # noqa
 from .context import OxideContext  # noqa: F401
 
 # importing the group modules registers their tools
-from . import elf, ghidra, util  # noqa: F401,E402
+from . import elf, ghidra  # noqa: F401,E402
 
 TOOL_SCHEMAS = all_schemas()
 

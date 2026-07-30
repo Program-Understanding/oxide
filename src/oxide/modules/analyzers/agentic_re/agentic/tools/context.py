@@ -3,8 +3,6 @@ OxideContext — shared infrastructure for the agentic tools.
 """
 from __future__ import annotations
 
-import ast as _ast
-import operator as _op
 import re
 import struct as _struct
 
@@ -19,43 +17,6 @@ _VAL_FMT = {("int8", True): "b", ("int8", False): "B",
             ("int16", True): "h", ("int16", False): "H",
             ("int32", True): "i", ("int32", False): "I",
             ("int64", True): "q", ("int64", False): "Q"}
-
-# ---- safe arithmetic (for the compute tool) ----
-_ALLOWED_BINOP = (_ast.Add, _ast.Sub, _ast.Mult, _ast.Div, _ast.FloorDiv, _ast.Mod,
-                  _ast.Pow, _ast.BitXor, _ast.BitAnd, _ast.BitOr, _ast.LShift, _ast.RShift)
-_ALLOWED_UNARY = (_ast.UAdd, _ast.USub, _ast.Invert)
-_OPS = {_ast.Add: _op.add, _ast.Sub: _op.sub, _ast.Mult: _op.mul, _ast.Div: _op.truediv,
-        _ast.FloorDiv: _op.floordiv, _ast.Mod: _op.mod, _ast.Pow: _op.pow,
-        _ast.BitXor: _op.xor, _ast.BitAnd: _op.and_, _ast.BitOr: _op.or_,
-        _ast.LShift: _op.lshift, _ast.RShift: _op.rshift,
-        _ast.UAdd: _op.pos, _ast.USub: _op.neg, _ast.Invert: _op.invert}
-
-
-def safe_eval(node):
-    if isinstance(node, _ast.Expression):
-        return safe_eval(node.body)
-    if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)):
-        return node.value
-    if isinstance(node, _ast.BinOp) and isinstance(node.op, _ALLOWED_BINOP):
-        return _OPS[type(node.op)](safe_eval(node.left), safe_eval(node.right))
-    if isinstance(node, _ast.UnaryOp) and isinstance(node.op, _ALLOWED_UNARY):
-        return _OPS[type(node.op)](safe_eval(node.operand))
-    raise ValueError("only integer arithmetic/bitwise expressions are allowed")
-
-
-def addr_list(x) -> list:
-    """Parse one address or many (comma/space separated, or a list) into ints."""
-    items = [str(i) for i in x] if isinstance(x, (list, tuple)) else re.split(r"[\s,]+", str(x).strip())
-    out = []
-    for it in items:
-        if not it:
-            continue
-        try:
-            out.append(int(it, 0))
-        except ValueError:
-            pass
-    return out
-
 
 class OxideContext:
     def __init__(self, api, oid: str):
