@@ -48,13 +48,12 @@ COORDINATOR_PROMPT = """You are the COORDINATOR of a type-recovery team for a ST
 PLAN and DELEGATE to the `type_worker` subagent.
 
 Do exactly this:
-1. Call `write_todos` to record a short plan: split the variables into groups (put ALL register \
-parameters in one group; split stack locals into groups of up to 6), one todo per group, then a \
-"verify all findings" todo and a final "synthesize answer" todo.
+1. Split the variables into groups: put ALL register parameters in one group, and split the stack \
+locals into groups of up to 6. Keep this plan in mind; do NOT write it down anywhere.
 2. For EACH variable group, call `task` to delegate to the `type_worker` subagent. In the task \
 description give it: the oid `{oid}`, the function vaddr `{vaddr}`, and the EXACT variables in that \
 group (each as `V<n>  <register 0x..|stack -0x..>  <size>`). The worker returns `<id>: <C type>` \
-findings for that group. Mark the todo completed as each group returns.
+findings for that group.
 3. After every group is done, call `task` ONCE to delegate to the `verifier` subagent. Give it the \
 oid `{oid}`, the vaddr `{vaddr}`, the FULL list of candidate `<id>: <C type>` claims from the workers, \
 AND the original variable list (each `V<n>  <register 0x..|stack -0x..>  <size>`, copied verbatim). \
@@ -63,8 +62,8 @@ The verifier returns the adjudicated types — prefer these over the raw worker 
 variable, then on the VERY LAST line a single JSON object mapping every id to its type, e.g. \
 {{"V1": "char *", "V2": "int"}}. Exactly one type per id; unknown => "undefined".
 
-Always start with `write_todos`, then delegate groups to `type_worker`, then the candidates to \
-`verifier`. Do NOT call decompile, the oracle tools, or any analysis tool yourself."""
+Your ONLY tool is `task`. Delegate groups to `type_worker`, then the candidates to \
+`verifier`, then write the answer yourself. Do NOT call decompile, the oracle tools, or any analysis tool yourself."""
 
 TYPE_WORKER_PROMPT = """You are a type-recovery specialist working from the ASSEMBLY of a STRIPPED \
 x86-64 binary (oid `{oid}`, function at virtual address `{vaddr}`). You do NOT have the decompiled C \
@@ -81,6 +80,36 @@ value flows into — infer the C type. The byte size constrains it (a pointer is
 
 Report EXACTLY one `<id>: <C type>` line per assigned variable. Report ONLY your assigned ids. Do not \
 re-call a tool with identical arguments; finish promptly."""
+
+# --- candidate proposal (opt-in, AGENTIC_TOPK=N) --------------------------------------------------
+# Under a SELECT-FROM-CANDIDATES architecture the agent's job changes: a downstream deterministic
+# objective picks among proposals, so what matters is whether the correct type is present at all
+# (recall), not whether the first guess is right (precision). Measured 2026-07-28 over 224 variables:
+# the worker emits |K| = 1.0 candidates, and a fixed 8-type lattice therefore lifts recall by +26 pp
+# purely by trying more things. Asking the same model, on the same evidence, for its runners-up is the
+# cheapest way to turn a committing agent into a proposing one. A wrong alternative costs nothing --
+# it simply loses on the objective -- which is why the instruction says so explicitly.
+_TOPK_SUFFIX = """
+
+ADDITIONALLY, for each assigned variable, give up to {n} ALTERNATIVE types you seriously considered \
+but did not choose, most plausible first, on their own line:
+    ALTS <id>: <type> | <type>
+A later stage TESTS each alternative mechanically against the binary and keeps whichever fits best, \
+so a wrong alternative costs nothing and a missing one cannot be recovered. Offer alternatives \
+whenever the evidence is not decisive; do not repeat the type you chose."""
+
+
+def _topk() -> int:
+    """N alternatives to request per entity; 0 disables (the default, committing behaviour)."""
+    try:
+        return max(0, int(os.environ.get("AGENTIC_TOPK", "0")))
+    except ValueError:
+        return 0
+
+
+def _with_topk(prompt: str) -> str:
+    k = _topk()
+    return prompt + _TOPK_SUFFIX.format(n=k) if k else prompt
 
 # TOOL-SELECTION EXPERIMENT, SETTLED 2026-07-26 — two alternative worker prompts were tried and
 # REMOVED. `even` gave all five tools identical fully-formed call syntax; `neutral` dropped the recipe
@@ -102,6 +131,18 @@ ORACLE_TOOLS = {"static_type_oracles"}
 # the deterministic ORACLE-CERTIFIED trailer (`_certified_trailer` / `_collect_oracle_facts`), which is
 # monotone and never corrupts a correct answer. The verifier's job is only its independent decomp lens.
 VERIFIER_TOOLS = {"decompile", "value_usage"}
+# Each oracle is its own tool so the reviewer can pick the one whose EVIDENCE fits the function it is
+# looking at; `static_type_oracles` remains as the run-everything call. Exposing them individually is
+# only meaningful now that the roster is clean -- while deepagents was injecting seven filesystem tools
+# into every subagent, nothing here was selectable in practice.
+ORACLE_TOOLS_INDIVIDUAL = {"callee_signature", "decompiler_pointer", "spilled_param",
+                           "interprocedural_param_usage", "signedness"}
+# The combined `static_type_oracles` is deliberately EXCLUDED. Offered alongside the four, the model
+# calls it and stops -- measured across three functions, it consulted an individual oracle only when
+# the combined call came back nearly empty, so selection was reacting to a thin result rather than to
+# the evidence in the function. Removing it makes the choice real. It remains reachable through
+# AGENTIC_VERIFIER_TOOLS when the combined sweep is wanted.
+_VERIFIER_TOOLS_ORACLE = (VERIFIER_TOOLS | ORACLE_TOOLS_INDIVIDUAL)
 
 
 VERIFIER_PROMPT = """You are a type-recovery reviewer with access to the DECOMPILED C code of a \
@@ -160,6 +201,142 @@ NOT a pointer — type it as the integer the code shows, never `void *`.
 
 Report the final adjudicated `<id>: <C type>` line for EVERY variable you were given. Do not re-call a \
 tool with identical arguments; finish promptly."""
+
+
+# --- ORACLES-IN-THE-LOOP experiment (opt-in, AGENTIC_VERIFIER_ORACLES=1) --------------------------
+# The architecture's central claim is that certification must be applied BY CODE, after the agents,
+# and never shown to them -- because a fact a model has seen becomes indistinguishable from a fact the
+# model produced. This flag tests that claim head-on by inverting it: the reviewer is given the oracle
+# tool and asked to apply the certified facts ITSELF, and the deterministic trailer is switched off so
+# the oracles fire exactly once. The comparison is therefore "same facts, applied by a 12B model" vs
+# "same facts, applied by code".
+#
+# NOT the same as the earlier A/B recorded above: that one left the trailer ON, so the oracles were
+# applied twice and the model could only corrupt what code then re-fixed (version_etc_ar 86.46->70.83).
+# Here the model is the only consumer, which is the configuration the design argument is about.
+# The facts are INJECTED, not fetched. Offering the oracle as a TOOL was tried first and the reviewer
+# never called it -- verified not to be a wiring bug (registry, MCP publication, allowlist and a live
+# MCP invocation all check out; the roster printed the tool and a direct call returned certifications).
+# It is the fifth instance of this model declining a tool it was explicitly instructed to use, matching
+# the tool-selection audit's finding that `xrefs_to`/`read_values`/`compute` were chosen 0 times in
+# 1049 calls. Appending the tool instructions also REDUCED its tool use (decompile x1 + value_usage x3
+# -> decompile x1 only). Injection removes tool selection from the experiment so that the only variable
+# left is the one under test: can the model APPLY certified facts as well as code applies them?
+_ORACLE_SUFFIX = """
+
+CERTIFIED FACTS for this function — deterministic, re-derived from the binary and public ABI \
+knowledge. These are NOT guesses and they outrank your own reading of the decompilation:
+{facts}
+
+How to apply each kind:
+  - EXACT — replace your type for that id, unconditionally.
+  - FLOOR — asserts only "this id holds a pointer", pointee unknown. Use it when your type is NOT a \
+pointer; KEEP your own more specific pointer when it already is one (never overwrite `char *` with \
+`void *`).
+  - SHAPE — a field layout with no source-level name. Use it unless you already have a NAMED pointee.
+Ignore any fact whose type is wider than that id's declared byte size. For every id not listed above, \
+use your own decompilation-based judgement."""
+
+
+# Tool-mode hint (used with AGENTIC_VERIFIER_FORCE_TURNS): the reviewer picks the tool itself.
+_ORACLE_TOOL_BLURB = {
+    # Peer descriptions: each names the EVIDENCE it reads, none claims to subsume the others.
+    # The combined oracle previously advertised itself as "runs all of the above at once", which made
+    # the other four unselectable in practice -- the model called it and stopped every time.
+    "callee_signature": "a parameter handed to a libc function whose ABI fixes that argument's type "
+                        "— use when the function calls libc",
+    "decompiler_pointer": "the decompiler's own recovered pointer declarations — use when you suspect "
+                          "a pointer but the assembly does not settle it",
+    "spilled_param": "the prologue store that copies an argument register into a stack slot — use when "
+                     "stack locals mirror the parameters",
+    "interprocedural_param_usage": "a parameter forwarded into another local function until it reaches "
+                                   "a fixed-type library position — use when a parameter is passed on",
+    "static_type_oracles": "all four at once — use when several kinds of evidence are present, or you "
+                           "have no specific hypothesis about where a type would come from",
+}
+
+
+def _oracle_tool_hint(oid: str, vaddr: str, roster) -> str:
+    """Describe ONLY the oracle tools this reviewer actually has.
+
+    Built from the roster rather than hard-coded because naming a tool in the prompt is itself a way
+    of calling it: the model will copy a call out of the instructions even when that tool was filtered
+    out of the request, and langgraph's executor runs it anyway. A hard-coded list therefore silently
+    defeats any roster-level experiment -- what looked like the reviewer SELECTING the combined oracle
+    was it reciting the one example the prompt spelled out."""
+    have = [t for t in ("callee_signature", "decompiler_pointer", "spilled_param",
+                        "interprocedural_param_usage", "static_type_oracles") if t in roster]
+    if not have:
+        return ""
+    lines = "\n".join(f"  {i}. `{t}(oid=\"{oid}\", addr=\"{vaddr}\", variables=...)` — "
+                      f"{_ORACLE_TOOL_BLURB[t]}." for i, t in enumerate(have, 1))
+    return f"""
+
+You also have DETERMINISTIC ORACLES. They read the binary directly and return CERTIFIED facts — \
+derived, not guessed — as [{{{{vid, ctype, floor, oracle}}}}]. Each takes \
+`(oid="{oid}", addr="{vaddr}", variables=<the variable list you were given, verbatim>)`:
+{lines}
+Consult the ones whose EVIDENCE matches what you can see in this function — several may apply, and \
+each certifies entities the others miss, so calling more than one is normal. They are deterministic \
+and cheap; the only cost of consulting one that does not apply is that it abstains.
+
+Apply what they return as authoritative: a fact with `floor: false` replaces your type for that id; a \
+fact with `floor: true` asserts only "this is a pointer", so use it when your type is NOT a pointer \
+but keep your own more specific pointer when it already is one; ignore any fact wider than the id's \
+declared byte size."""
+
+
+
+def _force_turns() -> int:
+    """Turns for which the reviewer must call SOME tool (0 = off). See `_require_tool_turns`."""
+    try:
+        return max(0, int(os.environ.get("AGENTIC_VERIFIER_FORCE_TURNS", "0")))
+    except ValueError:
+        return 0
+
+
+def _force_oracle() -> bool:
+    """Pin the reviewer's first tool call to the oracle (AGENTIC_VERIFIER_FORCE_ORACLE=1)."""
+    return str(os.environ.get("AGENTIC_VERIFIER_FORCE_ORACLE", "")).strip().lower() in ("1", "true", "yes")
+
+
+def _oracle_brief(oid: str, question: str, opts: dict) -> str:
+    """The certified facts, rendered for injection into the reviewer's prompt."""
+    try:
+        facts = _collect_oracle_facts(oid, question, opts)
+    except Exception as e:  # noqa: BLE001
+        print(f"[verifier-oracles] skipped — {str(e)[:120]}")
+        return ""
+    if not facts:
+        return ""
+    kind = {"exact": "EXACT", "floor": "FLOOR", "shape": "SHAPE"}
+    lines = [f"  {vid}: {ctype}   [{kind.get(mode, mode)} — {oracle}]"
+             for vid, (ctype, oracle, mode) in sorted(facts.items(), key=lambda kv: kv[0])]
+    print(f"[verifier-oracles] injected {len(lines)} certified facts into the reviewer prompt")
+    return _ORACLE_SUFFIX.format(facts="\n".join(lines))
+
+
+def _verifier_oracles() -> bool:
+    """Is the reviewer given the oracles as TOOLS? Default ON -- this is the shipped architecture.
+
+    The reviewer selects the oracle whose evidence fits the function it is looking at, reads the facts,
+    and adjudicates them against the decompilation itself. Set AGENTIC_VERIFIER_ORACLES=0 to withhold
+    them, which is the ablation that isolates what the oracles contribute."""
+    return str(os.environ.get("AGENTIC_VERIFIER_ORACLES", "1")).strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _no_certify() -> bool:
+    """Is the code-applied certification trailer suppressed? Default ON (i.e. no trailer).
+
+    In the shipped architecture the oracles are applied by the REVIEWER, which reads their claims as
+    tool results and decides. `_certified_trailer` -- with its first-claim-wins precedence and the five
+    claim modes -- is therefore not on the default path; it is retained, and reachable with
+    AGENTIC_NO_CERTIFY=0, as the alternative-architecture ablation. Note what still runs
+    unconditionally either way: `_rescue_undefined` and `_coerce_sizes`, plus each oracle's own
+    physical-realizability guard, so the deterministic layer is reduced but not removed."""
+    return str(os.environ.get("AGENTIC_NO_CERTIFY", "1")).strip().lower() \
+        not in ("0", "false", "no", "off")
 
 
 def _verifier_prompt() -> str:
@@ -272,6 +449,132 @@ def _salvage_result(result):
     return result
 
 
+# A tool call the model serialized as PROSE, in the bare brace form: `call:task{description:...}`.
+# `_GEMMA_TC_RE` cannot see this -- it requires <tool_call> delimiters AND python parenthesis syntax,
+# and `_strip_channel` has already deleted the pipe-wrapped delimiters by the time it runs.
+_BARE_TC_RE = re.compile(r"(?:\A|\n)\s*call:\s*([A-Za-z_]\w*)\s*[{(]")
+
+
+def _text_toolcall_name(msg, offered):
+    """The tool this message MEANT to call but emitted as text, or None.
+
+    When it happens langgraph sees a message with no `tool_calls`, treats it as the FINAL ANSWER, and
+    the graph ends -- so no subagent runs and no variable is ever typed. Measured over n=100 functions:
+    3 functions derailed this way and they held 26% of all variables. Worst case
+    `sha384sum/sha512_process_block`, where the coordinator emitted `call:write_todos{...}` as text on
+    its FIRST turn: 0 agents ran, 0 of 179 variables answered, 0.0% against TRex's 98.6%.
+
+    Deliberately does NOT try to parse the arguments. They are unquoted pseudo-JSON whose string values
+    contain commas and colons (`{description:Recover the precise C types...\\nVariables:\\nV1 ...}`), so
+    any splitting heuristic would silently truncate a delegation prompt. The caller instead re-issues
+    the request with `tool_choice` naming this tool, which makes the SERVER emit a well-formed call.
+
+    `offered` guards against false positives: only a name the request actually offered is treated as an
+    intended call, so prose that happens to contain `call:something{` is left alone."""
+    if getattr(msg, "tool_calls", None):
+        return None
+    text = msg.content if isinstance(msg.content, str) else ""
+    if not text:
+        return None
+    for m in _BARE_TC_RE.finditer(text):
+        if m.group(1) in offered:
+            return m.group(1)
+    return None
+
+
+def _forced_kwargs(kwargs, name):
+    """Same request, but the API must emit a call to exactly `name`."""
+    kw = dict(kwargs)
+    kw["tool_choice"] = {"type": "function", "function": {"name": name}}
+    return kw
+
+
+_ORACLE_TOOL = "static_type_oracles"
+
+
+def _tool_names(kwargs) -> set:
+    """Names of the tools in an outgoing request, tolerant of both shapes langchain emits."""
+    return {n for n in (_name_of(t) for t in (kwargs.get("tools") or [])) if n}
+
+
+def _restrict_tools(kwargs, allow):
+    """Drop every tool the subagent was not designed to have from the OUTGOING request.
+
+    deepagents prepends a fixed middleware stack to every subagent (`TodoListMiddleware`,
+    `FilesystemMiddleware`, ...) and there is no spec flag to disable it -- `spec["middleware"]` only
+    appends. The result is that a subagent we configured with 3 tools was actually being offered 10:
+    `edit_file, glob, grep, ls, read_file, write_file, write_todos` on top of ours. Every
+    tool-selection measurement in this project was taken under that confound, including the audit
+    that concluded this model "cannot select tools" -- on a 2-tool roster it picks the oracle
+    unprompted, with no tool_choice at all.
+
+    Filtering here rather than in middleware keeps it independent of the framework's internals: this
+    is the last point before the request leaves for the server."""
+    tools = kwargs.get("tools")
+    if not tools:
+        return kwargs
+    keep = [t for t in tools if _name_of(t) in allow]
+    if not keep or len(keep) == len(tools):
+        return kwargs
+    kwargs = dict(kwargs)
+    kwargs["tools"] = keep
+    return kwargs
+
+
+def _name_of(t):
+    if isinstance(t, dict):
+        return ((t.get("function") or {}).get("name")) or t.get("name")
+    return getattr(t, "name", None)
+
+
+def _force_oracle_call(messages, kwargs):
+    """Pin the reviewer's tool choice to the oracle until it has actually called it once.
+
+    `tool_choice="required"` was not enough: compelled to act, the model spent both forced turns on
+    `decompile` and `value_usage` -- the tools it already favours -- and never reached the oracle
+    (6 experiments, same outcome; not a wiring bug, the tool is published, allowlisted and invocable).
+    Naming the function in `tool_choice` removes the choice: the API must emit a call to exactly this
+    tool. The pin releases as soon as one call has been made, so the rest of the conversation is the
+    model's own -- it reads the certified facts, then decompiles and reasons as usual."""
+    names = _tool_names(kwargs)
+    if _ORACLE_TOOL not in names:
+        print(f"[force-oracle] NOT pinning: oracle absent from request tools={sorted(names)}")
+        return messages, kwargs
+    already = any(
+        (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)) == _ORACLE_TOOL
+        for m in messages
+        for tc in (getattr(m, "tool_calls", None) or []))
+    if already:
+        return messages, kwargs
+    kwargs = dict(kwargs)
+    kwargs["tool_choice"] = {"type": "function", "function": {"name": _ORACLE_TOOL}}
+    print(f"[force-oracle] pinned -> static_type_oracles; request carries {len(names)} tools: {sorted(names)}")
+    return messages, kwargs
+
+
+def _require_tool_turns(messages, kwargs, n):
+    """Require a tool call for a conversation's first `n` turns (`tool_choice="required"`).
+
+    This does NOT choose the tool -- the model still picks from its roster, so what it selects is a
+    function of the context it is in. The requirement only removes the option of answering without
+    looking, which is the actual observed failure: the reviewer answers after a single `decompile`
+    and never reaches for anything else, so a tool it was explicitly instructed to call went unused
+    in 5 separate experiments (verified NOT to be a wiring bug -- registry, MCP publication, agent
+    allowlist and a live MCP invocation all check out).
+
+    Spanning two turns is deliberate. Turn 1 is habitually `decompile`; forcing only turn 1 would
+    change nothing. Turn 2 puts the model in a state where it has already read the C code and must
+    still act, which is the point at which consulting the certified oracles is the sensible move."""
+    if not kwargs.get("tools") or n <= 0:
+        return messages, kwargs
+    turns = sum(1 for m in messages
+                if getattr(m, "type", None) == "ai" and getattr(m, "tool_calls", None))
+    if turns < n:
+        kwargs = dict(kwargs)
+        kwargs["tool_choice"] = "required"
+    return messages, kwargs
+
+
 def _cap_tool_loop(messages, kwargs):
     """Per-conversation ReAct loop breaker. deepagents runs every subagent with a hardcoded
     recursion_limit of 9_999 (graph.py) — effectively unbounded — and this small model can spin on the
@@ -312,26 +615,135 @@ def _make_salvaging_class():
     from langchain_openai import ChatOpenAI
 
     class SalvagingChatOpenAI(ChatOpenAI):
-        """ChatOpenAI that (1) bounds each conversation's tool-call loop (see `_cap_tool_loop`) and
-        (2) converts gemma's raw-text tool calls + strips channel markup (see `_salvage_result`)."""
+        """ChatOpenAI that (1) bounds each conversation's tool-call loop (see `_cap_tool_loop`),
+        (2) converts gemma's raw-text tool calls + strips channel markup (see `_salvage_result`), and
+        (3) re-issues a turn whose tool call was emitted as PROSE (see `_text_toolcall_name`), which
+        otherwise silently ends the graph with no work done."""
+
+        def _narrated_tool(self, res, kwargs):
+            """The tool this turn narrated instead of calling, or None. See `_text_toolcall_name`."""
+            offered = _tool_names(kwargs)
+            if not offered or kwargs.get("tool_choice"):     # already pinned: nothing to disambiguate
+                return None
+            gens = getattr(res, "generations", None) or []
+            if not gens:
+                return None
+            name = _text_toolcall_name(gens[0].message, offered)
+            if name:
+                print(f"[text-toolcall] turn narrated `call:{name}{{...}}` instead of calling it — "
+                      f"re-issuing with tool_choice={name}")
+            return name
+
+        @staticmethod
+        def _keep_better(res, res2):
+            """Use the forced retry only if it actually produced a structured call, so this can add
+            work but never remove an answer."""
+            g2 = getattr(res2, "generations", None) or []
+            if g2 and getattr(g2[0].message, "tool_calls", None):
+                return res2
+            print("[text-toolcall] retry produced no structured call — keeping the original turn")
+            return res
 
         def _generate(self, messages, stop=None, run_manager=None, **kwargs):
             messages, kwargs = _cap_tool_loop(messages, kwargs)
-            return _salvage_result(super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs))
+            res = _salvage_result(super()._generate(messages, stop=stop, run_manager=run_manager,
+                                                   **kwargs))
+            name = self._narrated_tool(res, kwargs)
+            if not name:
+                return res
+            try:
+                res2 = _salvage_result(super()._generate(
+                    messages, stop=stop, run_manager=run_manager, **_forced_kwargs(kwargs, name)))
+            except Exception as e:  # noqa: BLE001  a failed repair must not fail the turn
+                print(f"[text-toolcall] retry failed — {str(e)[:100]}")
+                return res
+            return self._keep_better(res, res2)
 
         async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
             messages, kwargs = _cap_tool_loop(messages, kwargs)
-            return _salvage_result(await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
+            res = _salvage_result(await super()._agenerate(messages, stop=stop,
+                                                          run_manager=run_manager, **kwargs))
+            name = self._narrated_tool(res, kwargs)
+            if not name:
+                return res
+            try:
+                res2 = _salvage_result(await super()._agenerate(
+                    messages, stop=stop, run_manager=run_manager, **_forced_kwargs(kwargs, name)))
+            except Exception as e:  # noqa: BLE001
+                print(f"[text-toolcall] retry failed — {str(e)[:100]}")
+                return res
+            return self._keep_better(res, res2)
 
     return SalvagingChatOpenAI
 
 
-def _model(opts):
+def _scoped_model(opts, allow, label, pin_oracle=False, n_turns=0):
+    """A per-subagent model that enforces `allow` on every outgoing request.
+
+    `SubAgent` accepts a `model`, so each subagent can carry its own roster policy. The COORDINATOR now
+    uses this too, with `allow={"task"}`: it needs nothing else, and leaving it on the unrestricted model
+    handed it ~21 tools including `write_todos`, the tool it narrated as prose instead of calling."""
+    base = _make_salvaging_class()
+    reported = {"done": False}
+
+    class _Scoped(base):                                    # noqa: N801
+        def _shape(self, messages, kwargs):
+            before = _tool_names(kwargs)
+            kwargs = _restrict_tools(kwargs, allow)
+            after = _tool_names(kwargs)
+            if not reported["done"] and before != after:
+                print(f"[roster] {label}: dropped {sorted(before - after)} -> offering {sorted(after)}")
+                reported["done"] = True
+            if pin_oracle:
+                messages, kwargs = _force_oracle_call(messages, kwargs)
+            elif n_turns:
+                messages, kwargs = _require_tool_turns(messages, kwargs, n_turns)
+            return messages, kwargs
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            messages, kwargs = self._shape(messages, kwargs)
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+        async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+            messages, kwargs = self._shape(messages, kwargs)
+            return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    return _model(opts, cls=_Scoped)
+
+
+def _forcing_model(opts, n_turns: int):
+    """A model for ONE subagent that must call a tool on its first `n_turns` turns.
+
+    `SubAgent` accepts a per-subagent `model`, so this applies to the reviewer alone and leaves the
+    coordinator and workers on the shared model -- otherwise forcing the coordinator to call a tool
+    would break its delegate-then-synthesize flow."""
+    base = _make_salvaging_class()
+
+    pin = _force_oracle()
+
+    class _Forcing(base):                                   # noqa: N801
+        def _shape(self, messages, kwargs):
+            if pin:                                         # name the tool -- no choice left
+                return _force_oracle_call(messages, kwargs)
+            return _require_tool_turns(messages, kwargs, n_turns)
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            messages, kwargs = self._shape(messages, kwargs)
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+        async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+            messages, kwargs = self._shape(messages, kwargs)
+            return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    return _model(opts, cls=_Forcing)
+
+
+def _model(opts, cls=None):
     """A salvaging ChatOpenAI bound to the OpenAI-compatible endpoint, greedy + seeded for determinism.
     Passing a pre-initialized model (not an 'openai:' string) keeps us on chat-completions."""
     cfg = C.resolve_config(opts)
     model_id = opts.get("worker_model") or opts.get("model") or cfg["worker_model"]
-    return _make_salvaging_class()(
+    return (cls or _make_salvaging_class())(
         model=model_id,
         base_url=cfg["endpoint"],
         api_key=os.environ.get("OPENAI_API_KEY") or "EMPTY",
@@ -363,7 +775,7 @@ def _mcp_env():
     #   mcp_agentic.py   : AGENTIC_TOOL_LOG, AGENTIC_REPEAT_BREAKER
     #   tools/ghidra.py  : AGENTIC_DISASM_PAGING_HINT
     passthru = {k: os.environ[k] for k in ("AGENTIC_TOOL_LOG", "AGENTIC_REPEAT_BREAKER",
-                                           "AGENTIC_DISASM_PAGING_HINT")
+                                           "AGENTIC_DISASM_PAGING_HINT", "AGENTIC_MASK_IMPORTS")
                 if os.environ.get(k)}
     if not passthru:
         return None
@@ -455,7 +867,11 @@ def _collect_oracle_facts(oid: str, question: str, opts: dict) -> dict:
                     print(f"[size-guard] dropped unsound {name} certification "
                           f"{f['vid']}={f['ctype']!r} on a {sz}-byte slot")
                     continue
-                facts[f["vid"]] = (f["ctype"], name, bool(f.get("floor", False)))
+                # THREE certification modes (see `_certified_trailer`): `exact` overrides
+                # unconditionally, `floor` is a lower bound that defers to any pointer, and `shape`
+                # sits between them -- it carries layout but no source-level name.
+                mode = f.get("mode") or ("floor" if f.get("floor") else "exact")
+                facts[f["vid"]] = (f["ctype"], name, mode)
         except Exception:  # noqa: BLE001
             continue
     return facts
@@ -492,6 +908,97 @@ def _claims_from_messages(messages) -> list:
     return out
 
 
+def _claims_by_agent(messages) -> list:
+    """`[{"agent": "type_worker", "claims": {"V1": "char *", ...}}, ...]` in delegation order.
+
+    Same extraction as `_claims_from_messages`, but each subagent's findings are ATTRIBUTED to the
+    subagent that produced them, by matching the `task` tool call that spawned it to the tool result
+    it returned. Attribution is what makes a per-stage ablation possible: with it, the assembly
+    worker's answer and the decompilation reviewer's revision of that answer can be scored
+    separately, from a stored run and with no model re-run -- so a two-lens ablation becomes exact
+    rather than noise-limited (§ the certification ablation has this property already; the agent
+    stages did not, purely because the intermediate answers were computed and then discarded)."""
+    spawned, briefs = {}, {}                                 # tool_call_id -> subagent type / brief
+    for m in messages or []:
+        for tc in (getattr(m, "tool_calls", None) or []):
+            if (tc.get("name") if isinstance(tc, dict) else None) == "task":
+                args = tc.get("args") or {}
+                spawned[tc.get("id")] = str(args.get("subagent_type") or "?")
+                # The DELEGATION BRIEF the coordinator actually wrote. Recorded because what a
+                # subagent receives is decided by the coordinator at run time, not by the static
+                # prompt: the coordinator is *instructed* to forward the workers' candidate claims to
+                # the reviewer, and whether it does is an empirical question about one LLM following
+                # another LLM's spec. Without this the two-lens ablation cannot say whether the
+                # reviewer was revising candidates or typing the function from scratch.
+                briefs[tc.get("id")] = str(args.get("description") or "")[:4000]
+    out = []
+    for m in messages or []:
+        if getattr(m, "type", None) != "tool":
+            continue
+        txt = m.content if isinstance(m.content, str) else ""
+        d = {}
+        for mm in re.finditer(r"(?mi)^\s*-?\s*(V\d+)\s*[:=]\s*(.+?)\s*$", txt):
+            t = mm.group(2).strip().strip("`").split("(")[0].split(",")[0].strip()
+            if t and len(t) < 60:
+                d[mm.group(1)] = t
+        for jm in re.finditer(r"\{[^{}]*\}", txt):
+            try:
+                o = json.loads(jm.group(0))
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if re.fullmatch(r"V\d+", str(k)) and isinstance(v, str):
+                        d[str(k)] = v.strip()
+        alts = {}                                            # `ALTS V1: void * | long` (AGENTIC_TOPK)
+        for am in re.finditer(r"(?mi)^\s*ALTS?\s+(V\d+)\s*[:=]\s*(.+?)\s*$", txt):
+            cand = [c.strip().strip("`") for c in am.group(2).split("|")]
+            cand = [c for c in cand if c and len(c) < 60]
+            if cand:
+                alts.setdefault(am.group(1), []).extend(cand)
+        if d or alts:
+            _tid = getattr(m, "tool_call_id", None)
+            out.append({"agent": spawned.get(_tid, "?"), "brief": briefs.get(_tid, ""),
+                        "claims": d, "alts": alts})
+    return out
+
+
+def _dump_tool_calls(messages) -> None:
+    """Every tool call the models EMITTED, whether or not it reached the server.
+
+    The MCP-side log only records calls that arrived. A call the model emitted with bad arguments is
+    rejected before that and looks identical to a call never attempted, which is the difference
+    between "the model won't select this tool" and "the model selects it and we drop it"."""
+    if not os.environ.get("AGENTIC_DUMP_TOOLCALLS"):
+        return
+    seen = []
+    for m in messages or []:
+        for tc in (getattr(m, "tool_calls", None) or []):
+            nm = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            seen.append(nm)
+        inv = getattr(m, "invalid_tool_calls", None) or []
+        for tc in inv:
+            nm = (tc.get("name") if isinstance(tc, dict) else None) or "?"
+            err = (tc.get("error") if isinstance(tc, dict) else "") or ""
+            print(f"[toolcalls] INVALID {nm}: {str(err)[:160]}")
+    from collections import Counter
+    print(f"[toolcalls] emitted: {dict(Counter(seen))}")
+
+
+def _log_claims(messages) -> None:
+    """Persist per-subagent claims to AGENTIC_CLAIM_LOG (opt-in). Cheap, and it is the only record
+    of what each stage believed BEFORE the next stage revised it."""
+    path = os.environ.get("AGENTIC_CLAIM_LOG", "").strip()
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump(_claims_by_agent(messages), fh, indent=1)
+    except Exception as e:  # noqa: BLE001  never let logging break a run
+        print(f"[claim-log] skipped — {str(e)[:120]}")
+
+
 def _rescue_undefined(messages, answer: str) -> str:
     """Never let a SPECIFIC type be replaced by an `undefinedN` one.
 
@@ -514,7 +1021,14 @@ def _rescue_undefined(messages, answer: str) -> str:
         m = re.search(rf"(?mi)^\s*-?\s*{re.escape(vid)}\s*[:=]\s*(.+?)\s*$", answer)
         if m:
             cur = m.group(1).strip().strip("`")
-        if cur is None or not _UNDEF_RE.match(cur):
+        # `cur is None` means the entity is ABSENT from the final answer, not that it is specific --
+        # the strongest case for rescue, and it was previously skipped. It happens when the coordinator
+        # never synthesized the entity at all: measured on ginstall/vasnprintf, where the coordinator
+        # emitted a tool call as literal TEXT, stopped after one worker, and answered 23 of 101
+        # variables. The remaining 78 were then default-filled with `undefined` DOWNSTREAM of this
+        # pass, so nothing here ever saw an `undefined` to replace. Absent and `undefined` are the
+        # same non-answer and both must be rescued.
+        if cur is not None and not _UNDEF_RE.match(cur):
             continue                                   # final answer is already specific -> leave it
         for d in claims:                               # earliest specific claim wins
             t = d.get(vid)
@@ -523,9 +1037,17 @@ def _rescue_undefined(messages, answer: str) -> str:
                 break
     if not rescued:
         return answer
+    appended = []
     for vid, t in rescued.items():                     # rewrite BOTH representations consistently
-        answer = re.sub(rf"(?mi)^(\s*-?\s*{re.escape(vid)}\s*[:=]\s*).+?$", lambda mo: mo.group(1) + t, answer)
-        answer = re.sub(rf'("{re.escape(vid)}"\s*:\s*)"[^"]*"', lambda mo: mo.group(1) + json.dumps(t), answer)
+        pat_line = rf"(?mi)^(\s*-?\s*{re.escape(vid)}\s*[:=]\s*).+?$"
+        pat_json = rf'("{re.escape(vid)}"\s*:\s*)"[^"]*"'
+        hit = re.search(pat_line, answer) or re.search(pat_json, answer)
+        answer = re.sub(pat_line, lambda mo: mo.group(1) + t, answer)
+        answer = re.sub(pat_json, lambda mo: mo.group(1) + json.dumps(t), answer)
+        if not hit:
+            appended.append(f"{vid}: {t}")             # absent entirely -> add it, nothing to rewrite
+    if appended:
+        answer = answer.rstrip() + "\n" + "\n".join(appended) + "\n"
     print(f"[undef-rescue] restored specific types over `undefined`: {rescued}")
     return answer
 
@@ -578,18 +1100,34 @@ def _coerce_sizes(question: str, answer: str) -> str:
         if not m:
             continue
         cur = m.group(1).strip()
-        w = _type_width(cur)
-        if w is None or want not in _WIDTH_TYPE:
-            continue
-        # NARROWING ONLY. A type WIDER than the slot is impossible -- a pointer cannot occupy 4 bytes --
-        # so rewriting it to an integer of the declared width is forced, not chosen. The reverse is a
-        # GUESS: `int` on an 8-byte slot may be `long` OR any pointer, and picking the integer family
-        # loses. Measured on comm/readlinebuffer_delim V7 (GT `char *`): coercing int -> long cost
-        # 86.21 -> 79.31, while the three narrowing fixes gained +25.00, +11.91 and +1.75.
-        if w <= want:
-            continue
-        signed_t, unsigned_t = _WIDTH_TYPE[want]
-        new = unsigned_t if cur.lower() in _UNSIGNED else signed_t
+        new = None
+        # AGGREGATE SLOT. A pointer occupies 8 bytes, so a slot WIDER than that cannot hold one --
+        # the slot IS those bytes. A reported `T *` on such a slot means the value is an inline ARRAY
+        # of T, which is exactly how the code uses it: `p[i]` compiles identically for `int *p` and
+        # `int p[6]`, so the pointer/array distinction is invisible in the instruction stream and the
+        # declared size is the only thing that settles it. Observed on date/posix_time_parse V4, GT
+        # `int[6]` in a 24-byte slot, reported `int*` -- scored 1/6, halting at `!AgreeIsCPointer`,
+        # the earliest and most expensive failure in the metric. Forced rather than chosen: the
+        # element type is the model's own pointee and the count is an exact division.
+        if want > 8 and cur.endswith("*"):
+            el = cur[:-1].strip()
+            ew = _type_width(el)
+            if el and ew and want % ew == 0:
+                new = f"{el}[{want // ew}]"
+        if new is None:
+            w = _type_width(cur)
+            if w is None or want not in _WIDTH_TYPE:
+                continue
+            # NARROWING ONLY. A type WIDER than the slot is impossible -- a pointer cannot occupy 4
+            # bytes -- so rewriting it to an integer of the declared width is forced, not chosen. The
+            # reverse is a GUESS: `int` on an 8-byte slot may be `long` OR any pointer, and picking
+            # the integer family loses. Measured on comm/readlinebuffer_delim V7 (GT `char *`):
+            # coercing int -> long cost 86.21 -> 79.31, while the three narrowing fixes gained
+            # +25.00, +11.91 and +1.75.
+            if w <= want:
+                continue
+            signed_t, unsigned_t = _WIDTH_TYPE[want]
+            new = unsigned_t if cur.lower() in _UNSIGNED else signed_t
         fixed[vid] = (cur, new)
         answer = re.sub(rf'(?mi)^(\s*-?\s*{re.escape(vid)}\s*[:=]\s*).+?$',
                         lambda mo: mo.group(1) + new, answer)
@@ -621,8 +1159,10 @@ def _certified_trailer(oid: str, question: str, answer: str, opts: dict) -> str:
         _m = re.search(rf"(?mi)^\s*-?\s*{re.escape(vid)}\s*:\s*(.+?)\s*$", answer)
         return _m.group(1) if _m else ""
 
+    from agentic.tasks.type_recovery import is_shapeless_pointer as _shapeless
+
     lines = []
-    for vid, (ctype, _c, _floor) in sorted(oracle_facts.items(), key=lambda kv: kv[0]):
+    for vid, (ctype, _c, _mode) in sorted(oracle_facts.items(), key=lambda kv: kv[0]):
         # A FLOOR is a lower bound — "this is a pointer", pointee unknown — not an exact type, so it
         # defers whenever the model already answered with a pointer.
         #
@@ -638,8 +1178,33 @@ def _certified_trailer(oid: str, question: str, answer: str, opts: dict) -> str:
         # certified `void **`; the depth rule trusted that and overrode the model's correctly-shaped
         # `struct *`. For a pointee-unknown fact the sound content is only ">= pointer", never the
         # exact level — so any model pointer satisfies it.
-        if _floor and "*" in _synth_ty(vid):
+        if _mode == "floor" and "*" in _synth_ty(vid):
             continue
+        # A `shape` fact recovers field LAYOUT, never a source-level struct name. It is strictly more
+        # informative than a pointee-unknown answer (`void *`, or the tagless `struct *` the model
+        # emits when it sees an aggregate it cannot describe), so it replaces those -- but a named
+        # pointee the agents produced is a claim this oracle cannot make, so it defers to one.
+        if _mode == "shape":
+            cur = _synth_ty(vid)
+            if "*" in cur and not _shapeless(cur):
+                continue
+        # A SCALAR fact is the mirror of a floor and the only NEGATIVE claim any oracle makes: its
+        # content is "not a pointer", and the integer it carries is the callee's declared type, not a
+        # considered choice between `long`/`size_t`/`int`. So it fires only to demote a pointer answer
+        # and otherwise defers -- the model's own integer is at least as good, and the scoring rule
+        # that matters (`AgreeIsCPointer`) has already been satisfied by any integer at all.
+        if _mode == "scalar" and "*" not in _synth_ty(vid):
+            continue
+        # A SIGN fact carries one bit: "this integer is unsigned". It is orthogonal to the class and the
+        # width, so it applies only to an answer that is already a non-pointer, non-array scalar and
+        # abstains otherwise -- a pointer answer is a claim this oracle cannot speak to. Measured need:
+        # on sha512_process_block 171 of 179 variables had the class, width and pointer-ness all correct
+        # and differed from ground truth by the sign alone, scoring 5/6 on the graded metric but 0 on
+        # exact match.
+        if _mode == "sign":
+            _cur = _synth_ty(vid)
+            if "*" in _cur or "[" in _cur or not _cur.strip():
+                continue
         lines.append(f"- {vid}: {ctype}")
     if lines:
         answer = (answer.rstrip()
@@ -673,6 +1238,22 @@ def _root_run_span_cm(oid: str, vaddr: str, name: str):
 def _root_run_span(enabled: bool, oid: str, vaddr: str, name: str = "type_recovery"):
     """Root-span context manager when tracing is on, else a no-op context."""
     return _root_run_span_cm(oid, vaddr, name) if enabled else contextlib.nullcontext()
+
+
+
+def _roster(all_tools, wanted, who):
+    """Filter `all_tools` to `wanted`, and report what was actually granted vs asked for.
+
+    An allowlist naming a tool the server never published yields a SILENTLY smaller roster: the agent
+    simply never has the capability and its absence looks like the model declining to use it. That
+    failure has occurred repeatedly here (tool registry / MCP publication / agent allowlist are three
+    separate gates), so the mismatch is printed rather than inferred."""
+    got = [t for t in all_tools if getattr(t, "name", "") in wanted]
+    missing = sorted(set(wanted) - {getattr(t, "name", "") for t in got})
+    if missing:
+        print(f"[roster] {who}: NOT PUBLISHED BY THE SERVER -> {missing}")
+    print(f"[roster] {who}: {sorted(getattr(t, 'name', '?') for t in got)}")
+    return got
 
 
 async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
@@ -720,7 +1301,16 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     _m = re.search(r"(0x[0-9a-fA-F]+)", question)
     vaddr = _m.group(1) if _m else ""
 
-    model = _model(opts)
+    # The coordinator is offered ONLY `task`. deepagents injects seven framework tools into every
+    # agent (`write_todos, edit_file, glob, grep, ls, read_file, write_file`) and `spec["middleware"]`
+    # cannot remove them, so the coordinator was being handed ~21 tools for a job that needs exactly
+    # one. `write_todos` in particular is pure bookkeeping here AND was the specific tool the model
+    # serialized as prose (`call:write_todos{...}`) on its FIRST turn -- which ended the graph before
+    # any subagent ran and returned `undefined` for all 179 variables of sha512_process_block. A tool
+    # that is not offered cannot be narrated: `_text_toolcall_name` only matches names in the offered
+    # set, and the repair-by-retry it triggers proved unreliable (forced `tool_choice` still returned
+    # no structured call in 4 of 4 runs). Removing the tool removes the failure mode outright.
+    model = _scoped_model(opts, {"task"}, "coordinator")
     client = MultiServerMCPClient({"oxide": {
         "command": sys.executable,
         "args": [_mcp_server_path(opts), f"--oxidepath={_oxidepath(opts)}"],
@@ -744,16 +1334,18 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
         # Deterministic pre-gathered evidence (opt-in). Appended to the worker's system prompt so the
         # facts are present WITHOUT the worker having to decide to go and get them — it never does.
         _evidence = _collect_evidence(oid, question, opts)
-        _worker_sys = TYPE_WORKER_PROMPT.format(oid=oid, vaddr=vaddr)
+        _worker_sys = _with_topk(TYPE_WORKER_PROMPT.format(oid=oid, vaddr=vaddr))
         if _evidence:
             _worker_sys = f"{_worker_sys}\n\n{_evidence}"
             print(f"[evidence] injected {len(_evidence)} chars into the type_worker prompt")
+        _worker_model = _scoped_model(opts, WORKER_TOOLS, "type_worker")
         type_worker = {
             "name": "type_worker",
             "description": "Recovers the precise C type of a group of variables by decompiling and "
                            "analysing the function at the given vaddr, and consulting the oracle tools.",
             "system_prompt": _worker_sys,
             "tools": tools,
+            "model": _worker_model,
         }
         # A genuine verifier AGENT: re-types the workers' candidate claims against the DECOMPILATION —
         # the evidence the assembly-only worker never saw. The ORACLE-CERTIFIED trailer still runs
@@ -763,13 +1355,22 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
         # schema the COORDINATOR model reads, so editing it perturbs a prompt on a model measured to be
         # prompt-fragile (see the reverted subagent-tool-stripping A/B: -21.8 on hash_do_for_each).
         # Fix it only together with an A/B.
+        # Resolve the roster FIRST: it decides both what is advertised and what the prompt describes.
+        _vtools = _VERIFIER_TOOLS_ORACLE if _verifier_oracles() else VERIFIER_TOOLS
+        _ov = os.environ.get("AGENTIC_VERIFIER_TOOLS", "").strip()
+        if _ov:                                            # explicit roster, for roster-size A/Bs
+            _vtools = {t.strip() for t in _ov.split(",") if t.strip()}
         verifier = {
             "name": "verifier",
             "description": "Adjudicates candidate variable-type claims against the deterministic "
                            "oracles and verify_finding; corrects claims that conflict with certified types.",
-            "system_prompt": _verifier_prompt().format(oid=oid, vaddr=vaddr),
-            "tools": [t for t in all_tools if getattr(t, "name", "") in VERIFIER_TOOLS],
+            "system_prompt": _with_topk(_verifier_prompt().format(oid=oid, vaddr=vaddr)
+                                       + (_oracle_tool_hint(oid, vaddr, _vtools)
+                                          if _verifier_oracles() else "")),
+            "tools": _roster(all_tools, _vtools, "verifier"),
         }
+        verifier["model"] = _scoped_model(opts, _vtools, "verifier",
+                                          pin_oracle=_force_oracle(), n_turns=_force_turns())
         # Neuter the auto-added general-purpose subagent. deepagents injects a `general-purpose`
         # subagent that has ALL of the main agent's tools (every MCP analysis tool + the built-in
         # filesystem tools ls/read_file/write_file/glob/grep/execute). Tracing showed the coordinator
@@ -824,14 +1425,17 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     answer = _strip_channel(answer)
     # Undo verifier degeneration (specific type -> `undefinedN`) BEFORE the oracle trailer, so the
     # oracles adjudicate against a concrete answer rather than a contentless one.
+    _msgs = result.get("messages") if isinstance(result, dict) else None
+    _dump_tool_calls(_msgs)
+    _log_claims(_msgs)                                       # per-stage record, before any revision
     try:
-        answer = _rescue_undefined(result.get("messages") if isinstance(result, dict) else None, answer)
+        answer = _rescue_undefined(_msgs, answer)
     except Exception as e:  # noqa: BLE001  never let a post-pass break the run
         print(f"[undef-rescue] skipped — {str(e)[:120]}")
     # The deterministic oracle trailer gets its OWN root span so its (main-process) decompile/stack_var
     # oracle calls collapse into one `oracle_certification` tree instead of ~60 orphan traces.
     with _root_run_span(_phoenix_on, oid, vaddr, name="oracle_certification"):
-        final = _certified_trailer(oid, question, answer, opts)
+        final = answer if _no_certify() else _certified_trailer(oid, question, answer, opts)
     # Last: enforce the one constraint the question states outright. Runs AFTER certification so an
     # oracle fact is coerced too if it somehow contradicts the declared size.
     final = _coerce_sizes(question, final)
@@ -862,7 +1466,12 @@ def _emit_flow_diagram(recorder, oid: str, vaddr: str, question: str, answer: st
         consulted = [x.strip() for x in str(_which).split(",") if x.strip()]
         variables = _FR.input_vars_from_question(question)
         meta = {"vaddr": vaddr, "nvars": len(variables) or len(set(re.findall(r"\bV\d+\b", question))),
-                "oracles_consulted": consulted, "variables": variables}
+                "oracles_consulted": consulted, "variables": variables,
+                # Whether the deterministic trailer actually APPLIED these facts. The recorder
+                # recomputes them purely to display, so without this the diagram drew a
+                # "certification" stage on runs where certification was switched off and the reviewer
+                # consulted the oracles itself -- showing two appliers where there was one.
+                "certified_by_code": not _no_certify()}
         out_dir = C.cfg_get("flow_dir") or opts.get("flow_dir") or os.getcwd()
         base = os.path.join(out_dir, f"agentic_flow_{vaddr.replace('0x', '')}")
         _LAST_FLOW.clear()
@@ -895,12 +1504,13 @@ def _render_flow(scoring=None) -> None:
           + ("" if png_path else "  (npx @mermaid-js/mermaid-cli for PNGs)"))
 
 
-def write_flow_scoring(ground_truth: dict, score: float) -> None:
+def write_flow_scoring(ground_truth: dict, score: float, per_var: dict = None) -> None:
     """Public hook the HARNESS calls AFTER scoring: re-renders the last run's diagrams with the Output node
     showing predicted-vs-ground-truth and the mean score. No-op if no flow run was recorded."""
     if _LAST_FLOW:
         try:
-            _render_flow(scoring={"ground_truth": ground_truth or {}, "score": score})
+            _render_flow(scoring={"ground_truth": ground_truth or {}, "score": score,
+                                  "per_var": per_var or {}})
         except Exception as e:  # noqa: BLE001
             print(f"[flow] scoring overlay skipped — {str(e)[:120]}")
 

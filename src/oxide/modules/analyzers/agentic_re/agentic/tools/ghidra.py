@@ -479,7 +479,8 @@ def register_usage(ctx, addr: str, reg: str) -> dict:
 
     out = {"register": r, "arg_position": argpos,
            "home_slot": None, "accesses": [], "dereferenced": False,
-           "access_offsets": [], "address_arith": False, "passed_to": [], "evidence": []}
+           "access_offsets": [], "address_arith": False, "passed_to": [], "evidence": [],
+           "stride_arith": False, "strides": []}
     if home is None:
         out["summary"] = (f"{r} is never spilled to a stack slot in the prologue — it is consumed "
                           f"directly in registers (or moved via another register, e.g. "
@@ -592,12 +593,40 @@ def register_usage(ctx, addr: str, reg: str) -> dict:
         t = insns[str(k)] if str(k) in insns else insns.get(k, "")
         if homepat in t:
             out["accesses"].append(f"{hex(va(k))}: {t}")
+            # STRIDE ARITHMETIC on the home slot itself. A dereference is tracked through registers,
+            # so a value that is only ever ADVANCED in place -- `add qword ptr [rbp-0x58],0x5` -- was
+            # previously invisible and the tool then asserted "consistent with a scalar". That is a
+            # confident wrong answer on a walked buffer: measured on basenc/z85_encode param_3, GT
+            # `char *`, where the output pointer advances by the 5-byte encoding stride each iteration
+            # and every layer downstream (worker, verifier, decompiler_pointer) inherited `long`.
+            # An 8-byte slot seeded from a parameter and incremented by a constant is characteristic
+            # of pointer walking; report it as EVIDENCE, not as proof -- unlike a dereference it does
+            # not establish that the value is an address, only that it is being stepped like one.
+            sa = _SLOT_ARITH.search(t)
+            # A stride of +-1 is a LOOP COUNTER, not a pointer walk. Measured over 10 binaries: every
+            # scalar false positive (`mp_size_t`, `size_t` -- `n--`, `count--`) strides by exactly 1,
+            # while every genuine pointer strides by its element size (+-0x8 for `mp_ptr`, +0x4 for
+            # `wchar_t *`, +0x5 for z85's packed output). Requiring |stride| >= 2 took precision from
+            # ~0.45 to 1.00 on that sample. A `char *` walked one byte at a time is the case this
+            # gives up, and it is exactly the case the DEREFERENCE signal already covers -- every such
+            # firing in the sample also had `dereferenced: true`.
+            if (sa and sa.group(3) == homepat and sa.group(2) == "qword"
+                    and abs(int(sa.group(4), 0)) >= 2):
+                out["stride_arith"] = True
+                st = f"{'-' if sa.group(1) == 'sub' else '+'}{sa.group(4)}"
+                if st not in out["strides"]:
+                    out["strides"].append(st)
+                ev.append(f"{hex(va(k))}: {t}")
     out["evidence"] = ev
     out["access_offsets"] = sorted(offs)
     out["evidence"] = out["evidence"][:8]
     bits = []
     if out["dereferenced"]:
         bits.append(f"dereferenced at offset(s) {out['access_offsets']} -> it holds an ADDRESS")
+    if out.get("stride_arith"):
+        bits.append(f"advanced in place by a constant stride ({', '.join(out['strides'])}) on its "
+                    f"8-byte slot — characteristic of a POINTER being walked through a buffer "
+                    f"(evidence, not proof: no dereference was observed through a tracked register)")
     if out["address_arith"]:
         bits.append("used as a base in address arithmetic")
     if out["passed_to"]:
@@ -617,6 +646,176 @@ def register_usage(ctx, addr: str, reg: str) -> dict:
             bits.append("no dereference or call flow observed; the slot is only read/written whole, "
                         "which is consistent with a scalar")
     out["summary"] = "; ".join(bits)
+    return out
+
+
+# --- struct-shape analysis (deterministic; oracle-only, NOT published to any agent) ---------------
+# Ghidra, Binary Ninja and Hex-Rays all render a linked-list node parameter as a pointer to a
+# PRIMITIVE (`undefined4 *`, `int32_t *`, `unsigned int *`) because they never assemble the observed
+# field accesses into an aggregate. The accesses themselves are right there in the instruction
+# stream: a load at `[p + N]` of a given operand width IS a field of width N, and a field whose
+# loaded value flows back into p's own home slot IS a self-reference (the `next` of a linked list).
+# This reports those observations only -- offsets, widths, self-references -- and names no C type;
+# the type-recovery task renders them (keeping this layer task-agnostic).
+# `add qword ptr [rbp + -0x58],0x5` -- arithmetic performed ON a stack slot rather than through
+# a register. Used by `register_usage` to detect a pointer that is stepped but never
+# dereferenced through a register it tracks.
+_SLOT_ARITH = re.compile(
+    r"\b(add|sub)\s+(qword|dword|word|byte)\s+ptr\s*(\[rbp \+ -?0x[0-9a-fA-F]+\])\s*,\s*"
+    r"(0x[0-9a-fA-F]+|\d+)\b")
+
+_SIZE_KW = {"byte": 1, "word": 2, "dword": 4, "qword": 8}
+_LOAD_FIELD = re.compile(
+    r"mov\s+(\w+)\s*,\s*(byte|word|dword|qword)\s*ptr\s*\[(\w+)(?:\s*\+\s*(0x[0-9a-fA-F]+))?\]")
+_STORE_SLOT = re.compile(
+    r"mov\s+(?:byte|word|dword|qword)?\s*ptr\s*\[rbp \+ (-?0x[0-9a-fA-F]+)\]\s*,\s*(\w+)")
+
+
+@tool(group="ghidra", params={"addr": {"type": "string"}, "reg": {"type": "string"}},
+      required=["addr", "reg"],
+      desc="Observed aggregate shape behind an argument register: field offsets, widths, "
+           "self-references, and stack slots aliasing a field.")
+def struct_shape(ctx, addr: str, reg: str) -> dict:
+    """Field offsets/widths reached through an argument register, plus self-reference detection."""
+    name = ctx.resolve_func(addr)
+    info = ctx._fext().get(name)
+    if not isinstance(info, dict) or not info.get("instructions"):
+        return {"error": f"no function at {addr}"}
+    r = str(reg or "").strip().lower()
+    if r.startswith("param_"):
+        try:
+            r = _ARGREGS[int(r.split("_")[1]) - 1]
+        except (ValueError, IndexError):
+            return {"error": f"could not map {reg!r} to an argument register"}
+    elif r.startswith("0x") or r.isdigit():
+        try:
+            r = _REGOFF_TO_REG[int(r, 16)]
+        except (ValueError, KeyError):
+            return {"error": f"register offset {reg!r} is not a SysV argument register"}
+    r = _ALIAS_TO_BASE.get(r, r)
+    if r not in _ARGREGS:
+        return {"error": f"{reg!r} is not an x86-64 SysV argument register"}
+
+    insns = info["instructions"]
+    keys = sorted(insns, key=lambda o: int(o))
+    delta, has_rbp = _frame_delta(insns, keys)
+    alias = _REG_ALIASES[r]
+    txt = lambda k: insns[str(k)] if str(k) in insns else insns.get(k, "")
+
+    home = None                                        # the prologue spill slot for this parameter
+    for k in keys[:24]:
+        m = re.search(r"mov\s+(?:qword|dword|word|byte)?\s*ptr\s*\[rbp \+ (-?0x[0-9a-fA-F]+)\]\s*,\s*(\w+)",
+                      txt(k))
+        if m and m.group(2).lower() in alias:
+            home = int(m.group(1), 16)
+            break
+    out = {"register": r, "arg_position": _ARGREGS.index(r) + 1, "home_slot_qoff": None,
+           "fields": {}, "self_ref_offsets": [], "alias_slots": {}, "is_aggregate": False,
+           "evidence": []}
+    if home is None:
+        out["summary"] = f"{r} is never spilled to a stack slot; shape not followable here"
+        return out
+    out["home_slot_qoff"] = hex(home - delta) if has_rbp else hex(home)
+
+    # Same forward MAY-analysis over the CFG as `register_usage`: which registers may hold the
+    # parameter. Union at joins, worklist to a fixed point, every block seeded so none is skipped.
+    cfgs = ctx.retrieve_oid("mcp_control_flow_graph") or {}
+    func = next((c for c in cfgs.values() if isinstance(c, dict) and c.get("name") == name), None)
+    blocks, succ = {}, {}
+    if isinstance(func, dict) and func.get("nodes"):
+        for boff, ins in func["nodes"].items():
+            blocks[int(boff)] = sorted((int(o) for o in ins), key=int)
+        for k, v in (func.get("edges") or {}).items():
+            try:
+                succ[int(k)] = [int(d) for d in v]
+            except (ValueError, TypeError):
+                pass
+    if not blocks:
+        blocks, succ = {int(keys[0]): [int(k) for k in keys]}, {}
+    homepat = f"[rbp + {'-' if home < 0 else ''}0x{abs(home):x}]"
+
+    def step(state, t):
+        st = set(state)
+        if re.search(rf"mov\s+(\w+)\s*,\s*(?:qword|dword|word|byte)?\s*ptr\s*{re.escape(homepat)}", t):
+            m = re.search(rf"mov\s+(\w+)\s*,", t)
+            st.add(_ALIAS_TO_BASE.get(m.group(1).lower(), m.group(1).lower()))
+            return st
+        mv = re.match(r"\s*mov\s+(\w+)\s*,\s*(\w+)\s*$", t)
+        if mv:
+            src = _ALIAS_TO_BASE.get(mv.group(2).lower(), mv.group(2).lower())
+            dst = _ALIAS_TO_BASE.get(mv.group(1).lower(), mv.group(1).lower())
+            if src in st:
+                st.add(dst)
+                return st
+        w = re.match(r"\s*(?:mov|lea|add|sub|xor|and|or|shl|shr|movzx|movsx|imul|pop)\s+(\w+)\s*,?", t)
+        if w:
+            st.discard(_ALIAS_TO_BASE.get(w.group(1).lower(), w.group(1).lower()))
+        return st
+
+    IN = {b: set() for b in blocks}
+    work, guard = sorted(blocks, reverse=True), 0
+    while work and guard < 500:
+        guard += 1
+        b = work.pop()
+        st = set(IN[b])
+        for k in blocks[b]:
+            st = step(st, txt(k))
+        for d in succ.get(b, []):
+            if d in IN and not st <= IN[d]:
+                IN[d] |= st
+                work.append(d)
+
+    # Replay at the fixed point, recording field accesses and where their values are stored.
+    fields, selfrefs, aliases_raw = {}, set(), {}
+    for b in sorted(blocks):
+        st, fv = set(IN[b]), {}                        # fv: register -> field offset it now holds
+        for k in blocks[b]:
+            t = txt(k)
+            lm = _LOAD_FIELD.search(t)
+            if lm and _ALIAS_TO_BASE.get(lm.group(3).lower(), lm.group(3).lower()) in st:
+                off = int(lm.group(4), 16) if lm.group(4) else 0
+                fields[off] = max(fields.get(off, 0), _SIZE_KW[lm.group(2)])
+                fv[_ALIAS_TO_BASE.get(lm.group(1).lower(), lm.group(1).lower())] = off
+                out["evidence"].append(f"{hex(ctx.off_to_vaddr(int(k)))}: {t}")
+            sm = _STORE_SLOT.search(t)
+            if sm:
+                src = _ALIAS_TO_BASE.get(sm.group(2).lower(), sm.group(2).lower())
+                if src in fv:
+                    soff = int(sm.group(1), 16)
+                    if soff == home:                   # field value flows back into p -> recursive
+                        selfrefs.add(fv[src])
+                    else:
+                        aliases_raw[soff] = fv[src]
+            st = step(st, t)
+
+    # Second hop: at -O0 the recursion is rarely register-to-register. `nxt = n->next` stores the
+    # field into its OWN slot, and the loop then does `n = nxt` -- so the field reaches p's home slot
+    # via that local. Follow slot -> register -> home to catch it; without this a linked-list `next`
+    # is reported as a plain integer field of pointer width rather than a self-reference.
+    for b in sorted(blocks):
+        sv = {}                                        # register -> field offset, loaded via a slot
+        for k in blocks[b]:
+            t = txt(k)
+            lm = re.search(r"mov\s+(\w+)\s*,\s*(?:qword|dword|word|byte)?\s*ptr\s*"
+                           r"\[rbp \+ (-?0x[0-9a-fA-F]+)\]", t)
+            if lm and int(lm.group(2), 16) in aliases_raw:
+                sv[_ALIAS_TO_BASE.get(lm.group(1).lower(), lm.group(1).lower())] = \
+                    aliases_raw[int(lm.group(2), 16)]
+            sm = _STORE_SLOT.search(t)
+            if sm and int(sm.group(1), 16) == home:
+                src = _ALIAS_TO_BASE.get(sm.group(2).lower(), sm.group(2).lower())
+                if src in sv:
+                    selfrefs.add(sv[src])
+    out["fields"] = {hex(o): w for o, w in sorted(fields.items())}
+    out["self_ref_offsets"] = [hex(o) for o in sorted(selfrefs)]
+    out["alias_slots"] = {(hex(k - delta) if has_rbp else hex(k)): hex(v)
+                          for k, v in sorted(aliases_raw.items())}
+    # One field at offset 0 is just `T *`; an aggregate needs two distinct fields or a self-reference.
+    out["is_aggregate"] = bool(len(fields) >= 2 or selfrefs)
+    out["evidence"] = out["evidence"][:8]
+    out["summary"] = ("no field access observed" if not fields else
+                      f"fields at {sorted(out['fields'])}"
+                      + (f", self-referential at {out['self_ref_offsets']}" if selfrefs else ""))
     return out
 
 

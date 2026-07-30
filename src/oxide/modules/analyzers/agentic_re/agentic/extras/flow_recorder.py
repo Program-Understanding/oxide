@@ -28,6 +28,9 @@ except Exception:  # noqa: BLE001  # langchain not installed -> feature simply u
 _PLAN_TOOL = "write_todos"
 _DELEGATE_TOOL = "task"
 _ORCHESTRATION = {_PLAN_TOOL, _DELEGATE_TOOL}
+# deterministic oracles, exposed as ordinary tools
+_ORACLE_TOOL_NAMES = {"static_type_oracles", "callee_signature", "decompiler_pointer",
+                      "spilled_param", "interprocedural_param_usage"}
 
 
 def _short(s, n=60):
@@ -53,8 +56,9 @@ class FlowRecorder(BaseCallbackHandler):
             self.events.append({"type": "plan", "todos": self._todos(args)})
         elif name == _DELEGATE_TOOL:
             # a delegation: record the assignment AND (via _pending) the subagent's returned conclusion
+            _full = args.get("description", "") or args.get("_raw", "")
             ev = {"type": "delegate", "target": self._target(args),
-                  "desc": _short(args.get("description", "") or args.get("_raw", ""), 110),
+                  "desc": _short(_full, 110), "vids": _vid_span(_full),
                   "result": "", "types": {}}
             self.events.append(ev)
             if run_id is not None:
@@ -75,7 +79,12 @@ class FlowRecorder(BaseCallbackHandler):
             ev["result"] = _short(text, 200)
             ev["types"] = _final_types(text)
         else:
-            ev["output"] = _short(text, 600)      # keep enough for a readable summary + the md cell
+            # Oracle returns are one verbose record PER VARIABLE (each carries a prose `claim` and
+            # `reason`), so a 600-char cap kept only the first and the figure then reported "certified
+            # 1" for a call that certified six. Keep the whole payload for those; it is parsed down to
+            # `vid=ctype` pairs before display anyway.
+            cap = 6000 if ev.get("name") in _ORACLE_TOOL_NAMES else 600
+            ev["output"] = _short(text, cap)
 
     def on_llm_end(self, response, *, run_id=None, **kw):
         """Capture the model's REASONING text (the assistant message content between tool calls) so the
@@ -132,7 +141,12 @@ class FlowRecorder(BaseCallbackHandler):
         try:
             content = o.get("data", {}).get("content") if isinstance(o, dict) else o
             if isinstance(content, list) and content and isinstance(content[0], dict):
-                return str(content[0].get("text", "")).strip()
+                # JOIN every content part, not just the first. A tool returning a LIST (the oracles
+                # return one record per certified variable) arrives as one MCP content item per
+                # element, so `content[0]` silently kept a single fact -- the figure then reported
+                # "certified 1" for a call that had certified six.
+                return "".join(str(c.get("text", "")) for c in content
+                               if isinstance(c, dict)).strip()
         except Exception:  # noqa: BLE001
             pass
         return json.dumps(o)[:120] if isinstance(o, (dict, list)) else str(o).strip()
@@ -219,7 +233,8 @@ def _phases(events):
         if t == "plan":
             plan_todos = ev["todos"] or plan_todos
         elif t == "delegate":
-            cur = {"target": ev["target"], "desc": ev["desc"], "tools": [], "reasons": [], "ev": ev}
+            cur = {"target": ev["target"], "desc": ev["desc"], "vids": ev.get("vids", ""),
+                   "tools": [], "reasons": [], "ev": ev}
             phases.append(cur)
         elif t == "tool":
             if cur is None:
@@ -228,6 +243,20 @@ def _phases(events):
             cur["tools"].append(ev)
         elif t == "reason":
             (cur["reasons"] if cur is not None else coord_reasons).append(ev["text"])
+    # The declared plan is gone: the coordinator no longer calls `write_todos`, because a tool that is
+    # not offered cannot be narrated as prose -- the failure that ended a run before any subagent
+    # executed. Rather than lose the plan row, synthesize it from the delegations that ACTUALLY
+    # happened. This is strictly more faithful than the old row, which showed what the model said it
+    # would do; this shows what it did.
+    if not plan_todos and phases:
+        for p in phases:
+            span, who = p.get("vids") or "", p["target"]
+            if who == "verifier":
+                plan_todos.append(f"adjudicate {span} with the verifier" if span
+                                  else "adjudicate all findings with the verifier")
+            else:
+                plan_todos.append(f"delegate {span} to {who}" if span else f"delegate to {who}")
+        plan_todos.append("synthesize the final answer")
     return plan_todos, coord_reasons, phases
 
 
@@ -238,6 +267,24 @@ def input_vars_from_question(question):
     for m in re.finditer(r"(?m)^\s*(V\d+)\s+((?:register|stack)\s+-?0x[0-9a-fA-F]+)\s+(\d+)\b", question or ""):
         out.append((m.group(1), m.group(2).strip(), m.group(3)))
     return out
+
+
+def _vid_span(text) -> str:
+    """"V1-V6, V9" from any text mentioning variable ids.
+
+    Extracted from the delegation's FULL description at record time, because the stored `desc` is
+    truncated for display and the variable list is the part that gets cut."""
+    ns = sorted({int(m.group(1)) for m in re.finditer(r"\bV(\d+)\b", str(text or ""))})
+    if not ns:
+        return ""
+    out, i = [], 0
+    while i < len(ns):
+        j = i
+        while j + 1 < len(ns) and ns[j + 1] == ns[j] + 1:
+            j += 1
+        out.append(f"V{ns[i]}" if i == j else f"V{ns[i]}-V{ns[j]}")
+        i = j + 1
+    return ", ".join(out)
 
 
 def _plan_tag(todo):
@@ -370,7 +417,10 @@ def to_mermaid(recorder, meta, oracle_facts, answer, scoring=None):
         if not oracle_facts:
             rows.append("<i>all consulted oracles abstained — nothing to certify</i>")
         ocert = "<br/>".join(rows[:12]) + ("<br/>…" if len(rows) > 12 else "")
-        L.append(f'  ORACLE["✅ Deterministic oracle certification (run in code, not LLM)<br/>{ocert}"]:::oracle')
+        _applied = meta.get("certified_by_code", True)
+        _title = ("✅ Deterministic oracle certification (run in code, not LLM)" if _applied else
+                  "🔎 Oracles — consulted by the verifier as tools; NOT applied by code")
+        L.append(f'  ORACLE["{_title}<br/>{ocert}"]:::oracle')
         for p in prev_layer:
             L.append(f"  {p} --> ORACLE")
         prev_layer = ["ORACLE"]
@@ -380,12 +430,23 @@ def to_mermaid(recorder, meta, oracle_facts, answer, scoring=None):
     gt = (scoring or {}).get("ground_truth") or {}
     score = (scoring or {}).get("score")
     _vk = lambda k: int(re.sub(r"\D", "", k) or 0)  # noqa: E731
+    per = (scoring or {}).get("per_var") or {}
     if gt:
         rows = []
         for vid in sorted(ans_map, key=_vk):
-            rows.append(f"{vid}: {_esc(ans_map[vid])} vs {_esc(gt.get(vid, '?'))} {_match(ans_map[vid], gt.get(vid))}")
+            # The tick/tilde marker is a STRING comparison and disagrees with the metric in the
+            # caption: the scorer resolves typedefs (`idx_t` == `long`) and grades partial credit on a
+            # per-variable scale whose maximum is type-dependent (6 for a scalar, 9 for a pointer).
+            p = per.get(vid)
+            mark = (f"— <b>{p['score']}/{p['max']}</b>" + (f" {_esc(p['halt'])}" if p.get("halt") else "")) \
+                if p else _match(ans_map[vid], gt.get(vid))
+            rows.append(f"{vid}: {_esc(ans_map[vid])} vs {_esc(gt.get(vid, '?'))} {mark}")
         arows = "<br/>".join(rows[:18]) + ("<br/>…" if len(rows) > 18 else "")
+        _tot = sum(p["score"] for p in per.values()) if per else None
+        _mx = sum(p["max"] for p in per.values()) if per else None
         title = "📋 <b>Output</b> — predicted vs ground truth" + (f"  ·  score {score:.2f}%" if score is not None else "")
+        if _tot is not None:
+            title += f"  ({_tot}/{_mx} points, mean {_tot/max(1,len(per)):.2f}/{_mx/max(1,len(per)):.2f})"
         L.append(f'  ANS["{title}<br/>{arows}"]:::io')
     else:
         arows = "<br/>".join(f"{k}: {_esc(v)}" for k, v in sorted(ans_map.items(), key=lambda kv: _vk(kv[0]))[:16])
@@ -405,6 +466,21 @@ def _seq_esc(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _oracle_result(name, out):
+    """Render an oracle tool's return as the FACTS it certified, one per variable.
+
+    The generic summariser truncates to a prefix, which for an oracle shows the first record and hides
+    the rest -- the useful content is exactly which entities were certified as what."""
+    if name not in _ORACLE_TOOL_NAMES:
+        return summarize_output(name, out)
+    facts = re.findall(r"['\"]vid['\"]\s*:\s*['\"](V\d+)['\"].{0,120}?['\"]ctype['\"]\s*:\s*['\"]([^'\"]+)['\"]",
+                       str(out), re.S)
+    if not facts:
+        return "no certification — all oracles abstained"
+    shown = "; ".join(f"{v}={t}" for v, t in facts[:8])
+    return f"certified {len(facts)}: {shown}" + (" …" if len(facts) > 8 else "")
+
+
 def to_sequence(recorder, meta, oracle_facts, answer, scoring=None, max_tools_per_phase=40):
     """A Mermaid SEQUENCE diagram of the COMPLETE flow, turn by turn: every delegation, every LLM
     reasoning turn (Note), every tool call and its returned result (message + reply), the types each
@@ -415,8 +491,12 @@ def to_sequence(recorder, meta, oracle_facts, answer, scoring=None, max_tools_pe
          "  participant C as 🧭 Coordinator agent",
          "  participant W as ⚙️ type_worker agent",
          "  participant V as 🔍 verifier agent",
-         "  participant T as 🔧 Tools/MCP",
-         "  participant O as ✅ Oracles"]
+         "  participant T as 🔧 Tools/MCP"]
+    # The `Oracles` lifeline models the deterministic POST-PASS. When the oracles are exposed as tools
+    # and called by the reviewer they are not a separate actor -- they are ordinary calls on the
+    # Tools/MCP lifeline, already drawn above with their real arguments and real returned facts.
+    if meta.get("certified_by_code", True):
+        L.append("  participant O as ✅ Oracles")
     for k, t in enumerate(plan_todos, 1):
         L.append(f"  Note over C: 📝 plan {k}. [{_plan_tag(t)}] {_seq_esc(t)}")
     for r in coord_reasons[:1]:
@@ -431,7 +511,7 @@ def to_sequence(recorder, meta, oracle_facts, answer, scoring=None, max_tools_pe
         for t in shown:
             L.append(f"  {actor}->>T: {_seq_esc(t['name'])}({_seq_esc(t['input'])})")
             if t.get("output"):
-                L.append(f"  T-->>{actor}: {_seq_esc(summarize_output(t['name'], t['output']))}")
+                L.append(f"  T-->>{actor}: {_seq_esc(_oracle_result(t['name'], t['output']))}")
         if len(ph["tools"]) > len(shown):
             L.append(f"  Note over {actor}: … +{len(ph['tools']) - len(shown)} more tool calls")
         # WHY: the model's reasoning behind this task's conclusion, shown right before the result arrow.
@@ -452,7 +532,7 @@ def to_sequence(recorder, meta, oracle_facts, answer, scoring=None, max_tools_pe
 
     consulted = meta.get("oracles_consulted", [])
     fired = {v[1] for v in oracle_facts.values() if isinstance(v, (list, tuple))} if oracle_facts else set()
-    if consulted or oracle_facts:
+    if meta.get("certified_by_code", True) and (consulted or oracle_facts):
         L.append(f"  C->>O: run {len(consulted)} deterministic oracles ({_seq_esc(', '.join(consulted))})")
         for vid, val in sorted(oracle_facts.items()):
             ctype, oracle, floor = (val if isinstance(val, (list, tuple)) and len(val) == 3
@@ -469,8 +549,10 @@ def to_sequence(recorder, meta, oracle_facts, answer, scoring=None, max_tools_pe
         stxt = f" · score {score:.2f}%" if score is not None else ""
         tail = ", ".join(f"{k}-{_seq_esc(v)}" for k, v in sorted(ans.items(), key=lambda kv: int(re.sub(r'\D', '', kv[0]) or 0)))
         ncert = len([1 for v in oracle_facts.values() if isinstance(v, (list, tuple))]) if oracle_facts else 0
+        _src = ("deterministically oracle-certified (authoritative)"
+                if meta.get("certified_by_code", True) else "oracle facts the verifier fetched itself")
         L.append(f"  Note over C: 💭 reasoning: synthesized from the verifier's adjudicated types,"
-                 f" with {ncert} deterministically oracle-certified (authoritative)")
+                 f" with {ncert} {_src}")
         L.append(f"  C->>C: 📋 FINAL ANSWER{stxt}: {tail}")
     L.append("```")
     return "\n".join(L)
@@ -518,7 +600,8 @@ def to_markdown(recorder, meta, oracle_facts, answer, scoring=None):
     consulted = meta.get("oracles_consulted", [])
     fired = {v[1] for v in oracle_facts.values() if isinstance(v, (list, tuple))} if oracle_facts else set()
     if consulted or oracle_facts:
-        M.append("## Deterministic oracle certification")
+        M.append("## Deterministic oracle certification" if meta.get("certified_by_code", True)
+                 else "## Oracles — consulted by the verifier as tools, NOT applied by code")
         M.append("*Run in code after the agent finishes (NOT LLM tools). Each consulted oracle:*")
         for o in consulted:
             n = sum(1 for v in oracle_facts.values() if isinstance(v, (list, tuple)) and v[1] == o)
@@ -536,10 +619,14 @@ def to_markdown(recorder, meta, oracle_facts, answer, scoring=None):
     _vk = lambda k: int(re.sub(r"\D", "", k) or 0)  # noqa: E731
     if gt:
         M.append("## Output — predicted vs ground truth" + (f"  (mean score: **{score:.2f}%**)" if score is not None else ""))
-        M.append("| id | predicted | ground truth | match |")
-        M.append("|----|-----------|--------------|-------|")
+        _per = (scoring or {}).get("per_var") or {}
+        M.append("| id | predicted | ground truth | score | lost at |")
+        M.append("|----|-----------|--------------|-------|---------|")
         for vid in sorted(ans, key=_vk):
-            M.append(f"| {vid} | `{ans[vid]}` | `{gt.get(vid, '?')}` | {_match(ans[vid], gt.get(vid))} |")
+            p = _per.get(vid)
+            sc_ = f"**{p['score']}/{p['max']}**" if p else _match(ans[vid], gt.get(vid))
+            M.append(f"| {vid} | `{ans[vid]}` | `{gt.get(vid, '?')}` | {sc_} | "
+                     f"{(p.get('halt') or '') if p else ''} |")
     else:
         M.append("## Output — final answer")
         for k in sorted(ans, key=_vk):
@@ -608,10 +695,20 @@ def compose_sequence_figure(seq_png, meta, answer, scoring, out_path):
     gt = (scoring or {}).get("ground_truth") or {}
     score = (scoring or {}).get("score")
     _vk = lambda k: int(re.sub(r"\D", "", k) or 0)  # noqa: E731
+    # Per-variable scores from the scorer's own finer-grained output, as in the flowchart and the
+    # markdown: the tick/tilde marker is a STRING comparison and disagrees with the metric in the
+    # title (the scorer resolves typedefs, and grades partial credit on a scale whose maximum is
+    # type-dependent -- 6 for a scalar, 9 for a pointer).
+    per = (scoring or {}).get("per_var") or {}
     otitle = "📋 OUTPUT — final answer" + (" vs ground truth" if gt else "") + (f"    ·    mean score: {score:.2f}%" if score is not None else "")
+    if per:
+        otitle += f"    ({sum(p['score'] for p in per.values())}/{sum(p['max'] for p in per.values())} points)"
     out_lines = [(otitle, title_f)]
     for vid in sorted(ans, key=_vk):
-        line = f"    {vid}: {ans[vid]}" + (f"    vs GT {gt.get(vid, '?')}    {_match(ans[vid], gt.get(vid))}" if gt else "")
+        p = per.get(vid)
+        mark = (f"{p['score']}/{p['max']}" + (f"  ({p['halt']})" if p.get("halt") else "")) if p \
+            else _match(ans[vid], gt.get(vid))
+        line = f"    {vid}: {ans[vid]}" + (f"    vs GT {gt.get(vid, '?')}    {mark}" if gt else "")
         out_lines.append((line, body_f))
 
     def panel(lines, bg):

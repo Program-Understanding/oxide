@@ -183,6 +183,45 @@ def _repeat_hint(oid: str, tool: str, args: dict) -> str:
             "it. " + "  ".join(parts))
 
 
+# --- import-name masking, for the contamination ablation (AGENTIC_MASK_IMPORTS) -------------------
+# Stripping removes LOCAL symbols only. Dynamic imports must survive for the linker, so
+# `__fpending`, `ferror_unlocked` etc. remain readable, and `disassemble` puts them at the head of
+# every result. A function calling exactly those, in a binary whose strings still say "GNU coreutils",
+# is effectively a fingerprint -- so a model that memorised the source could recognise it without ever
+# seeing a local name. This masks those names on the AGENT path only: every import becomes a stable
+# opaque token (EXT_007), so call structure and arity are preserved while identity is not.
+#
+# Applied HERE, in the MCP server, precisely because the deterministic oracles do NOT go through it --
+# they build their own in-process dispatcher. Their use of the same names is sound DEDUCTION ("arg 1
+# of fclose is FILE *"), not recognition, and must not be ablated.
+#
+# The result bounds contamination in ONE direction. A small drop means neither memorisation nor
+# import-based deduction contributes much to the agent's answers, which caps how much memorisation
+# could explain. A large drop is ambiguous: it would also be produced by legitimate ABI reasoning.
+_IMPORT_MASK: dict = {}
+
+
+def _mask_imports(oid: str, text):
+    if os.environ.get("AGENTIC_MASK_IMPORTS", "") not in ("1", "true", "yes"):
+        return text
+    m = _IMPORT_MASK.get(oid)
+    if m is None:
+        try:
+            imp = _as_json(_ct(oid)("imports", {}))
+            names = imp.get("imports", []) if isinstance(imp, dict) else []
+        except Exception:  # noqa: BLE001
+            names = []
+        # keep the toolchain/runtime scaffolding visible -- it identifies nothing about the function
+        skip = {"_ITM_deregisterTMCloneTable", "_ITM_registerTMCloneTable", "__gmon_start__",
+                "__libc_start_main", "__cxa_atexit", "__cxa_finalize", "__stack_chk_fail"}
+        m = {n: f"EXT_{i:03d}" for i, n in enumerate(sorted(x for x in names if x not in skip))}
+        _IMPORT_MASK[oid] = m
+    t = str(text)
+    for n, ph in m.items():
+        t = re.sub(rf"(?<![\w.]){re.escape(n)}(?![\w])", ph, t)
+    return t
+
+
 def _call(oid: str, tool: str, args: dict):
     """Dispatch a tool with per-process memoization on (oid, tool, normalized args). Repeats return the
     cached, byte-identical result instead of re-running the backend."""
@@ -199,7 +238,7 @@ def _call(oid: str, tool: str, args: dict):
             res = f"{res}{_repeat_hint(oid, tool, args)}"
         _log_call(tool, args, True, res)
         return res
-    res = _as_json(_ct(oid)(tool, args))
+    res = _mask_imports(oid, _as_json(_ct(oid)(tool, args)))
     _TOOL_RESULT_CACHE[key] = res
     _log_call(tool, args, False, res)
     return res
@@ -280,32 +319,70 @@ def _canon_question(vaddr: str, variables: str) -> str:
 
 
 @mcp.tool()
-async def static_type_oracles(
-        oid: str, vaddr: str, variables: str,
-        which: str = "") -> Any:
-    """Run the deterministic STATIC type oracles and return CERTIFIED per-variable facts
-    [{vid, ctype, source, claim, reason, floor, oracle}] — ABI/decompiler-certain and AUTHORITATIVE
-    (override model guesses). `vaddr`: the function's virtual address, e.g. '0x107d3e'. `variables`:
-    the variable list, one per line as `V<n>  <register 0x..|stack -0x..>  <size>`. Earlier oracles
-    win on the same variable."""
-    which = which or _type_recovery.DEFAULT_ORACLES
-    question = _canon_question(vaddr, variables)
-    key = ("static", oid, which, question)
-    if key in _ORACLE_CACHE:
-        return _ORACLE_CACHE[key]
-    ct = _ct(oid)
-    facts, seen = [], set()
-    for name, fn in _G.resolve_domain_oracles(which, question):
-        try:
-            for f in fn(ct, question):
-                if f["vid"] in seen:
-                    continue
-                seen.add(f["vid"])
-                facts.append({**f, "oracle": name})
-        except Exception as e:  # noqa: BLE001
-            print(f"static_type_oracles: {name} skipped: {e}", file=sys.stderr)
-    _ORACLE_CACHE[key] = facts
-    return facts
+async def static_type_oracles(oid: str, addr: str, variables: str, which: str = "") -> Any:
+    """CERTIFIED and deterministic — re-derived from the binary and public ABI knowledge, not guessed, so it outranks your own reading of the decompilation.
+    EVIDENCE: all four oracles above, in one call; earlier ones win on the same variable.
+    USE WHEN: several kinds of evidence are present at once, or you have no specific hypothesis
+    about where a variable's type would come from.
+    `variables`: the variable list, one `V<n>  <register 0x..|stack -0x..>  <size>` per line."""
+    return _call(oid, "static_type_oracles",
+                 {"addr": _norm_addr(addr), "variables": variables, "which": which})
+
+
+@mcp.tool()
+async def callee_signature(oid: str, addr: str, variables: str) -> Any:
+    """CERTIFIED and deterministic — re-derived from the binary and public ABI knowledge, not guessed, so it outranks your own reading of the decompilation.
+    EVIDENCE: a register-passed parameter handed to a C-library function whose ABI fixes that
+    argument's type (argument 1 of `fclose` is `FILE *`).
+    USE WHEN: the function calls libc.
+    `variables`: the variable list, one `V<n>  <register 0x..|stack -0x..>  <size>` per line."""
+    return _call(oid, "callee_signature", {"addr": _norm_addr(addr), "variables": variables})
+
+
+@mcp.tool()
+async def decompiler_pointer(oid: str, addr: str, variables: str) -> Any:
+    """CERTIFIED and deterministic — re-derived from the binary and public ABI knowledge, not guessed, so it outranks your own reading of the decompilation.
+    EVIDENCE: the decompiler's own recovered pointer declarations.
+    USE WHEN: you suspect a value is a pointer but the assembly does not settle it.
+    `variables`: the variable list, one `V<n>  <register 0x..|stack -0x..>  <size>` per line."""
+    return _call(oid, "decompiler_pointer", {"addr": _norm_addr(addr), "variables": variables})
+
+
+@mcp.tool()
+async def spilled_param(oid: str, addr: str, variables: str) -> Any:
+    """CERTIFIED and deterministic — re-derived from the binary and public ABI knowledge, not guessed, so it outranks your own reading of the decompilation.
+    EVIDENCE: the prologue store that copies an argument register into a stack slot, making that
+    slot a copy of the parameter.
+    USE WHEN: stack locals mirror the parameters.
+    `variables`: the variable list, one `V<n>  <register 0x..|stack -0x..>  <size>` per line."""
+    return _call(oid, "spilled_param", {"addr": _norm_addr(addr), "variables": variables})
+
+
+@mcp.tool()
+async def interprocedural_param_usage(oid: str, addr: str, variables: str) -> Any:
+    """CERTIFIED and deterministic — re-derived from the binary and public ABI knowledge, not guessed, so it outranks your own reading of the decompilation.
+    EVIDENCE: a parameter forwarded through user functions — resolved either by the fixed-type
+    library position it eventually reaches, or by the first callee that declared a concrete type for
+    that position and whether it is ever dereferenced there. Uniquely among the oracles this can
+    return a NEGATIVE result, "V<n> IS NOT A POINTER", for a forwarded length/count/index.
+    USE WHEN: a parameter is passed straight into another local function — especially when it has no
+    local usage of its own, or when you are unsure whether an 8-byte parameter is a pointer or a size.
+    `variables`: the variable list, one `V<n>  <register 0x..|stack -0x..>  <size>` per line."""
+    return _call(oid, "interprocedural_param_usage", {"addr": _norm_addr(addr), "variables": variables})
+
+
+@mcp.tool()
+async def signedness(oid: str, addr: str, variables: str) -> Any:
+    """CERTIFIED and deterministic — re-derived from the binary and public ABI knowledge, not guessed, so it outranks your own reading of the decompilation.
+    EVIDENCE: instructions whose signed and unsigned forms differ, which the compiler is FORCED to
+    choose between — `shr` vs `sar`, `movzx` vs `movsx`, `div` vs `idiv`, and rotates (only
+    expressible on an unsigned value). Reports "V<n> IS UNSIGNED" and the fixed-width C type.
+    USE WHEN: a variable is an integer and you must decide signed vs unsigned — the decompilation
+    shows `long`/`int` for both, so it cannot tell you, and this can.
+    `variables`: the variable list, one `V<n>  <register 0x..|stack -0x..>  <size>` per line."""
+    return _call(oid, "signedness", {"addr": _norm_addr(addr), "variables": variables})
+
+
 
 
 if __name__ == "__main__":
