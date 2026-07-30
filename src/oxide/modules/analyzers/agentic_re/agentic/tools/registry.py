@@ -8,10 +8,14 @@ REGISTRY: dict = {}      # name -> ToolSpec
 
 
 def out_cap() -> int:
-    """Per-tool-output char cap. REQUIRED via AGENTIC_OUT_CAP / [agentic] out_cap; 0 = unlimited
-    (use on local models where context is cheap), a positive value bounds remote/API runs."""
-    from agentic.config import cfg_required
-    return int(cfg_required("out_cap"))
+    """Per-tool-output char cap; see `agentic.config.out_cap` for the definition.
+
+    Kept as a delegating shim rather than a second implementation: this module previously re-derived
+    the value itself (`int(cfg_required("out_cap"))`), which left two copies of the same rule and made
+    `config.out_cap` dead. The import stays function-local so `agentic.tools` can be imported without
+    pulling in the config layer at module-load time."""
+    from agentic.config import out_cap as _out_cap
+    return _out_cap()
 
 
 class ToolSpec:
