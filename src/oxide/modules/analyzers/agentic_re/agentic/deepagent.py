@@ -798,9 +798,14 @@ def _grouping_rule(question: str) -> str:
     n = len(re.findall(r"(?m)^\s*V\d+\s+(?:register|stack)\s", question or ""))
     if n <= 36:
         return "into groups of up to 6."
-    gs = _group_size(question)
-    return (f"into groups of AT MOST {gs} — and do NOT use smaller groups than that: this function has "
-            f"{n} variables, every extra group costs a delegation, and your delegations are limited.")
+    # Keep the sentence structurally IDENTICAL to the small-function form and change only the number.
+    # A longer variant that added scarcity framing ("every extra group costs a delegation, and your
+    # delegations are limited") made the coordinator restructure: instead of delegating every group and
+    # then calling the verifier ONCE as step 3 instructs, it interleaved a verifier call after each
+    # group. Measured 4/4 on the threshold -- 18 and 13 entities stayed compliant (1 verifier call),
+    # 40 and 43 interleaved (3 and 5 calls) -- which doubles the delegations and, worse, means the
+    # verifier never sees the full claim list and so cannot catch cross-variable inconsistencies.
+    return f"into groups of up to {_group_size(question)}."
 
 
 async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
