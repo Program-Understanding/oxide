@@ -662,8 +662,12 @@ def _mcp_env():
     # read anywhere under tools/ or mcp_agentic.py, add it here in the same change.
     #   mcp_agentic.py   : AGENTIC_TOOL_LOG, AGENTIC_REPEAT_BREAKER
     #   tools/ghidra.py  : AGENTIC_DISASM_PAGING_HINT
+    #   tasks/type_recovery/common.py : AGENTIC_LIBC (libc prototypes, now OFF by default --
+    #       the oracles run IN the server, so without this the flag never arrives and an A/B that
+    #       toggles it silently measures nothing)
     passthru = {k: os.environ[k] for k in ("AGENTIC_TOOL_LOG", "AGENTIC_REPEAT_BREAKER",
-                                           "AGENTIC_DISASM_PAGING_HINT", "AGENTIC_MASK_IMPORTS")
+                                           "AGENTIC_DISASM_PAGING_HINT", "AGENTIC_MASK_IMPORTS",
+                                           "AGENTIC_LIBC")
                 if os.environ.get(k)}
     if not passthru:
         return None

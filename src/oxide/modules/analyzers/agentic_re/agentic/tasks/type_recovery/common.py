@@ -6,6 +6,7 @@ A name lives here iff more than one oracle reaches it; everything else lives wit
 from __future__ import annotations
 
 import json
+import os
 import re
 
 
@@ -57,6 +58,37 @@ _LIBC_SIG = {
     "clearerr_unlocked": ["FILE *"], "fileno_unlocked": ["FILE *"],
     "ungetc": ["int", "FILE *"],
 }
+
+# LIBC PROTOTYPE KNOWLEDGE IS OFF BY DEFAULT (changed 2026-07-31; opt back in with AGENTIC_LIBC=1).
+#
+# TRex deliberately does not use libc signatures (their S5.2: they beat Ghidra "despite not
+# implementing interprocedural type propagation, which Ghidra uses ... along with external functions
+# it knows, such as those in libc"), so a reviewer would reasonably ask how much of our margin is
+# just that orthogonal, well-understood advantage. We measured it rather than argued it.
+#
+# MEASURED, paired, same function run both ways (n=376 of a planned 5000, sweep stopped early):
+#   paired delta -0.001 .. +0.018 points, 95% CI [-0.48, +0.51] -- indistinguishable from zero
+#   margin over TRex retained: 100.1%
+#   21 functions worse, 21 better, 334 unchanged
+# So the table costs 63 of 342 oracle facts (18.4%) yet buys no aggregate accuracy: the types it
+# certifies are evidently recoverable through the decompiler-pointer / spilled-param oracles and the
+# model itself. Turning it OFF removes the strongest external-knowledge objection at no measured cost.
+#
+# CAVEATS, because the null is easy to overread:
+#   * n=376 bounds the effect to about +-0.5 points, not to zero. A sub-0.5-point cost is not excluded.
+#   * Aggregate-zero hides real per-function churn (cp/copy_attr -43.6, sort/heap_free -22.2, offset
+#     by cksum/md5_stream +38.1). libc knowledge is REDISTRIBUTIVE here, not inert.
+#
+# Emptying the table disables it at the ONE place all three consumers read:
+#   * callee_signature      -- entirely libc-driven, so it now ALWAYS abstains (see roster note below)
+#   * interprocedural       -- Tier 1 (chain terminates at a libc position) never fires; the
+#                              declared-type Tier 2 fallback is unaffected
+#   * spilled_param         -- loses its libc fallback, keeps the decompiler's declared pointer
+# The tool ROSTER is deliberately still unchanged, so this remains the exact configuration that was
+# measured. `callee_signature` therefore stays on the verifier's menu while always returning nothing;
+# dropping it is a separate, unmeasured change (tool-count changes are known to move this model).
+if os.environ.get("AGENTIC_LIBC", "").strip().lower() not in ("1", "true", "yes"):
+    _LIBC_SIG = {}
 
 
 # Ghidra x86-64 register-space offsets -> SysV integer argument position (1-based): rdi,rsi,rdx,rcx,r8,r9.
