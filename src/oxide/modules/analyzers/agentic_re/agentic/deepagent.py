@@ -61,7 +61,7 @@ PLAN and DELEGATE to the `type_worker` subagent.
 
 Do exactly this:
 1. Split the variables into groups: put ALL register parameters in one group, and split the stack \
-locals into groups of up to 6. Keep this plan in mind; do NOT write it down anywhere.
+locals {grouping_rule} Keep this plan in mind; do NOT write it down anywhere.
 2. For EACH variable group, call `task` to delegate to the `type_worker` subagent. In the task \
 description give it: the oid `{oid}`, the function vaddr `{vaddr}`, and the EXACT variables in that \
 group (each as `V<n>  <register 0x..|stack -0x..>  <size>`). The worker returns `<id>: <C type>` \
@@ -490,8 +490,22 @@ def _cap_tool_loop(messages, kwargs):
         cap = 10
     if not kwargs.get("tools"):
         return messages, kwargs
+    # DELEGATIONS ARE NOT LOOPING. `task` is how the coordinator fans work out to subagents, so
+    # counting it against this cap ceilings the fan-out at `cap` groups -- and with the prompt's
+    # "groups of up to 6" that silently ceilings COVERAGE at ~6*cap variables regardless of how many
+    # the function has. Measured on `sha384sum/sha512_process_block` (179 vars): the coordinator issued
+    # 10 delegations covering V1-V57, ran out of turns, never reached the verifier, and the remaining
+    # 122 entities were default-filled `undefined` -- 25.64% of max. The cap exists to stop a WORKER
+    # spinning on one analysis tool (50+ `disassemble` calls observed); that rationale does not apply
+    # to handing work to another agent, so `task` turns are excluded from the count.
+    def _is_delegation(m):
+        tcs = getattr(m, "tool_calls", None) or []
+        return bool(tcs) and all((tc.get("name") if isinstance(tc, dict) else
+                                  getattr(tc, "name", None)) == "task" for tc in tcs)
+
     n = sum(1 for m in messages
-            if getattr(m, "type", None) == "ai" and getattr(m, "tool_calls", None))
+            if getattr(m, "type", None) == "ai" and getattr(m, "tool_calls", None)
+            and not _is_delegation(m))
     if n < cap:
         return messages, kwargs
     from langchain_core.messages import HumanMessage
@@ -756,6 +770,39 @@ def _roster(all_tools, wanted, who):
     return got
 
 
+def _group_size(question: str) -> int:
+    """How many entities the coordinator should put in one delegation.
+
+    A CONSTANT "groups of up to 6" is wrong at both ends. Each group costs one `task` delegation and
+    several graph super-steps, so on a large function the fan-out hits a ceiling and the run is
+    truncated mid-way: `sha384sum/sha512_process_block` (179 entities) needs ~30 delegations, was cut
+    off at 10 by the tool-loop cap, covered only V1-V57 and scored 25.64% of max. The one time it
+    scored 96.06% the coordinator had ignored the rule and batched V4-V179 into a SINGLE delegation --
+    which is the evidence that a worker handles a large group perfectly well.
+
+    So scale the group with the workload: keep small functions at 6 (where the careful, one-group-at-a-
+    time behaviour was tuned) and grow it so a big function still fits in a handful of delegations."""
+    n = len(re.findall(r"(?m)^\s*V\d+\s+(?:register|stack)\s", question or ""))
+    if n <= 36:
+        return 6
+    return max(6, -(-n // 6))              # ceil(n/6) groups -> ~6 delegations at any size
+
+
+def _grouping_rule(question: str) -> str:
+    """The grouping sentence for the coordinator prompt.
+
+    Below the threshold this is the ORIGINAL wording, byte for byte: adding fan-out pressure to small
+    functions measurably hurt them (stty/printf_fetchargs, 6 entities, 70.59 -> 60.78), because there
+    the careful one-group-at-a-time behaviour is what the prompt was tuned for and the extra clause
+    just perturbs it. The pressure is added only where the fan-out ceiling is a real risk."""
+    n = len(re.findall(r"(?m)^\s*V\d+\s+(?:register|stack)\s", question or ""))
+    if n <= 36:
+        return "into groups of up to 6."
+    gs = _group_size(question)
+    return (f"into groups of AT MOST {gs} — and do NOT use smaller groups than that: this function has "
+            f"{n} variables, every extra group costs a delegation, and your delegations are limited.")
+
+
 async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     """Build the deepagents multi-agent (coordinator + type_worker + verifier), run it on `question`,
     then append the deterministic ORACLE-CERTIFIED trailer. Returns the final per-variable answer."""
@@ -822,6 +869,20 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     # pipeline's per-worker `max_iter`. Use a dedicated knob with a sane default (a sound run is ~6
     # LLM calls ~= 12-14 super-steps; 40 leaves headroom without letting a loop run away).
     recursion_limit = int(opts.get("recursion_limit") or C.cfg_int("recursion_limit", 40))
+    # ...but the default cannot be a CONSTANT, because the coordinator's work scales with the number
+    # of entities: its prompt says to delegate stack locals in groups of up to 6, so an N-entity
+    # function needs ~N/6 delegations, and each costs several super-steps. At 40 the graph dies on any
+    # large function. Measured on `sha384sum/sha512_process_block` (179 entities): the coordinator
+    # needs ~30 delegations and raised `GraphRecursionError: Recursion limit of 40 reached`, after the
+    # tool-loop cap stopped truncating it at 10. Scale the floor with the entity count and keep the
+    # configured value as a lower bound, so small functions are unaffected.
+    _n_vars = len(re.findall(r"(?m)^\s*V\d+\s+(?:register|stack)\s", question or ""))
+    if _n_vars > 36:                       # ~6 groups; below this the constant default is ample
+        _needed = 3 * ((_n_vars + 5) // 6) + 20
+        if _needed > recursion_limit:
+            print(f"[recursion] {_n_vars} entities -> raising graph limit "
+                  f"{recursion_limit} -> {_needed}")
+            recursion_limit = _needed
 
     # ONE persistent MCP session (subprocess) for the whole run — otherwise every tool call respawns
     # mcp_server.py (~3.6s oxide init each) and defeats the server-side caches (the original hang).
@@ -902,7 +963,8 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
         agent = create_deep_agent(
             model=model,
             tools=[],
-            system_prompt=COORDINATOR_PROMPT.format(oid=oid, vaddr=vaddr),
+            system_prompt=COORDINATOR_PROMPT.format(oid=oid, vaddr=vaddr,
+                                                    grouping_rule=_grouping_rule(question)),
             subagents=_subagents,
         )
         # Wrap the whole run in ONE root span (+ a session id) so Phoenix shows a single connected tree
