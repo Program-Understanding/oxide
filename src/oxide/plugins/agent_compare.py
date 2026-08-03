@@ -497,6 +497,7 @@ def deep_agent_compare(args, opts):
     # Main method that actually creates the agent, gives it tools, and controls execution on binaries
     async def main():
         try:
+            # Allows access to the mcp using the format from oxide_mcp_server.py
             client = MultiServerMCPClient(
                 {
                     "oxide": {
@@ -515,10 +516,7 @@ def deep_agent_compare(args, opts):
             model=LLM,
             tools=tools,
             system_prompt=SYSTEM_PROMPT,
-            response_format=ToolStrategy(
-                schema=RESPONSE_SCHEMA[eval_strat],
-                handle_errors=True
-            ),
+            response_format=RESPONSE_SCHEMA[eval_strat]
         )
         for oid in all_oids:
             file_name = os.path.basename(api.get_field("file_meta", oid, "names").pop())
