@@ -45,6 +45,24 @@ ml = [
     "sentence-transformers>=5.1.2",
      "scikit-learn>=1.6.1",
 ]
+# Dependencies of the `agentic_re` analyzer module (LLM-agent type recovery).
+# OPTIONAL on purpose: plain oxide users never install these, which keeps the core framework
+# independent of the agent stack. Install with:  pip install -e '.[agentic]'
+# Versions are the ones the published measurements were produced with -- pinned exactly, because an
+# agent pipeline's behaviour depends on its framework versions in ways a range would not capture.
+[project.optional-dependencies]
+agentic = [
+    "langchain==1.3.12",
+    "langchain-core==1.4.9",
+    "langchain-openai==1.3.5",
+    "langchain-mcp-adapters==0.3.0",
+    "langgraph==1.2.9",
+    "langgraph-prebuilt==1.1.0",
+    "deepagents==0.6.12",
+    "mcp==1.28.1",
+    "openai==2.45.0",
+]
+
 [project.scripts]
 oxide = "oxide.shell:main"
 oxide-remote = "oxide.rshell:main"
