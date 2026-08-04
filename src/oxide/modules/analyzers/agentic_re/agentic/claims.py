@@ -80,16 +80,10 @@ def _claims_by_agent(messages) -> list:
                 for k, v in o.items():
                     if re.fullmatch(r"V\d+", str(k)) and isinstance(v, str):
                         d[str(k)] = v.strip()
-        alts = {}                                            # `ALTS V1: void * | long` (AGENTIC_TOPK)
-        for am in re.finditer(r"(?mi)^\s*ALTS?\s+(V\d+)\s*[:=]\s*(.+?)\s*$", txt):
-            cand = [c.strip().strip("`") for c in am.group(2).split("|")]
-            cand = [c for c in cand if c and len(c) < 60]
-            if cand:
-                alts.setdefault(am.group(1), []).extend(cand)
-        if d or alts:
+        if d:
             _tid = getattr(m, "tool_call_id", None)
             out.append({"agent": spawned.get(_tid, "?"), "brief": briefs.get(_tid, ""),
-                        "claims": d, "alts": alts})
+                        "claims": d})
     return out
 
 

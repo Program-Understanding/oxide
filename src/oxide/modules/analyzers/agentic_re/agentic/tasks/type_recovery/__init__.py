@@ -7,12 +7,12 @@ path and the public surface -- every name other code used is re-exported below, 
 Importing this package REGISTERS the oracles and publishes the tool wrappers; that is a side effect
 other modules rely on, so the submodule imports below are load-bearing, not conveniences.
 """
-from agentic.grounding import register_domain_oracle, register_domain_evidence
+from agentic.grounding import register_domain_oracle
 
 from .common import *          # noqa: F401,F403  shared tables, parsers, pointer predicates
 from .common import (DEFAULT_ORACLES, is_shapeless_pointer, _is_vague_pointer,  # noqa: F401
                      _vid_to_arg, _vid_stack_offsets, _vid_sizes, _decl_pointer_map,
-                     _libc_type_of_param, _arg_is_value, variable_evidence)
+                     _libc_type_of_param, _arg_is_value)
 from .libc_abi import callee_type_recall_facts, _oracle_callee_signature          # noqa: F401
 from .decompiler import decompiler_pointer_facts, _oracle_decompiler_pointer      # noqa: F401
 from .spilled import spilled_param_facts, _oracle_spilled_param                   # noqa: F401
@@ -22,7 +22,6 @@ from .signedness import signedness_facts, _oracle_signedness                    
 from .struct_shape import struct_shape_facts, _oracle_struct_shape                # noqa: F401
 from . import tools as _tools                                                     # noqa: F401
 
-register_domain_evidence("variable_evidence", variable_evidence)
 register_domain_oracle("callee_signature", _oracle_callee_signature)
 register_domain_oracle("decompiler_pointer", _oracle_decompiler_pointer)
 register_domain_oracle("interprocedural_param_usage", _oracle_interprocedural_param_usage)

@@ -23,8 +23,8 @@ from agentic import config as C
 # public surface every existing caller uses (run_trex_one, characterize.py, mcp_agentic).
 from agentic.claims import (_claims_from_messages, _claims_by_agent,  # noqa: F401
                             _dump_tool_calls, _log_claims)
-from agentic.certify import (_ORACLE_SUFFIX, _ORACLE_TOOL_BLURB, _UNDEF_RE,  # noqa: F401
-                             _oracle_tool_hint, _oracle_brief, _verifier_oracles, _no_certify,
+from agentic.certify import (_ORACLE_TOOL_BLURB, _UNDEF_RE,  # noqa: F401
+                             _oracle_tool_hint, _verifier_oracles, _no_certify,
                              _collect_oracle_facts, _rescue_undefined, _type_width, _coerce_sizes,
                              _certified_trailer)
 
@@ -92,36 +92,6 @@ value flows into — infer the C type. The byte size constrains it (a pointer is
 
 Report EXACTLY one `<id>: <C type>` line per assigned variable. Report ONLY your assigned ids. Do not \
 re-call a tool with identical arguments; finish promptly."""
-
-# --- candidate proposal (opt-in, AGENTIC_TOPK=N) --------------------------------------------------
-# Under a SELECT-FROM-CANDIDATES architecture the agent's job changes: a downstream deterministic
-# objective picks among proposals, so what matters is whether the correct type is present at all
-# (recall), not whether the first guess is right (precision). Measured 2026-07-28 over 224 variables:
-# the worker emits |K| = 1.0 candidates, and a fixed 8-type lattice therefore lifts recall by +26 pp
-# purely by trying more things. Asking the same model, on the same evidence, for its runners-up is the
-# cheapest way to turn a committing agent into a proposing one. A wrong alternative costs nothing --
-# it simply loses on the objective -- which is why the instruction says so explicitly.
-_TOPK_SUFFIX = """
-
-ADDITIONALLY, for each assigned variable, give up to {n} ALTERNATIVE types you seriously considered \
-but did not choose, most plausible first, on their own line:
-    ALTS <id>: <type> | <type>
-A later stage TESTS each alternative mechanically against the binary and keeps whichever fits best, \
-so a wrong alternative costs nothing and a missing one cannot be recovered. Offer alternatives \
-whenever the evidence is not decisive; do not repeat the type you chose."""
-
-
-def _topk() -> int:
-    """N alternatives to request per entity; 0 disables (the default, committing behaviour)."""
-    try:
-        return max(0, int(os.environ.get("AGENTIC_TOPK", "0")))
-    except ValueError:
-        return 0
-
-
-def _with_topk(prompt: str) -> str:
-    k = _topk()
-    return prompt + _TOPK_SUFFIX.format(n=k) if k else prompt
 
 # TOOL-SELECTION EXPERIMENT, SETTLED 2026-07-26 — two alternative worker prompts were tried and
 # REMOVED. `even` gave all five tools identical fully-formed call syntax; `neutral` dropped the recipe
@@ -213,34 +183,6 @@ NOT a pointer — type it as the integer the code shows, never `void *`.
 
 Report the final adjudicated `<id>: <C type>` line for EVERY variable you were given. Do not re-call a \
 tool with identical arguments; finish promptly."""
-
-
-
-
-
-
-
-
-
-def _force_turns() -> int:
-    """Turns for which the reviewer must call SOME tool (0 = off). See `_require_tool_turns`."""
-    try:
-        return max(0, int(os.environ.get("AGENTIC_VERIFIER_FORCE_TURNS", "0")))
-    except ValueError:
-        return 0
-
-
-def _force_oracle() -> bool:
-    """Pin the reviewer's first tool call to the oracle (AGENTIC_VERIFIER_FORCE_ORACLE=1)."""
-    return str(os.environ.get("AGENTIC_VERIFIER_FORCE_ORACLE", "")).strip().lower() in ("1", "true", "yes")
-
-
-
-
-
-
-
-
 def _verifier_prompt() -> str:
     """Pick the verifier prompt: the ABI-mapping variant when AGENTIC_VERIFIER_ABI is truthy, else the
     plain reviewer prompt (the validated two-lens baseline)."""
@@ -391,9 +333,6 @@ def _forced_kwargs(kwargs, name):
     return kw
 
 
-_ORACLE_TOOL = "static_type_oracles"
-
-
 def _tool_names(kwargs) -> set:
     """Names of the tools in an outgoing request, tolerant of both shapes langchain emits."""
     return {n for n in (_name_of(t) for t in (kwargs.get("tools") or [])) if n}
@@ -427,56 +366,6 @@ def _name_of(t):
     if isinstance(t, dict):
         return ((t.get("function") or {}).get("name")) or t.get("name")
     return getattr(t, "name", None)
-
-
-def _force_oracle_call(messages, kwargs):
-    """Pin the reviewer's tool choice to the oracle until it has actually called it once.
-
-    `tool_choice="required"` was not enough: compelled to act, the model spent both forced turns on
-    `decompile` and `value_usage` -- the tools it already favours -- and never reached the oracle
-    (6 experiments, same outcome; not a wiring bug, the tool is published, allowlisted and invocable).
-    Naming the function in `tool_choice` removes the choice: the API must emit a call to exactly this
-    tool. The pin releases as soon as one call has been made, so the rest of the conversation is the
-    model's own -- it reads the certified facts, then decompiles and reasons as usual."""
-    names = _tool_names(kwargs)
-    if _ORACLE_TOOL not in names:
-        print(f"[force-oracle] NOT pinning: oracle absent from request tools={sorted(names)}")
-        return messages, kwargs
-    already = any(
-        (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)) == _ORACLE_TOOL
-        for m in messages
-        for tc in (getattr(m, "tool_calls", None) or []))
-    if already:
-        return messages, kwargs
-    kwargs = dict(kwargs)
-    kwargs["tool_choice"] = {"type": "function", "function": {"name": _ORACLE_TOOL}}
-    print(f"[force-oracle] pinned -> static_type_oracles; request carries {len(names)} tools: {sorted(names)}")
-    return messages, kwargs
-
-
-def _require_tool_turns(messages, kwargs, n):
-    """Require a tool call for a conversation's first `n` turns (`tool_choice="required"`).
-
-    This does NOT choose the tool -- the model still picks from its roster, so what it selects is a
-    function of the context it is in. The requirement only removes the option of answering without
-    looking, which is the actual observed failure: the reviewer answers after a single `decompile`
-    and never reaches for anything else, so a tool it was explicitly instructed to call went unused
-    in 5 separate experiments (verified NOT to be a wiring bug -- registry, MCP publication, agent
-    allowlist and a live MCP invocation all check out).
-
-    Spanning two turns is deliberate. Turn 1 is habitually `decompile`; forcing only turn 1 would
-    change nothing. Turn 2 puts the model in a state where it has already read the C code and must
-    still act, which is the point at which consulting the certified oracles is the sensible move."""
-    if not kwargs.get("tools") or n <= 0:
-        return messages, kwargs
-    turns = sum(1 for m in messages
-                if getattr(m, "type", None) == "ai" and getattr(m, "tool_calls", None))
-    if turns < n:
-        kwargs = dict(kwargs)
-        kwargs["tool_choice"] = "required"
-    return messages, kwargs
-
-
 def _cap_tool_loop(messages, kwargs):
     """Per-conversation ReAct loop breaker. deepagents runs every subagent with a hardcoded
     recursion_limit of 9_999 (graph.py) — effectively unbounded — and this small model can spin on the
@@ -601,7 +490,7 @@ def _make_salvaging_class():
     return SalvagingChatOpenAI
 
 
-def _scoped_model(opts, allow, label, pin_oracle=False, n_turns=0):
+def _scoped_model(opts, allow, label):
     """A per-subagent model that enforces `allow` on every outgoing request.
 
     `SubAgent` accepts a `model`, so each subagent can carry its own roster policy. The COORDINATOR now
@@ -618,10 +507,6 @@ def _scoped_model(opts, allow, label, pin_oracle=False, n_turns=0):
             if not reported["done"] and before != after:
                 print(f"[roster] {label}: dropped {sorted(before - after)} -> offering {sorted(after)}")
                 reported["done"] = True
-            if pin_oracle:
-                messages, kwargs = _force_oracle_call(messages, kwargs)
-            elif n_turns:
-                messages, kwargs = _require_tool_turns(messages, kwargs, n_turns)
             return messages, kwargs
 
 
@@ -679,58 +564,6 @@ def _DEFAULT_ORACLES():
     """The task module owns the default oracle set; the library must not hardcode task knowledge."""
     from agentic.tasks import type_recovery
     return type_recovery.DEFAULT_ORACLES
-
-
-def _collect_evidence(oid: str, question: str, opts: dict) -> str:
-    """Run the task's deterministic EVIDENCE GATHERERS in-process and return the text to prepend to the
-    worker's prompt (empty string when disabled or when nothing is found).
-
-    Unlike `_collect_oracle_facts` (which runs AFTER the agents and OVERRIDES them), this is a genuine
-    PRE-pass whose output the worker reads. The two are complementary: an oracle answers a variable
-    outright; a gatherer supplies evidence for the ~75% no oracle can certify.
-
-    Opt-in via AGENTIC_EVIDENCE_BUNDLE=1 — it changes what the model sees, and model-facing changes
-    have a poor record here, so it ships off until an A/B says otherwise."""
-    if os.environ.get("AGENTIC_EVIDENCE_BUNDLE", "") not in ("1", "true", "yes"):
-        return ""
-    from oxide.core.oxide import api
-    from agentic import tools as T, grounding as G
-    from agentic.tasks import type_recovery  # noqa: F401 registers the gatherer
-    _s, ct = T.build_tools(api, oid, memoize=False)
-    out = []
-    for name, fn in G.resolve_domain_evidence(opts.get("domain_evidence") or "auto"):
-        try:
-            txt = fn(ct, question)
-        except Exception as e:  # noqa: BLE001  a gatherer must never break the run
-            print(f"[evidence] {name} failed: {e}")
-            continue
-        if txt:
-            out.append(txt)
-    return "\n\n".join(out)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @contextlib.contextmanager
 def _root_run_span_cm(oid: str, vaddr: str, name: str):
     """One root OpenInference span. Tagging it AGENT + session.id makes Phoenix render a single connected
@@ -901,13 +734,7 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
         # stack_var, xrefs, ...) plus the oracle tools. All are addr-based so they work on the stripped
         # function. The deterministic trailer still pins the certified facts as a final guarantee.
         tools = [t for t in all_tools if getattr(t, "name", "") in WORKER_TOOLS]
-        # Deterministic pre-gathered evidence (opt-in). Appended to the worker's system prompt so the
-        # facts are present WITHOUT the worker having to decide to go and get them — it never does.
-        _evidence = _collect_evidence(oid, question, opts)
-        _worker_sys = _with_topk(TYPE_WORKER_PROMPT.format(oid=oid, vaddr=vaddr))
-        if _evidence:
-            _worker_sys = f"{_worker_sys}\n\n{_evidence}"
-            print(f"[evidence] injected {len(_evidence)} chars into the type_worker prompt")
+        _worker_sys = TYPE_WORKER_PROMPT.format(oid=oid, vaddr=vaddr)
         _worker_model = _scoped_model(opts, WORKER_TOOLS, "type_worker")
         type_worker = {
             "name": "type_worker",
@@ -934,41 +761,13 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
             "name": "verifier",
             "description": "Adjudicates candidate variable-type claims against the deterministic "
                            "oracles and verify_finding; corrects claims that conflict with certified types.",
-            "system_prompt": _with_topk(_verifier_prompt().format(oid=oid, vaddr=vaddr)
-                                       + (_oracle_tool_hint(oid, vaddr, _vtools)
-                                          if _verifier_oracles() else "")),
+            "system_prompt": (_verifier_prompt().format(oid=oid, vaddr=vaddr)
+                              + (_oracle_tool_hint(oid, vaddr, _vtools)
+                                 if _verifier_oracles() else "")),
             "tools": _roster(all_tools, _vtools, "verifier"),
         }
-        verifier["model"] = _scoped_model(opts, _vtools, "verifier",
-                                          pin_oracle=_force_oracle(), n_turns=_force_turns())
-        # Neuter the auto-added general-purpose subagent. deepagents injects a `general-purpose`
-        # subagent that has ALL of the main agent's tools (every MCP analysis tool + the built-in
-        # filesystem tools ls/read_file/write_file/glob/grep/execute). Tracing showed the coordinator
-        # occasionally delegates a vague "map the variables" task to it, and it then thrashes —
-        # re-running decompile/stack_var and calling `ls /` — because it is the ONLY agent holding all
-        # of those tools at once. Providing our own subagent NAMED `general-purpose` overrides the
-        # default (deepagents only auto-adds one when none is supplied); ours has NO tools, so the
-        # coordinator is forced down the intended type_worker -> verifier path instead of a
-        # do-everything escape hatch. The two-lens split (worker=assembly, verifier=decompilation) and
-        # the deterministic trailer are unaffected.
-        general_purpose = {
-            "name": "general-purpose",
-            "description": "Disabled. Do NOT delegate to this agent — use type_worker and verifier.",
-            "system_prompt": "You have no tools and no role in this pipeline. Immediately reply "
-                             "'delegate to type_worker or verifier instead' and return control.",
-            "tools": [],
-        }
-        # Coordinator gets NO analysis tools — only the built-in write_todos (plan) and task
-        # (delegate). This forces genuine plan-then-delegate multi-agent behaviour; the worker holds
-        # the analysis + oracle tools, and the verifier adjudicates the results.
-        # AGENTIC_NEUTER_GP=1 overrides deepagents' default all-tools general-purpose subagent with a
-        # no-tool stub. DEFAULT OFF: an A/B showed the stub HELPS some functions (do_decode +3.17) but
-        # HANGS others (version_etc_ar spun 18+ min) — the coordinator re-delegates in a loop when the
-        # stub replies "delegate elsewhere". Off by default is the safe behaviour (all functions
-        # converge); leave it as an opt-in experiment until the re-delegation loop is guarded.
+        verifier["model"] = _scoped_model(opts, _vtools, "verifier")
         _subagents = [type_worker, verifier]
-        if str(C._opt(opts, "neuter_gp") or "0").strip().lower() in ("1", "true", "yes", "on"):
-            _subagents.append(general_purpose)
         agent = create_deep_agent(
             model=model,
             tools=[],

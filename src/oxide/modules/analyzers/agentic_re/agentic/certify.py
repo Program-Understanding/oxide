@@ -14,42 +14,7 @@ import re
 from agentic.claims import _claims_from_messages
 
 
-# --- ORACLES-IN-THE-LOOP experiment (opt-in, AGENTIC_VERIFIER_ORACLES=1) --------------------------
-# The architecture's central claim is that certification must be applied BY CODE, after the agents,
-# and never shown to them -- because a fact a model has seen becomes indistinguishable from a fact the
-# model produced. This flag tests that claim head-on by inverting it: the reviewer is given the oracle
-# tool and asked to apply the certified facts ITSELF, and the deterministic trailer is switched off so
-# the oracles fire exactly once. The comparison is therefore "same facts, applied by a 12B model" vs
-# "same facts, applied by code".
-#
-# NOT the same as the earlier A/B recorded above: that one left the trailer ON, so the oracles were
-# applied twice and the model could only corrupt what code then re-fixed (version_etc_ar 86.46->70.83).
-# Here the model is the only consumer, which is the configuration the design argument is about.
-# The facts are INJECTED, not fetched. Offering the oracle as a TOOL was tried first and the reviewer
-# never called it -- verified not to be a wiring bug (registry, MCP publication, allowlist and a live
-# MCP invocation all check out; the roster printed the tool and a direct call returned certifications).
-# It is the fifth instance of this model declining a tool it was explicitly instructed to use, matching
-# the tool-selection audit's finding that `xrefs_to`/`read_values`/`compute` were chosen 0 times in
-# 1049 calls. Appending the tool instructions also REDUCED its tool use (decompile x1 + value_usage x3
-# -> decompile x1 only). Injection removes tool selection from the experiment so that the only variable
-# left is the one under test: can the model APPLY certified facts as well as code applies them?
-_ORACLE_SUFFIX = """
-
-CERTIFIED FACTS for this function — deterministic, re-derived from the binary and public ABI \
-knowledge. These are NOT guesses and they outrank your own reading of the decompilation:
-{facts}
-
-How to apply each kind:
-  - EXACT — replace your type for that id, unconditionally.
-  - FLOOR — asserts only "this id holds a pointer", pointee unknown. Use it when your type is NOT a \
-pointer; KEEP your own more specific pointer when it already is one (never overwrite `char *` with \
-`void *`).
-  - SHAPE — a field layout with no source-level name. Use it unless you already have a NAMED pointee.
-Ignore any fact whose type is wider than that id's declared byte size. For every id not listed above, \
-use your own decompilation-based judgement."""
-
-
-# Tool-mode hint (used with AGENTIC_VERIFIER_FORCE_TURNS): the reviewer picks the tool itself.
+# Per-oracle descriptions used to build the reviewer's tool hint.
 _ORACLE_TOOL_BLURB = {
     # Peer descriptions: each names the EVIDENCE it reads, none claims to subsume the others.
     # The combined oracle previously advertised itself as "runs all of the above at once", which made
@@ -126,24 +91,6 @@ Apply what they return as authoritative: a fact with `floor: false` replaces you
 fact with `floor: true` asserts only "this is a pointer", so use it when your type is NOT a pointer \
 but keep your own more specific pointer when it already is one; ignore any fact wider than the id's \
 declared byte size."""
-
-
-def _oracle_brief(oid: str, question: str, opts: dict) -> str:
-    """The certified facts, rendered for injection into the reviewer's prompt."""
-    try:
-        facts = _collect_oracle_facts(oid, question, opts)
-    except Exception as e:  # noqa: BLE001
-        print(f"[verifier-oracles] skipped — {str(e)[:120]}")
-        return ""
-    if not facts:
-        return ""
-    kind = {"exact": "EXACT", "floor": "FLOOR", "shape": "SHAPE"}
-    lines = [f"  {vid}: {ctype}   [{kind.get(mode, mode)} — {oracle}]"
-             for vid, (ctype, oracle, mode) in sorted(facts.items(), key=lambda kv: kv[0])]
-    print(f"[verifier-oracles] injected {len(lines)} certified facts into the reviewer prompt")
-    return _ORACLE_SUFFIX.format(facts="\n".join(lines))
-
-
 def _verifier_oracles() -> bool:
     """Is the reviewer given the oracles as TOOLS? Default ON -- this is the shipped architecture.
 
@@ -176,8 +123,7 @@ def _collect_oracle_facts(oid: str, question: str, opts: dict) -> dict:
     for rendering). The oracles are NOT a pre-pass and their facts are NOT injected into any prompt —
     the coordinator/worker/verifier never see them, they only get OVERRIDDEN by them. So the verifier
     re-derives types the oracles already knew. Feeding these facts FORWARD into a prompt is an untested
-    lever, not current behaviour (`_collect_evidence` is the opt-in pre-pass that does something like
-    it)."""
+    lever, not current behaviour."""
     from oxide.core.oxide import api
     from agentic import tools as T, grounding as G
     from agentic.tasks import type_recovery  # noqa: F401 registers the 4 static oracles (the default)
