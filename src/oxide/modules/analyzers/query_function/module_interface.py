@@ -14,6 +14,7 @@ logger = logging.getLogger(NAME)
 
 CLAP_ASM_REVISION = "620f4beba2edce172e8f35e263399716494950c9"
 CLAP_TEXT_REVISION = "3c4bfe1a936fd9f9140892c4d1d813e4a23301f8"
+_FAILED_DECOMP_INDEX_KEYS: set[str] = set()
 
 opts_doc = {
     "query": {"type": str, "mangle": True, "default": ""},
@@ -360,11 +361,28 @@ def _load_or_build_decomp_index(
     t0 = time.perf_counter()
     include_embeddings = model is not None
     key = _decomp_cache_key(oid, model_id, max_chars, include_embeddings)
+    if use_cache and (not rebuild) and key in _FAILED_DECOMP_INDEX_KEYS:
+        counts[oid] = {
+            "cache": "skip",
+            "num_functions": 0,
+            "num_indexed": 0,
+            "skip_reason": "cached_missing_ghidra_decmap",
+        }
+        return None, _tinfo(timing, cache_hit=True, build_total_s=time.perf_counter() - t0)
 
     if use_cache and (not rebuild) and api.local_exists(NAME, key):
         try:
             blob = api.local_retrieve(NAME, key) or {}
             idx = blob.get(oid)
+            if isinstance(idx, dict) and idx.get("_skip_reason") == "missing_ghidra_decmap":
+                _FAILED_DECOMP_INDEX_KEYS.add(key)
+                counts[oid] = {
+                    "cache": "skip",
+                    "num_functions": int(idx.get("num_functions", 0) or 0),
+                    "num_indexed": 0,
+                    "skip_reason": "cached_missing_ghidra_decmap",
+                }
+                return None, _tinfo(timing, cache_hit=True, build_total_s=time.perf_counter() - t0)
             if idx and ("codes" in idx) and ((not include_embeddings) or ("emb" in idx)):
                 counts[oid] = {
                     "cache": "hit",
@@ -386,6 +404,38 @@ def _load_or_build_decomp_index(
     previews: List[str] = []
     codes: List[str] = []
     decompile = _get_decompile_map(oid)
+    if not decompile:
+        _FAILED_DECOMP_INDEX_KEYS.add(key)
+        counts[oid] = {
+            "cache": "miss",
+            "num_functions": len(f_list),
+            "num_indexed": 0,
+            "skip_reason": "missing_ghidra_decmap",
+        }
+        if use_cache:
+            try:
+                api.local_store(
+                    NAME,
+                    key,
+                    {
+                        oid: {
+                            "_skip_reason": "missing_ghidra_decmap",
+                            "num_functions": len(f_list),
+                            "num_indexed": 0,
+                        }
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to cache decomp skip sentinel for oid=%s", oid)
+        return None, _tinfo(
+            timing,
+            cache_hit=False,
+            list_funcs_s=t_list,
+            decomp_s=0.0,
+            embed_s=0.0,
+            store_s=0.0,
+            build_total_s=time.perf_counter() - t0,
+        )
 
     t_decomp0 = time.perf_counter()
     last_report_t = t_decomp0
@@ -815,12 +865,19 @@ def _resolve_member_text(member: Sequence[Any], instructions: Dict[Any, Any]) ->
 
 
 def _assembly_dict(rows: Sequence[Tuple[int, str]]) -> Dict[str, str]:
+    """Build the per-function instruction map CLAP's AsmTokenizer expects.
+
+    Upstream uses sequential 1-based string indices as keys. Encoding the
+    instruction address into the key instead risks reordering if the tokenizer
+    sorts keys rather than relying on insertion order.
+    """
     out: Dict[str, str] = {}
-    for idx, (addr, text) in enumerate(rows):
+    position = 1
+    for _addr, text in rows:
         if not text:
             continue
-        key = f"{idx}_{addr:x}" if isinstance(addr, int) and addr >= 0 else str(idx)
-        out[key] = text
+        out[str(position)] = text
+        position += 1
     return out
 
 
@@ -1082,6 +1139,11 @@ def _encode_clap(
             inputs = {key: value.to(encoders.device) for key, value in inputs.items()}
             output = model(**inputs)
             emb = _clap_output_embedding(output, inputs, torch)
+            if len(emb.shape) != 2:
+                raise ValueError(
+                    f"CLAP embedding must be 2-D (batch, hidden), got shape {tuple(emb.shape)}. "
+                    "Normalizing or scoring a non-pooled tensor would operate on the wrong axis."
+                )
             if normalize:
                 emb = torch.nn.functional.normalize(emb, p=2, dim=1)
             batches.append(emb.detach().cpu().numpy().astype(np.float32))
@@ -1089,7 +1151,7 @@ def _encode_clap(
 
 
 def _clap_output_embedding(output: Any, inputs: Dict[str, Any], torch: Any) -> Any:
-    if hasattr(output, "shape"):
+    if hasattr(output, "shape") and len(output.shape) == 2:
         return output
     pooler_output = getattr(output, "pooler_output", None)
     if pooler_output is not None and hasattr(pooler_output, "shape"):

@@ -1,4 +1,4 @@
-DESC = "Unified file retrieval over embedded strings with BM25 or PACT backends"
+DESC = "Unified file retrieval over embedded strings with BM25 or PACK backends"
 NAME = "file_search"
 
 import hashlib
@@ -25,7 +25,7 @@ opts_doc = {
     "prompt": {"type": str, "mangle": True, "default": ""},
     "prompt_path": {"type": str, "mangle": True, "default": ""},
     "top_k": {"type": int, "mangle": True, "default": 0},
-    "backend": {"type": str, "mangle": True, "default": "pact"},
+    "backend": {"type": str, "mangle": True, "default": "pack"},
     "oids": {"type": list, "mangle": False, "default": []},
     "include_string_rankings": {"type": bool, "mangle": True, "default": True},
     "strings_for_top_n_oids": {"type": int, "mangle": True, "default": 0},
@@ -52,17 +52,16 @@ def documentation() -> Dict[str, Any]:
 
 
 def _normalize_backend(raw: Any) -> str:
-    backend = str(raw or "pact").strip().lower()
+    backend = str(raw or "pack").strip().lower()
     alias = {
-        "fuse": "pact",
-        "pack": "pact",
-        "emb": "pact",
-        "semantic": "pact",
+        "fuse": "pack",
+        "emb": "pack",
+        "semantic": "pack",
         "lexical": "bm25",
     }
     backend = alias.get(backend, backend)
-    if backend not in {"bm25", "pact"}:
-        backend = "pact"
+    if backend not in {"bm25", "pack"}:
+        backend = "pack"
     return backend
 
 
@@ -165,7 +164,7 @@ def results(oid_list: List[str], opts: dict) -> Dict[str, Any]:
             top_k_strings_per_oid=top_k_strings_per_oid,
         )
 
-    return search_prompt_pact(
+    return search_prompt_pack(
         scope_oids,
         prompt,
         top_k=top_k,
@@ -396,7 +395,7 @@ def build_embedding_matrix(
     return np.vstack(vectors).astype("float32"), ordered
 
 
-def search_prompt_pact(
+def search_prompt_pack(
     oids: List[str],
     prompt: str,
     top_k: int = 0,
@@ -447,9 +446,8 @@ def search_prompt_pact(
             candidate_limit = min(len(ranked), strings_for_top_n_oids)
         for i, cand in enumerate(ranked):
             if i < candidate_limit:
-                tokens = extract_tokens(str(cand.get("oid") or "")).get("str", [])
-                cand["string_matches"] = _rank_strings_for_oid_pact(
-                    tokens,
+                cand["string_matches"] = _rank_strings_for_oid_pack(
+                    extract_token_pairs(str(cand.get("oid") or "")),
                     q,
                     model=model,
                     top_k=top_k_strings_per_oid,
@@ -461,20 +459,32 @@ def search_prompt_pact(
     return {"prompt": prompt, "results": {"best_match": best, "candidates": ranked}}
 
 
-def _rank_strings_for_oid_pact(
-    tokens: List[str],
+def _rank_strings_for_oid_pack(
+    pairs: List[Tuple[str, str]],
     query_vec: np.ndarray,
     *,
     model: Any,
     top_k: int = 0,
     string_emb_batch_size: int = 128,
 ) -> List[Dict[str, Any]]:
+    """Rank a binary's strings against the query and report them as extracted.
+
+    Scoring runs on the normalized form so that ranking matches how the packed
+    document was built, but each row carries the raw string. Normalization drops
+    the case, punctuation, and version formatting that make a string identifying,
+    so returning it leaves a caller unable to tell "SSH-2.0-dropbear" from a
+    generic mention of ssh.
+    """
     k = int(top_k)
     batch_size = max(1, int(string_emb_batch_size))
-    strings = list(dict.fromkeys(s for s in tokens if s))
-    if not strings:
+    by_normalized: Dict[str, str] = {}
+    for raw, norm in pairs:
+        if norm and norm not in by_normalized:
+            by_normalized[norm] = raw
+    if not by_normalized:
         return []
 
+    strings = list(by_normalized)
     embs = model.encode(strings, batch_size=batch_size, normalize_embeddings=True)
     embs_arr = np.asarray(embs, dtype=np.float32)
     q = np.asarray(query_vec, dtype=np.float32).reshape(-1)
@@ -483,7 +493,10 @@ def _rank_strings_for_oid_pact(
     else:
         sims = [float(x) for x in embs_arr.dot(q).tolist()]
 
-    rows = [{"string": s, "similarity": float(sim)} for s, sim in zip(strings, sims)]
+    rows = [
+        {"string": by_normalized[s], "similarity": float(sim)}
+        for s, sim in zip(strings, sims)
+    ]
     rows.sort(key=lambda x: (-float(x["similarity"]), str(x["string"])))
     for rank, row in enumerate(rows, start=1):
         row["rank"] = int(rank)
@@ -526,9 +539,10 @@ def filter_executables(oids: Sequence[str]) -> List[str]:
     return filtered
 
 
-def extract_tokens(oid: str) -> Dict[str, List[str]]:
+def extract_token_pairs(oid: str) -> List[Tuple[str, str]]:
+    """Retained strings as (raw, normalized), applying the filters of extract_tokens."""
     raw_strs = api.get_field("strings", oid, oid) or {}
-    strings: List[str] = []
+    pairs: List[Tuple[str, str]] = []
     for s in raw_strs.values():
         if not isinstance(s, str):
             continue
@@ -536,8 +550,12 @@ def extract_tokens(oid: str) -> Dict[str, List[str]]:
             continue
         ns = normalize(s)
         if TERM.search(ns):
-            strings.append(ns)
-    return {"str": strings}
+            pairs.append((s, ns))
+    return pairs
+
+
+def extract_tokens(oid: str) -> Dict[str, List[str]]:
+    return {"str": [ns for _, ns in extract_token_pairs(oid)]}
 
 
 def _canon_string_for_pack(text: str) -> str:
