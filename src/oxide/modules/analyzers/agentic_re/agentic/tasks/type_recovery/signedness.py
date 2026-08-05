@@ -32,6 +32,48 @@ _SIGN_SGN = {"sar", "movsx", "movsxd", "idiv"}
 _W2U = {1: "uint8_t", 2: "uint16_t", 4: "uint32_t", 8: "uint64_t"}
 
 
+# --- two vetoes on the unsigned mnemonics above -------------------------------------------------
+# Both fire on the SIGN IDIOM `(x > 0) - (x < 0)`, which gcc compiles for a SIGNED int as
+#   shr eax,0x1f      ; the sign BIT of x            <- read as `shr` => "unsigned"
+#   setg dl / movzx edx,dl                            <- read as `movzx` => "unsigned"
+# Neither instruction says anything about the variable's own signedness: the first extracts the
+# sign bit (if anything, evidence the value IS signed), and the second widens a one-bit setcc
+# result. Measured on sort/diff_reversed, GT `int`: the oracle claimed uint32_t and the function
+# scored 83.33 -> 75.00. Both vetoes only WITHHOLD evidence, so they can cost coverage but cannot
+# introduce a wrong claim.
+_SIGNBIT_SHIFT = {7, 15, 31, 63}          # width-1 for byte/word/dword/qword
+
+
+def _is_signbit_extract(mn: str, ops: str) -> bool:
+    """`shr r, width-1` isolates the sign bit rather than dividing; it is not unsigned evidence."""
+    if mn != "shr":
+        return False
+    m = re.search(r",\s*(0x[0-9a-fA-F]+|\d+)\s*$", ops or "")
+    if not m:
+        return False
+    try:
+        return int(m.group(1), 0) in _SIGNBIT_SHIFT
+    except (ValueError, TypeError):
+        return False
+
+
+_SETCC = re.compile(r"^set[a-z]{1,3}$")
+
+
+def _boolean_defined(dis, pos, reg, span: int = 6) -> bool:
+    """Was `reg` last written by a `setcc` or by a sign-bit extraction? Either way it now holds a
+    one-bit BOOLEAN, so a `movzx` widening it describes that boolean and not the value the boolean
+    was computed from. Both halves of `(x > 0) - (x < 0)` take this form:
+    `shr eax,0x1f` / `movzbl al,eax` and `setg dl` / `movzbl dl,edx`."""
+    for j in range(pos - 1, max(-1, pos - 1 - span), -1):
+        _a, mn, ops = dis[j]
+        dst = _canon_reg(ops.split(",")[0] if "," in ops else ops)
+        if dst != reg:
+            continue
+        return bool(_SETCC.match(mn)) or _is_signbit_extract(mn, ops)   # nearest definition decides
+    return False
+
+
 _DIS_LINE = re.compile(r"^(0x[0-9a-fA-F]+)\s+([a-z][a-z0-9]*)\s*(.*)$")
 
 
@@ -99,6 +141,10 @@ def _ops_on_reg(dis, pos, reg, back: bool, span: int = 14) -> list:
             src = ops.split(",", 1)[1] if "," in ops else ""
             if reg not in _regs_in(re.sub(r"\[[^\]]*\]", "", src)):
                 continue
+            if _boolean_defined(dis, j, reg):
+                continue                   # widening a setcc boolean, not this value
+        if _is_signbit_extract(mn, ops):
+            continue                       # sign-bit extraction, not a division
         if mn in _SIGN_UNS or mn in _SIGN_SGN:
             found.append(mn)
         if mn == "mov":
@@ -141,6 +187,13 @@ def _sign_evidence(call_tool, addr, accesses, reg_name=None) -> tuple:
             # exactly what mis-claimed `cksum/cksum_slice8` V5 (`uchar *`) as an unsigned integer.
             if reg_name and reg_name not in _regs_in(re.sub(r"\[[^\]]*\]", "", ops)):
                 continue
+            if _is_signbit_extract(mn, ops):
+                continue                   # see _is_signbit_extract
+            if mn == "movzx":
+                _src = ops.split(",", 1)[1] if "," in ops else ""
+                _sr = _canon_reg(re.sub(r"\[[^\]]*\]", "", _src))
+                if _sr and _boolean_defined(dis, pos, _sr):
+                    continue               # widening a setcc boolean
             (uns if mn in _SIGN_UNS else sgn).append(mn)
             why.append(f"{mn} at {m.group(1)}")
             continue

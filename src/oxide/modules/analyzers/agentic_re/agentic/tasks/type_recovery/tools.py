@@ -66,9 +66,12 @@ def spilled_param(ctx, addr: str, variables: str) -> list:
     return static_type_oracles(ctx, addr=addr, variables=variables, which="spilled_param")
 
 
-@_tool("signedness", "Recover the SIGN of an integer variable from opcodes the compiler had no "
-                     "choice about (shr/sar, movzx/movsx, div/idiv, rotates).")
+@_tool(group="oracle", params=_ORACLE_PARAMS, required=["addr", "variables"],
+       desc="CERTIFIED signedness for integer variables, from opcodes the compiler had no choice "
+            "about (shr/sar, movzx/movsx, div/idiv, rotates). Use when deciding signed vs unsigned. "
+            "`variables`: one `V<n>  <register 0x..|stack -0x..>  <size>` per line.")
 def signedness(ctx, addr: str, variables: str) -> list:
+    """Oracle: an integer's sign bit, recovered from sign-revealing instruction choices."""
     return static_type_oracles(ctx, addr, variables, which="signedness")
 
 

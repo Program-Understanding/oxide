@@ -169,6 +169,28 @@ _CALL_ARGS = r"\(((?:[^()]|\([^()]*\))*)\)"
 _LIBC_CALL = re.compile(r"\b([A-Za-z_]\w*)\s*" + _CALL_ARGS)
 
 
+def _split_args(argstr: str) -> list:
+    """Split a captured argument list on TOP-LEVEL commas only.
+
+    `_CALL_ARGS` deliberately admits one level of nested parens so a cast or nested call is captured
+    whole -- but a plain `split(",")` then splits INSIDE that nested call, shifting every later
+    argument's position: in `FUN_a(FUN_b(x, y), p)` the value `p` was read as argument 3, so the
+    forwarding walk followed the callee's wrong parameter and could certify a wrong type."""
+    out, depth, cur = [], 0, []
+    for ch in argstr or "":
+        if ch == "," and depth == 0:
+            out.append("".join(cur).strip())
+            cur = []
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        cur.append(ch)
+    out.append("".join(cur).strip())
+    return out
+
+
 def _libc_type_of_param(dec: str, pname: str):
     """If `pname` (or a one-level local alias) is passed to a known libc function at a fixed-type
     position anywhere in `dec`, return (ctype, callee, argpos-1based); else None."""
@@ -181,7 +203,7 @@ def _libc_type_of_param(dec: str, pname: str):
             sig = _LIBC_SIG.get(cm.group(1))
             if not sig:
                 continue
-            args = [a.strip() for a in cm.group(2).split(",")]
+            args = _split_args(cm.group(2))
             for j, a in enumerate(args):
                 if j < len(sig) and sig[j] and _arg_is_value(a, aliases):
                     return (sig[j], cm.group(1), j + 1)
@@ -192,9 +214,16 @@ def _vid_sizes(question: str) -> dict:
     """{'V1': 8, 'V2': 4} from the VARIABLES block. The slot width is GIVEN, so it overrides a
     declared integer width read out of a callee: the callee's parameter may be a truncated view of
     the value (`int param_3` for an 8-byte slot), and the claim we are making is only "not a
-    pointer" -- the width should come from the fact we are certain about."""
+    pointer" -- the width should come from the fact we are certain about.
+
+    Whitespace-tolerant (same pattern the certified trailer uses): the harness question is
+    TAB-separated, but on the tool path the variables line is whatever the reviewer passed, and the
+    prompts render the format with spaces. A tab-only parse returned {} there, which silently
+    disabled every size-dependent guard downstream -- the signedness oracle (which only fires on the
+    tool path) abstained on all variables, and the interprocedural realizability check never ran."""
     return {m.group(1): int(m.group(2))
-            for m in re.finditer(r"^(V\d+)\t[^\t]+\t(\d+)\s*$", question or "", re.M)}
+            for m in re.finditer(r"^\s*(V\d+)\s+(?:register|stack)\s+\S+\s+(\d+)\s*$",
+                                 question or "", re.M)}
 
 
 # A cast token, for stripping: either something ending in `*`, or a known scalar type name. It must

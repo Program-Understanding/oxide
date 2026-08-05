@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from .common import _CALL_ARGS, _REGNAME_TO_ARG, _SPILL_STORE, _W2T, _arg_is_value, _decl_pointer_map, _is_vague_pointer, _libc_type_of_param, _vid_sizes, _vid_stack_offsets, _vid_to_arg
+from .common import _CALL_ARGS, _REGNAME_TO_ARG, _SPILL_STORE, _W2T, _arg_is_value, _decl_pointer_map, _is_vague_pointer, _libc_type_of_param, _split_args, _vid_sizes, _vid_stack_offsets, _vid_to_arg
 
 
 def _spilled_home_args(call_tool, addr, question) -> dict:
@@ -221,7 +221,7 @@ def _resolve_forward_usage(call_tool, dec, fname, pname, depth, seen):
         aliases.add(am.group(1))
     alt = "|".join(re.escape(a) for a in aliases)
     for cm in _USERFN_CALL.finditer(dec):
-        args = [a.strip() for a in cm.group(2).split(",")]
+        args = _split_args(cm.group(2))
         pos = next((j for j, a in enumerate(args) if _arg_is_value(a, aliases)), None)
         if pos is None:
             continue
@@ -255,7 +255,7 @@ def _resolve_forward_chain(call_tool, dec, pname, depth, seen):
         aliases.add(am.group(1))
     alt = "|".join(re.escape(a) for a in aliases)
     for cm in _USERFN_CALL.finditer(dec):
-        args = [a.strip() for a in cm.group(2).split(",")]
+        args = _split_args(cm.group(2))
         pos = next((j for j, a in enumerate(args) if _arg_is_value(a, aliases)), None)
         if pos is None:
             continue
@@ -319,7 +319,7 @@ def interprocedural_param_usage_facts(call_tool, question) -> list:
         alt = "|".join(re.escape(a) for a in aliases)
         for line in dec.splitlines():
             for cm in _USERFN_CALL.finditer(line):
-                args = [a.strip() for a in cm.group(2).split(",")]
+                args = _split_args(cm.group(2))
                 pos = next((j for j, a in enumerate(args) if _arg_is_value(a, aliases)), None)
                 if pos is None:
                     continue

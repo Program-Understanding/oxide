@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from .common import _LIBC_SIG, _arg_is_value, _is_vague_pointer, _vid_to_arg
+from .common import _LIBC_CALL, _LIBC_SIG, _arg_is_value, _is_vague_pointer, _split_args, _vid_to_arg
 
 
 def callee_type_recall_facts(call_tool, question) -> list:
@@ -24,7 +24,9 @@ def callee_type_recall_facts(call_tool, question) -> list:
         return []
     if not isinstance(dec, str) or dec.startswith("(no"):
         return []
-    call_re = re.compile(r"\b([A-Za-z_]\w*)\s*\(([^()]*)\)")
+    # The shared `_LIBC_CALL` (one level of nested parens), NOT a flat `[^()]*` matcher: Ghidra's
+    # dominant call idiom is `strcmp((char *)param_1, param_2)`, and a flat matcher fails on the
+    # cast's parens -- silently missing the call `_arg_is_value`'s cast-stripping exists to handle.
     facts, taken = [], set()
     for vid, k in vid_param.items():
         if vid in taken:
@@ -35,11 +37,11 @@ def callee_type_recall_facts(call_tool, question) -> list:
             aliases.add(am.group(1))
         alt = "|".join(re.escape(a) for a in aliases)
         for line in dec.splitlines():
-            for cm in call_re.finditer(line):
+            for cm in _LIBC_CALL.finditer(line):
                 sig = _LIBC_SIG.get(cm.group(1))
                 if not sig:
                     continue
-                args = [a.strip() for a in cm.group(2).split(",")]
+                args = _split_args(cm.group(2))
                 for j, a in enumerate(args):
                     if j < len(sig) and sig[j] and _arg_is_value(a, aliases):
                         facts.append((vid, sig[j], cm.group(1), j + 1))
