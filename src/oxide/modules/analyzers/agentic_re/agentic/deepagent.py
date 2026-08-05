@@ -811,78 +811,47 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     final = _coerce_sizes(question, final)
 
     if _flow_rec is not None:
-        _emit_flow_diagram(_flow_rec, oid, vaddr, question, final, opts)
+        _emit_flow(_flow_rec, oid, vaddr, question, final, opts)
     return final
 
 
-# Stash of the last run's flow data so the harness can RE-render the diagrams after it has scored the
-# prediction (adding ground-truth match + mean score to the Output node). Keeps the library generic —
-# it only DISPLAYS a scoring dict the harness computes; it never knows about TREX ground truth itself.
-_LAST_FLOW: dict = {}
+# --- run-flow diagram (opt-in) -----------------------------------------------------------------
+# The recorder itself is a STANDALONE tool (agentic/extras/flow_recorder.py) that knows nothing about
+# type recovery. Everything domain-specific -- the oracle facts, which oracles were consulted, the
+# variable inventory -- is gathered here and injected, so the tool stays reusable and this stays the
+# only place that couples the two.
+def _inventory(question: str):
+    """[(id, location, size)] parsed from the question's VARIABLES block, for the figure's input
+    panel. Domain-specific, so it lives here rather than in the generic recorder."""
+    return [(m.group(1), m.group(2).strip(), m.group(3))
+            for m in re.finditer(r"(?m)^\s*(V\d+)\s+((?:register|stack)\s+\S+)\s+(\d+)\s*$",
+                                 question or "")]
 
 
-def _emit_flow_diagram(recorder, oid: str, vaddr: str, question: str, answer: str, opts: dict) -> None:
-    """Build the Mermaid run-flow figures from the recorded events + deterministic oracle facts, and write
-    them next to the run outputs. Best-effort: a failure here never affects the returned answer."""
+def _emit_flow(recorder, oid: str, vaddr: str, question: str, answer: str, opts: dict) -> None:
     try:
-        from agentic.extras import flow_recorder as _FR
-        oracle_facts = _collect_oracle_facts(oid, question, opts)
-        # the FULL list of deterministic oracles that were CONSULTED (mirrors _collect_oracle_facts'
-        # resolution) so the diagram can show which ran-and-abstained (e.g. runtime_type_probe) vs which
-        # certified — an oracle producing no fact must not look like it was skipped.
-        _which = (opts.get("domain_oracles")
-                   or os.environ.get("AGENTIC_DOMAIN_ORACLES")
-                   or _DEFAULT_ORACLES())
-        consulted = [x.strip() for x in str(_which).split(",") if x.strip()]
-        variables = _FR.input_vars_from_question(question)
-        meta = {"vaddr": vaddr, "nvars": len(variables) or len(set(re.findall(r"\bV\d+\b", question))),
-                "oracles_consulted": consulted, "variables": variables,
-                # Whether the deterministic trailer actually APPLIED these facts. The recorder
-                # recomputes them purely to display, so without this the diagram drew a
-                # "certification" stage on runs where certification was switched off and the reviewer
-                # consulted the oracles itself -- showing two appliers where there was one.
-                "certified_by_code": not _no_certify()}
+        from agentic.extras import flow_recorder as FR
+        which = (opts.get("domain_oracles") or os.environ.get("AGENTIC_DOMAIN_ORACLES")
+                 or _DEFAULT_ORACLES())
         out_dir = C.cfg_get("flow_dir") or opts.get("flow_dir") or os.getcwd()
-        base = os.path.join(out_dir, f"agentic_flow_{vaddr.replace('0x', '')}")
-        _LAST_FLOW.clear()
-        _LAST_FLOW.update({"recorder": recorder, "meta": meta, "oracle_facts": oracle_facts,
-                           "answer": answer, "base": base})
-        _render_flow(scoring=opts.get("flow_scoring"))
-    except Exception as e:  # noqa: BLE001
+        FR.emit(recorder, os.path.join(out_dir, f"agentic_flow_{vaddr.replace('0x', '')}"),
+                title=f"function @{vaddr}",
+                inventory=_inventory(question),
+                answer=answer,
+                facts=_collect_oracle_facts(oid, question, opts),
+                consulted=[x.strip() for x in str(which).split(",") if x.strip()],
+                # False when the reviewer called the oracles itself: they are then ordinary tool
+                # calls already drawn on the tools lifeline, not a separate applier.
+                applied_in_code=not _no_certify(),
+                scoring=opts.get("flow_scoring"))
+    except Exception as e:  # noqa: BLE001  a diagram must never affect the answer
         print(f"[flow] diagram skipped — {str(e)[:120]}")
 
 
-def _render_flow(scoring=None) -> None:
-    """Render the 3 views (flowchart, turn sequence, markdown) from _LAST_FLOW, optionally with a scoring
-    dict {ground_truth:{vid:type}, score:float} that adds the ground-truth match + mean score to Output."""
-    from agentic.extras import flow_recorder as _FR
-    F = _LAST_FLOW
-    if not F:
-        return
-    rec, meta, facts, answer, base = F["recorder"], F["meta"], F["oracle_facts"], F["answer"], F["base"]
-    # (1) overview flowchart. (2) sequence diagram, then compose ONE figure = input panel + the sequence
-    # image + output panel (final answer + score). (3) markdown log.
-    _, png_path = _FR.render(_FR.to_mermaid(rec, meta, facts, answer, scoring), base)
-    _, seq_png = _FR.render(_FR.to_sequence(rec, meta, facts, answer, scoring), base + "_turns")
-    if seq_png:
-        _FR.compose_sequence_figure(seq_png, meta, answer, scoring, base + "_turns.png")
-    with open(base + ".md", "w") as fh:
-        fh.write(_FR.to_markdown(rec, meta, facts, answer, scoring))
-    tag = "  (+ ground-truth & score)" if scoring else ""
-    print(f"[flow] run-flow diagrams -> {base}.{{mmd,svg,png}} (flowchart) + {base}_turns.png "
-          f"(input + sequence + output) + {base}.md{tag}"
-          + ("" if png_path else "  (npx @mermaid-js/mermaid-cli for PNGs)"))
-
-
 def write_flow_scoring(ground_truth: dict, score: float, per_var: dict = None) -> None:
-    """Public hook the HARNESS calls AFTER scoring: re-renders the last run's diagrams with the Output node
-    showing predicted-vs-ground-truth and the mean score. No-op if no flow run was recorded."""
-    if _LAST_FLOW:
-        try:
-            _render_flow(scoring={"ground_truth": ground_truth or {}, "score": score,
-                                  "per_var": per_var or {}})
-        except Exception as e:  # noqa: BLE001
-            print(f"[flow] scoring overlay skipped — {str(e)[:120]}")
+    """Hook the HARNESS calls after scoring: redraw the last run with the result overlay."""
+    from agentic.extras import flow_recorder as FR
+    FR.rescore(score=score, ground_truth=ground_truth, per_var=per_var)
 
 
 def run_sync(oid: str, question: str, opts: dict) -> str:

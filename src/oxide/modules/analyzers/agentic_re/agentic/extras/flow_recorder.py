@@ -1,16 +1,36 @@
-"""Optional run-flow recorder + Mermaid diagram for the deepagents type-recovery pipeline.
+"""Run-flow recorder and turn-by-turn sequence diagram for any LangChain / deepagents run.
 
-Enabled per-run via AGENTIC_FLOW_DIAGRAM=1 (or the `flow_diagram` opt / config). It attaches a LangChain
-callback handler to the agent run that records the ACTUAL flow — the coordinator's task decomposition,
-each subagent delegation, the tools each phase called (with results), the verifier's adjudication, and
-the deterministic oracle certification — then emits a Mermaid flowchart so a human can SEE what the
-multi-agent system did behind the scenes and judge whether it is correct.
+STANDALONE. This module imports nothing from its host package: only the standard library and,
+optionally, `langchain_core` (for the callback base class), the Mermaid CLI (to rasterise), and
+Pillow (to compose the final figure). Every one of those is optional -- without langchain the
+recorder is inert, without the Mermaid CLI you still get the `.mmd` source, without Pillow you
+still get the diagram, just not the input/output panels. Copy the file into any project that
+drives a tool-calling agent and it works there unchanged.
 
-Self-contained: writing the `.mmd` needs no dependency (view it in any Mermaid viewer). If the Mermaid
-CLI is reachable (`mmdc`, or `npx @mermaid-js/mermaid-cli`) a PNG is rendered too. Everything here is a
-no-op unless the flag is set, so importing it costs nothing.
+    from flow_recorder import FlowRecorder, emit, rescore
+
+    rec = FlowRecorder()
+    result = agent.invoke(inputs, config={"callbacks": [rec]})
+
+    emit(rec, "out/run", title="cut/cut_fields @0x102f27",
+         inventory=[("V1", "register 0x38", 8), ("V6", "stack -0x30", 4)],
+         answer=result["messages"][-1].content)
+    # -> out/run_turns.mmd, .svg, .png
+
+    rescore(score=86.11, ground_truth={"V1": "FILE *"})   # re-render with an overlay
+
+What it records, from three LangChain callbacks: every tool call with its arguments and its
+returned result, every delegation to a subagent (with the brief the parent wrote and the findings
+the child returned), and the model's reasoning text between tool calls. Phases are segmented by
+delegation, which matches the serial parent -> child flow without reconstructing the run-id tree.
+
+Everything domain-specific -- what a "variable" is, which tools are oracles, what the ground truth
+was -- is INJECTED through `emit`, never imported. The default view is the sequence diagram; pass
+`views=` to also write the overview flowchart or the markdown log.
 """
 from __future__ import annotations
+
+from dataclasses import dataclass, field
 
 import json
 import os
@@ -28,9 +48,69 @@ except Exception:  # noqa: BLE001  # langchain not installed -> feature simply u
 _PLAN_TOOL = "write_todos"
 _DELEGATE_TOOL = "task"
 _ORCHESTRATION = {_PLAN_TOOL, _DELEGATE_TOOL}
-# deterministic oracles, exposed as ordinary tools
-_ORACLE_TOOL_NAMES = {"static_type_oracles", "callee_signature", "decompiler_pointer",
-                      "spilled_param", "interprocedural_param_usage"}
+# Tools whose return is a LIST OF PER-ENTITY FACTS rather than prose. Their output is kept whole
+# (a prefix cap would show the first record and hide the rest) and rendered as `id=value` pairs.
+# Callers with different fact tools can extend this set before recording; it is only a display hint.
+FACT_TOOLS = {"static_type_oracles", "callee_signature", "decompiler_pointer", "spilled_param",
+              "interprocedural_param_usage", "signedness", "struct_shape"}
+_ORACLE_TOOL_NAMES = FACT_TOOLS          # backwards-compatible alias
+
+
+@dataclass
+class Style:
+    """How the sequence diagram is drawn. Every field has a working default; override only what
+    your pipeline needs. Pass an instance to `emit(..., style=Style(...))`.
+
+    root            label for the orchestrating agent (the one that delegates)
+    tools           label for the lifeline every tool call goes to
+    facts           label for the deterministic-facts lifeline, drawn only when facts are applied
+                    by code rather than fetched by the agent itself
+    agent_suffix    appended to each discovered sub-agent name ("planner" -> "planner agent")
+    icons           prefix participants with emoji; set False for plain ASCII
+    icon_for        name substring -> emoji, first match wins
+    roles           sub-agent name -> verb shown on its delegation arrow ("adjudicate", "search")
+    entity_re       regex for the entity ids your agents argue about, used to summarise a
+                    delegation as a span ("V1-V6"). Set None if your domain has no such ids.
+    fact_tools      tools whose output is a list of per-entity facts, rendered as `id=value` pairs
+    max_tools       tool calls drawn per phase before the rest are summarised
+    max_reason      characters of a reasoning note
+    show_reasoning  draw the model's between-call reasoning as notes
+    show_plan       draw the plan rows above the first delegation
+    """
+    root: str = "Coordinator"
+    tools: str = "Tools"
+    facts: str = "Facts"
+    agent_suffix: str = " agent"
+    icons: bool = True
+    icon_for: dict = field(default_factory=lambda: {
+        "coordinator": "\U0001f9ed", "verif": "\U0001f50d", "worker": "\u2699\ufe0f",
+        "tool": "\U0001f527", "fact": "\u2705", "oracle": "\u2705"})
+    roles: dict = field(default_factory=dict)
+    entity_re: str = r"V\d+"
+    fact_tools: frozenset = frozenset(FACT_TOOLS)
+    max_tools: int = 40
+    max_reason: int = 180
+    show_reasoning: bool = True
+    show_plan: bool = True
+    item_noun: str = "variables"     # what the input panel counts ("sources", "claims", ...)
+
+    def icon(self, name, kind=""):
+        if not self.icons:
+            return ""
+        low = (str(name) + " " + kind).lower()
+        for key, ico in self.icon_for.items():
+            if key in low:
+                return ico + " "
+        return "\U0001f916 "                                    # generic agent
+
+    def role(self, target):
+        if target in self.roles:
+            return self.roles[target]
+        low = str(target).lower()
+        return "adjudicate" if "verif" in low else "work on"
+
+
+DEFAULT_STYLE = Style()
 
 
 def _short(s, n=60):
@@ -58,7 +138,7 @@ class FlowRecorder(BaseCallbackHandler):
             # a delegation: record the assignment AND (via _pending) the subagent's returned conclusion
             _full = args.get("description", "") or args.get("_raw", "")
             ev = {"type": "delegate", "target": self._target(args),
-                  "desc": _short(_full, 110), "vids": _vid_span(_full),
+                  "desc": _short(_full, 110), "vids": _span(_full),
                   "result": "", "types": {}}
             self.events.append(ev)
             if run_id is not None:
@@ -104,6 +184,75 @@ class FlowRecorder(BaseCallbackHandler):
                         self.events.append({"type": "reason", "text": _short(txt, 200)})
         except Exception:  # noqa: BLE001
             pass
+
+    # -- manual recording API ------------------------------------------------------------------------
+    # Callbacks are the easy path when you control `invoke`/`astream`. These three let ANY driver feed
+    # the recorder: a framework without callbacks, a post-hoc replay of a transcript you already
+    # collected, or a test. They append the same events the callbacks do, so every view works the same.
+    def record_delegation(self, target, brief="", result=""):
+        """One sub-agent hand-off: who it went to, the brief, and what came back."""
+        ev = {"type": "delegate", "target": str(target or "agent"), "desc": _short(brief, 110),
+              "vids": _span(brief), "result": _short(result, 200), "types": _final_types(result)}
+        self.events.append(ev)
+        return ev
+
+    def record_tool_call(self, name, args=None, result=""):
+        """One tool call and the result it returned."""
+        args = args if isinstance(args, dict) else ({} if args is None else {"_raw": str(args)})
+        cap = 6000 if str(name) in _ORACLE_TOOL_NAMES else 600
+        ev = {"type": "tool", "name": str(name), "input": self._tool_in(args),
+              "input_full": _short(json.dumps(args, default=str), 120),
+              "output": _short(self._as_text(result), cap)}
+        self.events.append(ev)
+        return ev
+
+    def record_reasoning(self, text):
+        """One block of model reasoning between tool calls. Short/empty text is ignored."""
+        t = re.sub(r"<\|?[^>]*\|?>", "", str(text or "")).strip()
+        if len(t) >= 20:
+            self.events.append({"type": "reason", "text": _short(t, 200)})
+
+    @classmethod
+    def from_messages(cls, messages, delegate_tools=(_DELEGATE_TOOL,)):
+        """Build a recorder from a FINISHED LangChain message list, with no callback wiring.
+
+        Use this when the driver streams updates instead of taking callbacks, or when you only have
+        the transcript after the fact. Understands the standard shapes: an assistant message carrying
+        `.tool_calls`, and a tool message carrying `.tool_call_id` / `.name` / `.content`. Plain dicts
+        with the same keys work too.
+
+            rec = FlowRecorder.from_messages(result["messages"])
+            emit(rec, "out/run", answer=result["messages"][-1].content)
+        """
+        rec = cls()
+        pending = {}                                   # tool_call_id -> (name, args)
+        for m in messages or []:
+            get = (lambda k, d=None: m.get(k, d)) if isinstance(m, dict) else \
+                  (lambda k, d=None: getattr(m, k, d))
+            content = get("content", "") or ""
+            tcs = get("tool_calls", None) or []
+            tcid = get("tool_call_id", None)
+            if tcid is not None:                        # a tool RESULT
+                name, args = pending.pop(tcid, (get("name", "tool"), {}))
+                if str(name) in delegate_tools:
+                    rec.record_delegation(args.get("subagent_type") or args.get("target") or "agent",
+                                          args.get("description") or args.get("brief") or "", content)
+                else:
+                    rec.record_tool_call(name, args, content)
+                continue
+            if isinstance(content, str) and content.strip():
+                rec.record_reasoning(content)
+            for tc in tcs:                              # remember the call until its result arrives
+                g = (lambda k: tc.get(k)) if isinstance(tc, dict) else (lambda k: getattr(tc, k, None))
+                cid, nm, ar = g("id"), g("name"), g("args") or {}
+                if cid is not None:
+                    pending[cid] = (nm, ar if isinstance(ar, dict) else {})
+                elif str(nm) in delegate_tools:          # no id to correlate: record the hand-off now
+                    rec.record_delegation((ar or {}).get("subagent_type", "agent"),
+                                          (ar or {}).get("description", ""), "")
+                else:
+                    rec.record_tool_call(nm, ar, "")
+        return rec
 
     # -- helpers -------------------------------------------------------------------------------------
     @staticmethod
@@ -238,7 +387,7 @@ def _phases(events):
             phases.append(cur)
         elif t == "tool":
             if cur is None:
-                cur = {"target": "type_worker", "desc": "", "tools": [], "reasons": [], "ev": None}
+                cur = {"target": None, "desc": "", "tools": [], "reasons": [], "ev": None}
                 phases.append(cur)
             cur["tools"].append(ev)
         elif t == "reason":
@@ -251,7 +400,9 @@ def _phases(events):
     if not plan_todos and phases:
         for p in phases:
             span, who = p.get("vids") or "", p["target"]
-            if who == "verifier":
+            if who is None:
+                plan_todos.append(f"analyze {span} directly" if span else "analyze directly")
+            elif who == "verifier":
                 plan_todos.append(f"adjudicate {span} with the verifier" if span
                                   else "adjudicate all findings with the verifier")
             else:
@@ -260,42 +411,45 @@ def _phases(events):
     return plan_todos, coord_reasons, phases
 
 
-def input_vars_from_question(question):
-    """Parse the `<Vid> <register 0x..|stack -0x..> <size>` variable lines out of a type-recovery
-    question, returning [(vid, location, size_bytes)] for the diagram's Input node."""
-    out = []
-    for m in re.finditer(r"(?m)^\s*(V\d+)\s+((?:register|stack)\s+-?0x[0-9a-fA-F]+)\s+(\d+)\b", question or ""):
-        out.append((m.group(1), m.group(2).strip(), m.group(3)))
-    return out
-
-
-def _vid_span(text) -> str:
+def _span(text, pattern=r"V\d+") -> str:
     """"V1-V6, V9" from any text mentioning variable ids.
 
     Extracted from the delegation's FULL description at record time, because the stored `desc` is
     truncated for display and the variable list is the part that gets cut."""
-    ns = sorted({int(m.group(1)) for m in re.finditer(r"\bV(\d+)\b", str(text or ""))})
-    if not ns:
+    if not pattern:
         return ""
+    ids = re.findall(r"\b(?:%s)\b" % pattern, str(text or ""))
+    if not ids:
+        return ""
+    pre = re.match(r"^\D*", ids[0]).group(0)                 # shared prefix, e.g. "V"
+    try:
+        ns = sorted({int(re.sub(r"\D", "", i)) for i in ids})
+    except ValueError:
+        return ", ".join(dict.fromkeys(ids))[:60]
     out, i = [], 0
     while i < len(ns):
         j = i
         while j + 1 < len(ns) and ns[j + 1] == ns[j] + 1:
             j += 1
-        out.append(f"V{ns[i]}" if i == j else f"V{ns[i]}-V{ns[j]}")
+        out.append(f"{pre}{ns[i]}" if i == j else f"{pre}{ns[i]}-{pre}{ns[j]}")
         i = j + 1
     return ", ".join(out)
 
 
-def _plan_tag(todo):
+_vid_span = _span   # backwards-compatible alias
+
+
+def _plan_tag(todo, style=None):
     """Classify a coordinator plan step by who executes it: a delegation (spawns a traced sub-agent) or
     a coordinator-internal step (grouping / synthesis — no sub-agent, nothing to trace)."""
+    st = style or DEFAULT_STYLE
     t = str(todo).lower()
-    if "verif" in t:
-        return "→ verifier agent"
-    if "delegate" in t or "type_worker" in t or "worker" in t or "recover" in t:
-        return "→ type_worker agent"
-    return "coordinator (internal)"
+    for name in list(st.roles) + ["verifier", "type_worker", "worker"]:
+        if str(name).lower() in t:
+            return f"→ {name}{st.agent_suffix}"
+    if "delegate" in t or "recover" in t:
+        return f"→ sub{st.agent_suffix}"
+    return f"{st.root.lower()} (internal)"
 
 
 def _phase_types(ph):
@@ -310,10 +464,6 @@ def _phase_types(ph):
         if t:
             return t
     return {}
-
-
-def _esc(s):
-    return str(s).replace('"', "'").replace("[", "(").replace("]", ")").replace("{", "(").replace("}", ")")
 
 
 def _norm_ty(s):
@@ -338,126 +488,6 @@ def _int_fam(t):
     return bool(re.search(r"(int|long|size_t|idx_t|ssize|char|short|uint|ulong|_bool|byte)", t)) and "*" not in t
 
 
-def to_mermaid(recorder, meta, oracle_facts, answer, scoring=None):
-    """Build a Mermaid flowchart of the run: input (function + variables) -> coordinator(plan) -> worker
-    phases (tools) -> verifier (tools) -> deterministic oracle certification -> final answer (with
-    ground-truth match + score when `scoring` is supplied by the harness)."""
-    vaddr = meta.get("vaddr", "?")
-    nvars = meta.get("nvars", "?")
-    variables = meta.get("variables") or []
-    plan_todos, coord_reasons, phases = _phases(recorder.events)
-
-    L = ["```mermaid", "flowchart TD",
-         "  classDef coord fill:#fef9c3,stroke:#ca8a04,color:#000;",
-         "  classDef worker fill:#dcfce7,stroke:#16a34a,color:#000;",
-         "  classDef verifier fill:#ffedd5,stroke:#ea580c,color:#000;",
-         "  classDef oracle fill:#fee2e2,stroke:#dc2626,color:#000;",
-         "  classDef io fill:#dbeafe,stroke:#2563eb,color:#000;",
-         ""]
-    vlines = "<br/>".join(f"{vid}  {_esc(loc)}  {sz}B" for vid, loc, sz in variables[:18])
-    vlines += "<br/>…" if len(variables) > 18 else ""
-    in_body = (f"🎯 <b>Input</b> — function @{vaddr}<br/>{nvars} variables (location, bytes)<br/>{vlines}"
-               if variables else f"🎯 <b>Input</b> — function @{vaddr}<br/>{nvars} variables")
-    L.append(f'  IN["{in_body}"]:::io')
-
-    # coordinator plan
-    plan_txt = "<br/>".join(f"• {_esc(t)}  <b>[{_plan_tag(t)}]</b>" for t in plan_todos) or "plan &amp; delegate"
-    L.append(f'  COORD["🧭 Coordinator agent — decompose &amp; delegate<br/>{plan_txt}"]:::coord')
-    L.append("  IN --> COORD")
-
-    # worker + verifier phases — each shows assigned vars, ALL tool calls (input→result), the model's
-    # reasoning, and the types the subagent concluded/adjudicated (the intermediate result).
-    worker_ids, verifier_ids = [], []
-    for i, ph in enumerate(phases):
-        tools = ph["tools"]
-        counts = {}
-        for t in tools:
-            counts[t["name"]] = counts.get(t["name"], 0) + 1
-        tsum = ", ".join(f"{n}×{c}" for n, c in counts.items()) or "(no tool calls)"
-        is_ver = ph["target"] == "verifier"
-        nid = f"{'VER' if is_ver else 'W'}{i}"
-        assigned = " ".join(re.findall(r"\bV\d+\b", ph["desc"]))
-        head = ("🔍 verifier agent · decompilation lens" if is_ver
-                else f"⚙️ type_worker agent · {_esc(assigned) or f'group {i + 1}'}")
-        body = f"{head}<br/><b>tools:</b> {_esc(tsum)}"
-        for t in [x for x in tools if x.get("output")][:5]:      # up to 5 concrete input->summary lines
-            body += f"<br/>· {_esc(t['name'])}({_esc(t['input'])}) → {_esc(summarize_output(t['name'], t['output']))}"
-        # show only GENUINE prose reasoning — drop any turn that is just the type-list conclusion, since
-        # that duplicates the '→ concluded/adjudicated' line below.
-        _genuine = [r for r in ph["reasons"] if not _final_types(r)]
-        if _genuine:
-            body += f"<br/><i>💭 {_esc(_genuine[-1][:80])}</i>"
-        types = _phase_types(ph)
-        if types:
-            tt = ", ".join(f"{k}:{_esc(v)}" for k, v in list(types.items())[:8])
-            body += f"<br/><b>→ {'adjudicated' if is_ver else 'concluded'}:</b> {tt}"
-        cls = "verifier" if is_ver else "worker"
-        L.append(f'  {nid}["{body}"]:::{cls}')
-        L.append(f"  COORD --> {nid}")
-        (verifier_ids if is_ver else worker_ids).append(nid)
-
-    # workers feed the verifier (if a verifier phase exists)
-    for w in worker_ids:
-        for v in verifier_ids:
-            L.append(f"  {w} --> {v}")
-
-    prev_layer = verifier_ids or worker_ids or ["COORD"]
-
-    # deterministic oracle certification — list ALL consulted oracles (✓ fired vs · abstained), not just
-    # the ones that produced a fact, so an abstaining oracle (e.g. runtime_type_probe) is visibly run.
-    consulted = meta.get("oracles_consulted", [])
-    fired = {v[1] for v in oracle_facts.values() if isinstance(v, (list, tuple))} if oracle_facts else set()
-    if consulted or oracle_facts:
-        cons = ", ".join(f"{_esc(o)}{'✓' if o in fired else '·abstain'}" for o in consulted)
-        rows = [f"<b>oracles run:</b> {cons}"] if consulted else []
-        for vid, val in sorted(oracle_facts.items()):
-            ctype, oracle, floor = (val if isinstance(val, (list, tuple)) and len(val) == 3
-                                    else (val, "?", False))
-            rows.append(f"{vid}: {_esc(ctype)} — {_esc(oracle)}{' (floor)' if floor else ''}")
-        if not oracle_facts:
-            rows.append("<i>all consulted oracles abstained — nothing to certify</i>")
-        ocert = "<br/>".join(rows[:12]) + ("<br/>…" if len(rows) > 12 else "")
-        _applied = meta.get("certified_by_code", True)
-        _title = ("✅ Deterministic oracle certification (run in code, not LLM)" if _applied else
-                  "🔎 Oracles — consulted by the verifier as tools; NOT applied by code")
-        L.append(f'  ORACLE["{_title}<br/>{ocert}"]:::oracle')
-        for p in prev_layer:
-            L.append(f"  {p} --> ORACLE")
-        prev_layer = ["ORACLE"]
-
-    # final answer — vs ground truth + score when the harness supplied scoring
-    ans_map = _final_types(answer)
-    gt = (scoring or {}).get("ground_truth") or {}
-    score = (scoring or {}).get("score")
-    _vk = lambda k: int(re.sub(r"\D", "", k) or 0)  # noqa: E731
-    per = (scoring or {}).get("per_var") or {}
-    if gt:
-        rows = []
-        for vid in sorted(ans_map, key=_vk):
-            # The tick/tilde marker is a STRING comparison and disagrees with the metric in the
-            # caption: the scorer resolves typedefs (`idx_t` == `long`) and grades partial credit on a
-            # per-variable scale whose maximum is type-dependent (6 for a scalar, 9 for a pointer).
-            p = per.get(vid)
-            mark = (f"— <b>{p['score']}/{p['max']}</b>" + (f" {_esc(p['halt'])}" if p.get("halt") else "")) \
-                if p else _match(ans_map[vid], gt.get(vid))
-            rows.append(f"{vid}: {_esc(ans_map[vid])} vs {_esc(gt.get(vid, '?'))} {mark}")
-        arows = "<br/>".join(rows[:18]) + ("<br/>…" if len(rows) > 18 else "")
-        _tot = sum(p["score"] for p in per.values()) if per else None
-        _mx = sum(p["max"] for p in per.values()) if per else None
-        title = "📋 <b>Output</b> — predicted vs ground truth" + (f"  ·  score {score:.2f}%" if score is not None else "")
-        if _tot is not None:
-            title += f"  ({_tot}/{_mx} points, mean {_tot/max(1,len(per)):.2f}/{_mx/max(1,len(per)):.2f})"
-        L.append(f'  ANS["{title}<br/>{arows}"]:::io')
-    else:
-        arows = "<br/>".join(f"{k}: {_esc(v)}" for k, v in sorted(ans_map.items(), key=lambda kv: _vk(kv[0]))[:16])
-        L.append(f'  ANS["📋 <b>Output</b> — final answer<br/>{arows or _esc(_short(answer, 80))}"]:::io')
-    for p in prev_layer:
-        L.append(f"  {p} --> ANS")
-
-    L.append("```")
-    return "\n".join(L)
-
-
 def _seq_esc(s):
     """Escape text for a Mermaid sequence message: no newlines, no ; or : that break parsing."""
     s = str(s).replace("\n", " ").replace(";", ",").replace(":", "-")
@@ -466,12 +496,12 @@ def _seq_esc(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _oracle_result(name, out):
+def _oracle_result(name, out, style=None):
     """Render an oracle tool's return as the FACTS it certified, one per variable.
 
     The generic summariser truncates to a prefix, which for an oracle shows the first record and hides
     the rest -- the useful content is exactly which entities were certified as what."""
-    if name not in _ORACLE_TOOL_NAMES:
+    if name not in ((style or DEFAULT_STYLE).fact_tools):
         return summarize_output(name, out)
     facts = re.findall(r"['\"]vid['\"]\s*:\s*['\"](V\d+)['\"].{0,120}?['\"]ctype['\"]\s*:\s*['\"]([^'\"]+)['\"]",
                        str(out), re.S)
@@ -481,160 +511,110 @@ def _oracle_result(name, out):
     return f"certified {len(facts)}: {shown}" + (" …" if len(facts) > 8 else "")
 
 
-def to_sequence(recorder, meta, oracle_facts, answer, scoring=None, max_tools_per_phase=40):
-    """A Mermaid SEQUENCE diagram of the COMPLETE flow, turn by turn: every delegation, every LLM
-    reasoning turn (Note), every tool call and its returned result (message + reply), the types each
-    subagent returned, the deterministic oracle certification, and the final answer. This is the
-    exhaustive temporal view — nothing is grouped away."""
+def _participants(phases, style):
+    """Discover the lifelines from the run itself: the root, one per distinct delegation target in
+    the order they first appear, then tools. Returns (ids, declaration_lines)."""
+    ids = {"__root__": "C", "__tools__": "T", "__facts__": "O"}
+    decls = [f"  participant C as {style.icon(style.root, 'coordinator')}{style.root}"]
+    seen = []
+    for ph in phases:
+        t = ph.get("target")
+        if t and t not in seen:
+            seen.append(t)
+    for k, t in enumerate(seen):
+        pid = f"A{k}"
+        ids[t] = pid
+        decls.append(f"  participant {pid} as {style.icon(t)}{t}{style.agent_suffix}")
+    decls.append(f"  participant T as {style.icon(style.tools, 'tool')}{style.tools}")
+    return ids, decls
+
+
+def to_sequence(recorder, meta, oracle_facts, answer, scoring=None, max_tools_per_phase=None,
+                style=None):
+    """A Mermaid SEQUENCE diagram of the complete run, turn by turn: every delegation, every reasoning
+    turn, every tool call and the result it returned, what each sub-agent concluded, any deterministic
+    facts applied afterwards, and the final answer.
+
+    Participants are discovered from the run, so any set of sub-agent names works. Pass a `Style` to
+    change labels, icons, verbs, caps, or the entity-id pattern."""
+    st = style or DEFAULT_STYLE
+    cap = max_tools_per_phase or st.max_tools
     plan_todos, coord_reasons, phases = _phases(recorder.events)
-    L = ["```mermaid", "sequenceDiagram", "  autonumber",
-         "  participant C as 🧭 Coordinator agent",
-         "  participant W as ⚙️ type_worker agent",
-         "  participant V as 🔍 verifier agent",
-         "  participant T as 🔧 Tools/MCP"]
-    # The `Oracles` lifeline models the deterministic POST-PASS. When the oracles are exposed as tools
-    # and called by the reviewer they are not a separate actor -- they are ordinary calls on the
-    # Tools/MCP lifeline, already drawn above with their real arguments and real returned facts.
-    if meta.get("certified_by_code", True):
-        L.append("  participant O as ✅ Oracles")
-    for k, t in enumerate(plan_todos, 1):
-        L.append(f"  Note over C: 📝 plan {k}. [{_plan_tag(t)}] {_seq_esc(t)}")
-    for r in coord_reasons[:1]:
-        L.append(f"  Note over C: 💭 {_seq_esc(r[:70])}")
+    ids, decls = _participants(phases, st)
+    L = ["```mermaid", "sequenceDiagram", "  autonumber"] + decls
+    # The facts lifeline models a deterministic POST-PASS. When the agent fetches the facts itself they
+    # are ordinary tool calls, already drawn on the tools lifeline, so no separate actor is added.
+    by_code = meta.get("certified_by_code", True)
+    if by_code:
+        L.append(f"  participant O as {st.icon(st.facts, 'fact')}{st.facts}")
+    if st.show_plan:
+        for k, t in enumerate(plan_todos, 1):
+            L.append(f"  Note over C: \U0001f4dd plan {k}. [{_plan_tag(t, st)}] {_seq_esc(t)}")
+    if st.show_reasoning:
+        for r in coord_reasons[:1]:
+            L.append(f"  Note over C: \U0001f4ad {_seq_esc(r[:70])}")
 
     for i, ph in enumerate(phases):
-        actor = "V" if ph["target"] == "verifier" else "W"
-        assigned = " ".join(re.findall(r"\bV\d+\b", ph["desc"]))
-        role = "adjudicate" if actor == "V" else "recover types"
-        L.append(f"  C->>{actor}: task #{i + 1} — {role} {_seq_esc(assigned)}")
-        shown = ph["tools"][:max_tools_per_phase]
+        target = ph.get("target")
+        actor = ids.get(target, "C") if target else "C"
+        if target:                                   # a real hand-off; a root-run phase has none
+            assigned = _span(ph["desc"], st.entity_re) or _short(ph["desc"], 48)
+            L.append(f"  C->>{actor}: task {i + 1} — {st.role(target)} {_seq_esc(assigned)}".rstrip())
+        shown = ph["tools"][:cap]
         for t in shown:
             L.append(f"  {actor}->>T: {_seq_esc(t['name'])}({_seq_esc(t['input'])})")
             if t.get("output"):
-                L.append(f"  T-->>{actor}: {_seq_esc(_oracle_result(t['name'], t['output']))}")
+                L.append(f"  T-->>{actor}: {_seq_esc(_oracle_result(t['name'], t['output'], st))}")
         if len(ph["tools"]) > len(shown):
             L.append(f"  Note over {actor}: … +{len(ph['tools']) - len(shown)} more tool calls")
-        # WHY: the model's reasoning behind this task's conclusion, shown right before the result arrow.
-        # Workers (gemma, thinking off) emit no prose — fall back to the evidence basis they inspected.
-        genuine = [x for x in ph["reasons"] if not _final_types(x)]
-        if genuine:
-            L.append(f"  Note over {actor}: 💭 reasoning: {_seq_esc(genuine[-1][:180])}")
-        elif ph["tools"]:
-            _c = {}
-            for t in ph["tools"]:
-                _c[t["name"]] = _c.get(t["name"], 0) + 1
-            ev = ", ".join(f"{n}×{k}" for k, n in _c.items())
-            L.append(f"  Note over {actor}: 💭 reasoning: inferred from assembly evidence — {_seq_esc(ev)}")
+        # WHY: the reasoning behind this phase's conclusion, shown just before its result arrow. Models
+        # with thinking disabled emit none -- fall back to the evidence the phase actually inspected.
+        if st.show_reasoning:
+            genuine = [x for x in ph["reasons"] if not _final_types(x, st.entity_re)]
+            if genuine:
+                L.append(f"  Note over {actor}: \U0001f4ad reasoning: "
+                         f"{_seq_esc(genuine[-1][:st.max_reason])}")
+            elif ph["tools"]:
+                _c = {}
+                for t in ph["tools"]:
+                    _c[t["name"]] = _c.get(t["name"], 0) + 1
+                ev = ", ".join(f"{n}×{k}" for k, n in _c.items())
+                L.append(f"  Note over {actor}: \U0001f4ad reasoning: inferred from the evidence it "
+                         f"gathered — {_seq_esc(ev)}")
         types = _phase_types(ph)
-        if types:
+        if types and target:
             tt = ", ".join(f"{k}-{_seq_esc(v)}" for k, v in list(types.items())[:10])
-            L.append(f"  {actor}-->>C: ✅ result: {tt}")
+            L.append(f"  {actor}-->>C: \u2705 result: {tt}")
 
     consulted = meta.get("oracles_consulted", [])
     fired = {v[1] for v in oracle_facts.values() if isinstance(v, (list, tuple))} if oracle_facts else set()
-    if meta.get("certified_by_code", True) and (consulted or oracle_facts):
-        L.append(f"  C->>O: run {len(consulted)} deterministic oracles ({_seq_esc(', '.join(consulted))})")
+    if by_code and (consulted or oracle_facts):
+        L.append(f"  C->>O: run {len(consulted)} deterministic checks ({_seq_esc(', '.join(consulted))})")
         for vid, val in sorted(oracle_facts.items()):
             ctype, oracle, floor = (val if isinstance(val, (list, tuple)) and len(val) == 3
                                     else (val, "?", False))
             L.append(f"  O-->>C: ✓ {vid}- {_seq_esc(ctype)} via {_seq_esc(oracle)}"
                      + (" (floor)" if floor else ""))
-        for o in consulted:                                     # make abstaining oracles explicit
+        for o in consulted:                                     # make abstaining producers explicit
             if o not in fired:
                 L.append(f"  Note over O: {_seq_esc(o)} — consulted, abstained")
-    # final result as the LAST arrow of the sequence: the coordinator emits the synthesized answer.
-    ans = _final_types(answer)
+    # final result as the LAST arrow: the root emits the synthesized answer.
+    ans = _final_types(answer, st.entity_re)
     if ans:
         score = (scoring or {}).get("score")
         stxt = f" · score {score:.2f}%" if score is not None else ""
         tail = ", ".join(f"{k}-{_seq_esc(v)}" for k, v in sorted(ans.items(), key=lambda kv: int(re.sub(r'\D', '', kv[0]) or 0)))
         ncert = len([1 for v in oracle_facts.values() if isinstance(v, (list, tuple))]) if oracle_facts else 0
-        _src = ("deterministically oracle-certified (authoritative)"
-                if meta.get("certified_by_code", True) else "oracle facts the verifier fetched itself")
-        L.append(f"  Note over C: 💭 reasoning: synthesized from the verifier's adjudicated types,"
-                 f" with {ncert} {_src}")
-        L.append(f"  C->>C: 📋 FINAL ANSWER{stxt}: {tail}")
+        if ncert:
+            _src = ("applied by code (authoritative)" if by_code else "fetched by the agent itself")
+            L.append(f"  Note over C: \U0001f4ad reasoning: synthesized from the adjudicated results,"
+                     f" with {ncert} {_src}")
+        L.append(f"  C->>C: \U0001f4cb FINAL ANSWER{stxt}: {tail}")
     L.append("```")
     return "\n".join(L)
 
 
-def to_markdown(recorder, meta, oracle_facts, answer, scoring=None):
-    """A full, untruncated step-by-step log of the run — the complete 'underlying process' as a companion
-    to the figure: input variables, plan, then per phase the reasoning + every tool call (input -> output)
-    + the concluded types, then the deterministic oracle certification and the final answer vs GT/score."""
-    plan_todos, coord_reasons, phases = _phases(recorder.events)
-    M = [f"# Agentic run — function @{meta.get('vaddr', '?')}  ({meta.get('nvars', '?')} variables)", ""]
-    variables = meta.get("variables") or []
-    if variables:
-        M.append("## Input — variables (location, size)")
-        M.append("| id | location | bytes |")
-        M.append("|----|----------|-------|")
-        for vid, loc, sz in variables:
-            M.append(f"| {vid} | {loc} | {sz} |")
-        M.append("")
-    M.append("## 1. Coordinator agent — decompose & delegate")
-    for t in plan_todos:
-        M.append(f"- {t}  _[{_plan_tag(t)}]_")
-    for r in coord_reasons[:3]:
-        M.append(f"> 💭 {r}")
-    M.append("")
-    for i, ph in enumerate(phases, 1):
-        role = "verifier agent (decompilation lens)" if ph["target"] == "verifier" else "type_worker agent (assembly lens)"
-        assigned = " ".join(re.findall(r"\bV\d+\b", ph["desc"]))
-        M.append(f"## {i + 1}. {role}" + (f" — assigned {assigned}" if assigned else ""))
-        if ph["desc"]:
-            M.append(f"*delegated:* {ph['desc']}")
-        for r in [x for x in ph["reasons"] if not _final_types(x)][:4]:   # skip type-list conclusions
-            M.append(f"> 💭 {r}")
-        if ph["tools"]:
-            M.append("\n| # | tool | input | result |")
-            M.append("|---|------|-------|--------|")
-            for j, t in enumerate(ph["tools"], 1):
-                res = summarize_output(t["name"], t.get("output", "")).replace("|", "\\|").replace("\n", " ")
-                M.append(f"| {j} | `{t['name']}` | {t.get('input_full', t['input'])} | {res} |")
-        types = _phase_types(ph)
-        if types:
-            verb = "Adjudicated" if ph["target"] == "verifier" else "Concluded"
-            M.append(f"\n**{verb} types:** " + ", ".join(f"{k}: {v}" for k, v in types.items()))
-        M.append("")
-    consulted = meta.get("oracles_consulted", [])
-    fired = {v[1] for v in oracle_facts.values() if isinstance(v, (list, tuple))} if oracle_facts else set()
-    if consulted or oracle_facts:
-        M.append("## Deterministic oracle certification" if meta.get("certified_by_code", True)
-                 else "## Oracles — consulted by the verifier as tools, NOT applied by code")
-        M.append("*Run in code after the agent finishes (NOT LLM tools). Each consulted oracle:*")
-        for o in consulted:
-            n = sum(1 for v in oracle_facts.values() if isinstance(v, (list, tuple)) and v[1] == o)
-            M.append(f"- `{o}` — " + (f"**certified {n} variable(s)** ✓" if o in fired
-                                      else "consulted, *abstained* (no fact)"))
-        if oracle_facts:
-            M.append("\n**Certified types (authoritative — override the agent):**")
-            for vid, val in sorted(oracle_facts.items()):
-                ctype, oracle, floor = (val if isinstance(val, (list, tuple)) and len(val) == 3 else (val, "?", False))
-                M.append(f"- **{vid}**: `{ctype}` — via `{oracle}`" + (" *(floor)*" if floor else ""))
-        M.append("")
-    ans = _final_types(answer)
-    gt = (scoring or {}).get("ground_truth") or {}
-    score = (scoring or {}).get("score")
-    _vk = lambda k: int(re.sub(r"\D", "", k) or 0)  # noqa: E731
-    if gt:
-        M.append("## Output — predicted vs ground truth" + (f"  (mean score: **{score:.2f}%**)" if score is not None else ""))
-        _per = (scoring or {}).get("per_var") or {}
-        M.append("| id | predicted | ground truth | score | lost at |")
-        M.append("|----|-----------|--------------|-------|---------|")
-        for vid in sorted(ans, key=_vk):
-            p = _per.get(vid)
-            sc_ = f"**{p['score']}/{p['max']}**" if p else _match(ans[vid], gt.get(vid))
-            M.append(f"| {vid} | `{ans[vid]}` | `{gt.get(vid, '?')}` | {sc_} | "
-                     f"{(p.get('halt') or '') if p else ''} |")
-    else:
-        M.append("## Output — final answer")
-        for k in sorted(ans, key=_vk):
-            M.append(f"- {k}: `{ans[k]}`")
-    return "\n".join(M) + "\n"
-
-
-def _final_types(answer):
+def _final_types(answer, pattern=r"V\d+"):
     """The FINAL per-variable types exactly as the scorer sees them: the model's synthesized map, then
     the deterministic ORACLE-CERTIFIED block applied as an authoritative override. Mirrors run_trex_one's
     parsing so the diagram's Output matches the scored answer (the oracle block overrides the last JSON,
@@ -651,7 +631,7 @@ def _final_types(answer):
         except Exception:  # noqa: BLE001
             pass
     if not out:
-        for m in re.finditer(r"(?mi)^\s*-?\s*(V\d+)\s*:\s*(.+?)\s*$", answer):
+        for m in re.finditer(r"(?mi)^\s*-?\s*(%s)\s*:\s*(.+?)\s*$" % (pattern or r"V\d+"), answer):
             out[m.group(1)] = m.group(2).strip()
     # ORACLE-CERTIFIED block: authoritative override (same regex the scorer uses)
     om = re.search(r"ORACLE-CERTIFIED[^\n]*\n((?:\s*[-*]\s*V?\d+\s*[:=][^\n]*\n?)+)", answer)
@@ -675,7 +655,7 @@ def _load_font(size, bold=False):
     return ImageFont.load_default()
 
 
-def compose_sequence_figure(seq_png, meta, answer, scoring, out_path):
+def compose_sequence_figure(seq_png, meta, answer, scoring, out_path, style=None):
     """Stack ONE figure = [Input text panel] on top of [the sequence-diagram image] on top of [Output
     text panel with the final answer + mean score]. Keeps input/output as clean TEXT (not sequence notes)
     while still giving a single self-contained image. Best-effort; returns out_path or None."""
@@ -687,11 +667,15 @@ def compose_sequence_figure(seq_png, meta, answer, scoring, out_path):
     W = max(seq.width, 900)
     title_f, body_f = _load_font(30, bold=True), _load_font(22)
 
-    in_lines = [(f"🎯 INPUT — function @{meta.get('vaddr', '?')}  ({meta.get('nvars', '?')} variables)", title_f)]
-    for vid, loc, sz in meta.get("variables", []):
-        in_lines.append((f"    {vid}    {loc}    {sz} bytes", body_f))
+    _title = meta.get("title") or (f"function @{meta.get('vaddr', '?')}" if meta.get("vaddr") else "run")
+    _n = meta.get("nvars") or len(meta.get("variables") or [])
+    _noun = (style or DEFAULT_STYLE).item_noun
+    in_lines = [(f"🎯 INPUT — {_title}" + (f"  ({_n} {_noun})" if _n else ""), title_f)]
+    for row in meta.get("variables", []):
+        vid, loc, sz = (list(row) + ["", ""])[:3]
+        in_lines.append((f"    {vid}    {loc}" + (f"    {sz} bytes" if sz != "" else ""), body_f))
 
-    ans = _final_types(answer)
+    ans = _final_types(answer, (style or DEFAULT_STYLE).entity_re)
     gt = (scoring or {}).get("ground_truth") or {}
     score = (scoring or {}).get("score")
     _vk = lambda k: int(re.sub(r"\D", "", k) or 0)  # noqa: E731
@@ -776,3 +760,72 @@ def render(mmd_block, out_base):
     if produced:
         return mmd_path, produced
     return mmd_path, None
+
+
+# =====================================================================================================
+#  Public API. Everything above is machinery; these three names are what a caller needs.
+# =====================================================================================================
+
+# Last emitted run, so `rescore` can redraw with an overlay computed after the run finished (a score
+# is usually only known once something downstream has graded the answer).
+_LAST: dict = {}
+
+def emit(recorder, out_base, *, title=None, inventory=None, answer="", facts=None,
+         consulted=(), applied_in_code=False, scoring=None, quiet=False, style=None):
+    """Draw the run and write `<out_base>_turns.{mmd,svg,png}`. Returns the best path written.
+
+    recorder        a FlowRecorder that was attached to the run
+    out_base        path prefix; the sequence view writes `<out_base>_turns.{mmd,svg,png}`
+    title           free text for the input panel (e.g. "cut/cut_fields @0x102f27")
+    inventory       [(id, location, size)] rows for the input panel; optional
+    answer          the run's final text, parsed for `id: value` lines to fill the output panel
+    facts           {id: (value, source, mode)} deterministic facts to draw as a separate lifeline
+    consulted       names of fact producers that ran, so the ones that abstained can be shown
+    applied_in_code True when a post-pass applied `facts`; False when the agent consumed them itself,
+                    in which case they are already ordinary tool calls and no extra lifeline is drawn
+    scoring         {"score": float, "ground_truth": {...}, "per_var": {...}} overlay; optional
+    style           a `Style` controlling labels, icons, verbs, caps and the entity-id pattern
+    """
+    facts = facts or {}
+    inventory = list(inventory or [])
+    meta = {"title": title, "vaddr": title or "", "nvars": len(inventory),
+            "variables": inventory, "oracles_consulted": list(consulted),
+            "certified_by_code": bool(applied_in_code)}
+    _LAST.clear()
+    _LAST.update({"recorder": recorder, "meta": meta, "facts": facts, "answer": answer,
+                  "base": out_base, "quiet": quiet, "style": style or DEFAULT_STYLE})
+    return _render(scoring)
+
+
+def rescore(score=None, ground_truth=None, per_var=None):
+    """Redraw the last emitted run with a result overlay. No-op if nothing was emitted."""
+    if not _LAST:
+        return None
+    try:
+        return _render({"score": score, "ground_truth": ground_truth or {},
+                        "per_var": per_var or {}})
+    except Exception as e:  # noqa: BLE001  an overlay must never break the caller
+        print(f"[flow] overlay skipped — {str(e)[:120]}")
+        return None
+
+
+def _render(scoring=None):
+    """Draw the sequence view from `_LAST`. Best-effort: never raises into the caller."""
+    F = _LAST
+    if not F:
+        return None
+    rec, meta, facts, answer, base = (F["recorder"], F["meta"], F["facts"], F["answer"], F["base"])
+    out = None
+    try:
+        _, img = render(to_sequence(rec, meta, facts, answer, scoring, style=F.get("style")),
+                        base + "_turns")
+        if img and img.endswith(".png"):
+            out = compose_sequence_figure(img, meta, answer, scoring, base + "_turns.png",
+                                          F.get("style")) or img
+        else:
+            out = img or (base + "_turns.mmd")
+    except Exception as e:  # noqa: BLE001
+        print(f"[flow] render failed — {str(e)[:140]}")
+    if out and not F.get("quiet"):
+        print(f"[flow] {out}" + ("  (+ overlay)" if scoring else ""))
+    return out
