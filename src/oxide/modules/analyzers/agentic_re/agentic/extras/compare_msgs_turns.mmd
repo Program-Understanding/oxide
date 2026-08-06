@@ -1,9 +1,0 @@
-sequenceDiagram
-  autonumber
-  participant C as 🕵️ Analyst
-  participant T as 🔧 Oxide MCP
-  Note over C: 📝 plan 1. [analyst (internal)] analyze directly
-  Note over C: 📝 plan 2. [analyst (internal)] synthesize the final answer
-  C->>T: get_imports()
-  T-->>C: system, popen
-  Note over C: 💭 reasoning: inferred from the evidence it gathered — 1×get_imports

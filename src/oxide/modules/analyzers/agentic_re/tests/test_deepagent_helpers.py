@@ -54,17 +54,19 @@ def test_gemma_regex_matches_the_piped_form_in_isolation():
     assert D._GEMMA_TC_RE.search(raw)
 
 
-@pytest.mark.xfail(reason="LATENT BUG found 2026-08-04 by this suite: _salvage_message runs "
-                          "_strip_channel FIRST, whose `<\\|[^>]*>|<[^>]*\\|>` rule deletes the "
-                          "pipe-wrapped delimiters, so _GEMMA_TC_RE can never match the exact "
-                          "`<|tool_call>...<tool_call|>` syntax its own docstring cites as the "
-                          "observed model output. Only the pipeless form is salvageable today. "
-                          "Fix = run the tool-call parse BEFORE the channel strip (or have "
-                          "_strip_channel preserve tool_call delimiters).",
-                   strict=False)
 def test_salvage_converts_piped_raw_text_toolcall():
+    """The piped form the model actually emits. Fixed 2026-08-05 by parsing tool calls BEFORE
+    stripping channel markup; previously _strip_channel deleted the delimiters first."""
     msg = D._salvage_message(_ai('<|tool_call>call:decompile(oid="o", addr="0x1")<tool_call|>'))
     assert [tc["name"] for tc in msg.tool_calls] == ["decompile"]
+    assert msg.tool_calls[0]["args"] == {"oid": "o", "addr": "0x1"}
+
+
+def test_salvage_piped_call_inside_channel_noise():
+    msg = D._salvage_message(_ai(
+        '<|channel|>thinking<|channel|><|tool_call>call:stack_var(addr="0x1")<tool_call|> done'))
+    assert [tc["name"] for tc in msg.tool_calls] == ["stack_var"]
+    assert "tool_call" not in msg.content and "thinking" not in msg.content
 
 
 def test_salvage_keeps_structured_calls_and_cleans_text():
@@ -249,3 +251,60 @@ def test_worker_roster_excludes_decompiler_lens():
 def test_combined_oracle_excluded_from_individual_roster():
     assert "static_type_oracles" not in D.ORACLE_TOOLS_INDIVIDUAL
     assert "static_type_oracles" not in D._VERIFIER_TOOLS_ORACLE
+
+
+# ---- coordinator delegation guard (the prose-tool-call failure) --------------------------------
+class _D:
+    """Message stub carrying tool calls."""
+    type = "ai"
+
+    def __init__(self, names):
+        self.tool_calls = [{"name": n, "id": "x"} for n in names]
+
+
+def test_delegated_detects_task_calls():
+    assert D._delegated([_D(["task"])]) is True
+    assert D._delegated([_D(["disassemble"])]) is False
+    assert D._delegated([]) is False
+    assert D._delegated(None) is False
+
+
+def test_delegated_false_is_the_derailment_signal():
+    """A coordinator that narrated `call:task{...}` leaves no structured task call anywhere, which
+    is exactly the condition the fallback keys on."""
+    narrated = _M("call:task{description: recover types for V1-V6}")
+    narrated.type = "ai"
+    assert D._delegated([narrated]) is False
+    assert D._text_toolcall_name(narrated, {"task"}) == "task"
+
+
+def test_fallback_partitions_and_synthesizes(monkeypatch):
+    """The fallback must cover EVERY entity in the inventory even when a worker group fails."""
+    import asyncio
+
+    q = ("Recover types for the function at vaddr 0x101000.\n"
+         "V1\tregister 0x38\t8\nV2\tregister 0x30\t4\nV3\tstack -0x20\t8\n")
+
+    class _FakeWorker:
+        def __init__(self, *a, **k):
+            self.n = 0
+
+        async def ainvoke(self, state, cfg=None):
+            self.n += 1
+            if self.n == 1:
+                raise RuntimeError("group blew up")
+            return {"messages": [type("M", (), {"content": "V1: char *\nV2: int\nV3: long"})()]}
+
+    fake = _FakeWorker()
+    import langgraph.prebuilt as _lp
+    monkeypatch.setattr(_lp, "create_react_agent", lambda **k: fake)
+    monkeypatch.setattr(D, "_group_size", lambda q: 2)          # force two groups
+    out = asyncio.run(D._fallback_delegate("oid", "0x101000", q, [], "sys", object()))
+    assert "V1: char *" in out and "V2: int" in out and "V3: long" in out
+    assert out.rstrip().endswith("}")                            # final JSON line present
+
+
+def test_fallback_returns_empty_without_inventory():
+    import asyncio
+    out = asyncio.run(D._fallback_delegate("oid", "0x1", "no variables here", [], "sys", object()))
+    assert out == ""

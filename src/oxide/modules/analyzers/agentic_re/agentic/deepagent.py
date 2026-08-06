@@ -274,13 +274,17 @@ def _salvage_message(msg):
     # Already has structured tool_calls (vLLM parsed them): keep them, just clean channel residue.
     if getattr(msg, "tool_calls", None):
         return _rebuild(cleaned, msg.tool_calls) if cleaned != text else msg
-    # No structured tool_calls: look for gemma raw-text tool calls in the cleaned text.
-    matches = list(_GEMMA_TC_RE.finditer(cleaned))
+    # No structured tool_calls: look for gemma raw-text tool calls in the RAW text, BEFORE channel
+    # stripping. Searching `cleaned` made this branch DEAD for the exact syntax it was written for:
+    # `_strip_channel`'s `<\|..>|<..\|>` rule deletes the `<|tool_call>` / `<tool_call|>` delimiters
+    # that `_GEMMA_TC_RE` requires, so a piped raw-text call fell through to the prose detector and
+    # its unreliable forced retry instead of being parsed here with its arguments intact.
+    matches = list(_GEMMA_TC_RE.finditer(text))
     if not matches:
         return _rebuild(cleaned, []) if cleaned != text else msg
     tcs = [{"name": m.group(1), "args": _parse_call_args(m.group(2)),
             "id": f"salvage_{i}", "type": "tool_call"} for i, m in enumerate(matches)]
-    residual = _GEMMA_TC_RE.sub("", cleaned).strip()
+    residual = _strip_channel(_GEMMA_TC_RE.sub("", text))
     return _rebuild(residual, tcs)
 
 
@@ -645,6 +649,65 @@ def _grouping_rule(question: str) -> str:
     return f"into groups of up to {_group_size(question)}."
 
 
+def _delegated(messages) -> bool:
+    """Did the coordinator actually hand work to a subagent? False means the run produced nothing."""
+    for m in messages or []:
+        for tc in (getattr(m, "tool_calls", None) or []):
+            if (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)) == "task":
+                return True
+    return False
+
+
+async def _fallback_delegate(oid, vaddr, question, tools, worker_sys, worker_model) -> str:
+    """Run the workers from a CODE-SIDE partition when the coordinator never delegated.
+
+    The coordinator's only job is arithmetic -- split the inventory into groups and hand each to a
+    worker -- but it performs that job by emitting a tool call, and this model sometimes writes the
+    call out as prose instead (`call:task{description: ...}`). langgraph then sees a message with no
+    tool_calls, treats it as the final answer, and ends the graph: no worker runs and not one
+    variable is typed. Measured over n=100 functions, three derailed this way and they held 26% of
+    all variables; on `sha384sum/sha512_process_block` (179 variables) the run scored 0.0% against
+    the baseline's 98.6%. Restricting the coordinator's roster to `task` removed the tool that was
+    narrated in that worst case, and re-issuing the turn with `tool_choice` pinned repairs some of
+    the rest, but neither closes the hole: the model can narrate `task` itself, and the forced retry
+    returned no structured call in every attempt on record.
+
+    So the partition is done here instead, in code. This is the C4 discipline applied to the one
+    step that had been left to the model's cooperation: a run may now be poor, but it can no longer
+    be empty because a brace was written where a function call belonged."""
+    from langgraph.prebuilt import create_react_agent
+    inv = _inventory(question)
+    if not inv:
+        return ""
+    n = _group_size(question)
+    groups = [inv[i:i + n] for i in range(0, len(inv), n)]
+    print(f"[fallback] partitioning {len(inv)} entities into {len(groups)} group(s) of <= {n}")
+    worker = create_react_agent(model=worker_model, tools=tools, prompt=worker_sys)
+    claims: dict = {}
+    for gi, g in enumerate(groups, 1):
+        block = "\n".join(f"{v}  {loc}  {sz}" for v, loc, sz in g)
+        brief = (f"oid: {oid}   function vaddr: {vaddr}\n\n"
+                 f"Recover the precise C type of each variable below.\n\n"
+                 f"VARIABLES (id, location, size_bytes):\n{block}\n")
+        try:
+            r = await worker.ainvoke({"messages": [{"role": "user", "content": brief}]},
+                                     {"recursion_limit": 30})
+        except Exception as e:  # noqa: BLE001  one bad group must not lose the others
+            print(f"[fallback] group {gi}/{len(groups)} failed — {str(e)[:100]}")
+            continue
+        txt = _strip_channel(r["messages"][-1].content if r.get("messages") else "") or ""
+        for mm in re.finditer(r"(?mi)^\s*-?\s*(V\d+)\s*[:=]\s*(.+?)\s*$", txt):
+            t = mm.group(2).strip().strip("`").split("(")[0].split(",")[0].strip()
+            if t and len(t) < 60:
+                claims[mm.group(1)] = t
+        print(f"[fallback] group {gi}/{len(groups)}: {len(claims)} entity(ies) typed so far")
+    if not claims:
+        return ""
+    lines = [f"{v}: {claims.get(v, 'undefined')}" for v, _l, _s in inv]
+    return "\n".join(lines) + "\n" + json.dumps({v: claims.get(v, "undefined")
+                                                 for v, _l, _s in inv})
+
+
 async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
     """Build the deepagents multi-agent (coordinator + type_worker + verifier), run it on `question`,
     then append the deterministic ORACLE-CERTIFIED trailer. Returns the final per-variable answer."""
@@ -789,6 +852,22 @@ async def run_deep_agent(oid: str, question: str, opts: dict) -> str:
                 _cfg,
             )
         answer = result["messages"][-1].content
+
+        # The coordinator delegating is NOT guaranteed: see `_fallback_delegate`. Report the outcome
+        # on every run, whichever way it went, so the derailment rate is a measured number rather
+        # than an anecdote.
+        _ok = _delegated(result.get("messages") if isinstance(result, dict) else None)
+        print(f"[delegation] coordinator delegated: {'yes' if _ok else 'NO'}")
+        if not _ok:
+            try:
+                _fb = await _fallback_delegate(oid, vaddr, question, tools,
+                                               _worker_sys, _worker_model)
+            except Exception as e:  # noqa: BLE001  the fallback must never be the thing that fails
+                print(f"[fallback] skipped — {str(e)[:120]}")
+                _fb = ""
+            if _fb:
+                print("[fallback] recovered an answer from the code-side partition")
+                answer = _fb
 
     # clean gemma special tokens (thinking/channel markup) so only the answer text (+ its final JSON
     # line) remains. Same helper the per-turn salvage uses, applied once more to the final answer.

@@ -20,6 +20,11 @@ from .interproc import (interprocedural_param_usage_facts,                      
                         _oracle_interprocedural_param_usage)
 from .signedness import signedness_facts, _oracle_signedness                      # noqa: F401
 from .struct_shape import struct_shape_facts, _oracle_struct_shape                # noqa: F401
+# NOTE: `audit` (the function) is deliberately NOT re-exported here. Binding it at package level
+# would shadow the `audit` SUBMODULE, so `from agentic.tasks.type_recovery import audit` would hand
+# back a function and every `audit.collect_claims(...)` call would fail with AttributeError.
+from .audit import (agree, audit_run, collect_claims, summarize,                  # noqa: F401
+                    is_pointer, is_unsigned_scalar, LABELS)
 from . import tools as _tools                                                     # noqa: F401
 
 register_domain_oracle("callee_signature", _oracle_callee_signature)
