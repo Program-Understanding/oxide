@@ -31,21 +31,26 @@ FP_BINS: Tuple[Tuple[str, int, Optional[int]], ...] = (
 )
 
 # Structural-filter census policies reported in the paper's Filter Coverage table
-# (Table tab:filter-coverage). The AND policy is not reported, so it is not run.
+# (Table tab:filter-coverage). AND is DRIFT's C&C Modified criterion, reported to show
+# what the tighter policy would have cost in insertion-point coverage.
 FILTER_CENSUS_CONFIGS: Tuple[Tuple[str, Optional[str]], ...] = (
     ("filter_OR", "Call_OR_Control_Modified"),
+    ("filter_AND", "Control_Call_Modified"),
     ("filter_NONE", None),
 )
 
 
-# Full DELT plus one config per ablated design element. Each config perturbs exactly
+# Full DELT plus one config per ablated design element. Each ablation perturbs exactly
 # one element away from the deployed configuration and every config runs the single
-# triage agent, so the paper's Delta = Full - Ablated stays attributable.
+# triage agent, so the paper's Delta = Full - Ablated stays attributable. `base` strips
+# all three at once, giving the floor the deployed configuration is measured against:
+# every modified function forwarded, as a raw decompiled diff, with no added callees.
 EXPERIMENT_CONFIGS: Tuple[Tuple[str, str, Optional[str], Dict[str, Any]], ...] = (
     ("delt", "processed", "Call_OR_Control_Modified", {}),
     ("no_added_callees", "processed", "Call_OR_Control_Modified", {"include_added_callees": False}),
     ("no_diff_processing", "raw", "Call_OR_Control_Modified", {}),
     ("no_filter", "processed", None, {}),
+    ("base", "raw", None, {"include_added_callees": False}),
 )
 
 
@@ -645,7 +650,7 @@ def run_drift(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     """Run only the structural drift stage over the backdoored and safe pairs, no LLM.
 
     Use this before `run_experiments` to see the search space each comparison produces
-    and to work out ground truth. Both filter policies are run (filter_OR and
+    and to work out ground truth. Every filter policy is run (filter_OR, filter_AND, and
     filter_NONE), which is exactly the census `run_experiments` does at its root, so
     pointing this at the same --outdir means the full run reuses these results.
 
