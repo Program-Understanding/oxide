@@ -112,32 +112,26 @@ def _resolve_pairs(args: List[str], opts: Dict[str, Any]) -> List[Tuple[str, str
     raise ValueError("Pass either [target, baseline] or --entries with at least one target,baseline pair per line.")
 
 
-def _parse_models_file(path: str) -> List[Tuple[str, int]]:
-    """Parse a models file. Each non-comment line is `model_tag [function_workers]`
-    (whitespace- or comma-separated); function_workers defaults to 1."""
-    specs: List[Tuple[str, int]] = []
+def _parse_models_file(path: str) -> List[str]:
+    """Parse a models file. Each non-comment line is one model tag."""
+    models: List[str] = []
     with open(path, "r", encoding="utf-8") as handle:
         for raw_line in handle:
             line = raw_line.split("#", 1)[0].strip()
             if not line:
                 continue
-            parts = line.replace(",", " ").split()
-            model = parts[0]
-            function_workers = int(parts[1]) if len(parts) > 1 else 1
-            if function_workers < 1:
-                raise ValueError(f"function_workers must be >= 1 for model '{model}' (got {function_workers}).")
-            specs.append((model, function_workers))
-    if not specs:
+            models.append(line.replace(",", " ").split()[0])
+    if not models:
         raise ValueError(f"Models file '{path}' contained no models.")
-    return specs
+    return models
 
 
 def _model_slug(model: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", str(model)).strip("_") or "model"
 
 
-def _resolve_model_specs(opts: Dict[str, Any]) -> Tuple[List[Tuple[str, int]], bool, bool]:
-    """Return (model_specs, nested, dry_run). Each spec is (model, function_workers).
+def _resolve_model_specs(opts: Dict[str, Any]) -> Tuple[List[str], bool, bool]:
+    """Return (models, nested, dry_run).
     `nested` is True when results should live under a per-model subdirectory (multi-model
     runs); False keeps the flat single-model layout. `dry_run` is True when no model was
     given: the pipeline then produces every triage input (unified diffs + added-callee
@@ -148,11 +142,8 @@ def _resolve_model_specs(opts: Dict[str, Any]) -> Tuple[List[Tuple[str, int]], b
     model = opts.get("model")
     if not model:
         # No model -> dry run: produce triage inputs only, no LLM.
-        return [("dry_run", 1)], False, True
-    function_workers = int(opts.get("function_workers") or 1)
-    if function_workers < 1:
-        raise ValueError(f"--function_workers must be >= 1 (got {function_workers}).")
-    return [(str(model), function_workers)], False, False
+        return ["dry_run"], False, True
+    return [str(model)], False, False
 
 
 def _run_one_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]) -> Dict[str, Any]:
@@ -267,8 +258,7 @@ def _run_category(
     *,
     gt: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    # Comparisons run sequentially. Any parallelism (per-function fan-out across GPUs)
-    # lives in the delt analyzer and is driven by the function_workers opt in run_opts.
+    # Comparisons run sequentially.
     os.makedirs(category_outdir, exist_ok=True)
     total = len(pairs)
     return [
@@ -586,7 +576,6 @@ def _run_experiment_configs(
         )
         config_summary: Dict[str, Any] = {
             "model": base_opts.get("model"),
-            "function_workers": int(base_opts.get("function_workers") or 1),
             "diff_mode": diff_mode,
             "filter_mode": "NONE" if not filter_key else filter_key,
             "include_added_callees": include_added_callees,
@@ -696,7 +685,7 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     Model selection:
       model        -- a single model tag passed through to the delt analyzer
       models       -- a models file (like models.txt); each line is
-                      `model_tag [function_workers]` (function_workers defaults to 1).
+                      one model tag.
                       Results for each model land under outdir/<model_slug>/.
       (neither)    -- dry run: only the deployed `delt` config runs, with triage
                       disabled, so each modified function gets its unified diff and the
@@ -704,16 +693,7 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
                       modified_functions/<b..t..>/{diff.txt,agent_inputs/}) written to
                       disk without invoking the agent. Use this to author ground truth.
 
-    Parallelization is owned by the delt analyzer, not this plugin: comparisons run
-    sequentially here, and when function_workers > 1 the analyzer triages functions
-    concurrently, provisioning one Ollama server per GPU on its own. This plugin only
-    forwards the relevant opts to the analyzer:
-      function_workers -- per-function worker count for the single --model form
-                      (default 1). In the models file it is the per-model second column.
-      ollama_base_port -- base port for the analyzer's per-GPU Ollama servers (default
-                      11435; worker i -> GPU i on port base_port + i).
-      endpoints    -- explicit comma-separated Ollama base URLs (or DELT_ENDPOINTS),
-                      overriding auto-launch.
+    Comparisons run one at a time against a single Ollama host.
 
     Optional opts:
       safe         -- entries file of safe target,baseline pairs
@@ -752,12 +732,9 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     experiment_summary.update(_run_filter_census(outdir, backdoored_pairs, safe_pairs, gt))
 
     model_summaries: Dict[str, Any] = {}
-    for model, function_workers in model_specs:
+    for model in model_specs:
         base_opts = dict(opts)
         base_opts["model"] = model
-        # Comparisons run sequentially here; the delt analyzer fans functions across GPUs
-        # when function_workers > 1, provisioning per-GPU Ollama servers on its own.
-        base_opts["function_workers"] = function_workers
         # Dry run: disable triage so the analyzer only produces per-function diffs and
         # agent inputs. No model client is built.
         base_opts["no_triage"] = dry_run
@@ -767,10 +744,7 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         if dry_run:
             logger.info("running dry-run (no triage) to produce triage inputs")
         else:
-            logger.info(
-                "running experiment configs for model %s (function_workers %d)",
-                model, function_workers,
-            )
+            logger.info("running experiment configs for model %s", model)
 
         config_summaries = _run_experiment_configs(
             base_opts,

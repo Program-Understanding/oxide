@@ -1,7 +1,5 @@
 import logging
 import os
-import queue
-import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -10,8 +8,7 @@ from oxide.core import api, progress
 from oxide.modules.analyzers.delt.config import NAME
 from oxide.modules.analyzers.delt.pipeline.agent.triage import run_triage
 from oxide.modules.analyzers.delt.pipeline.agent.telemetry.agent_trace import write_trace_view
-from oxide.modules.analyzers.delt.pipeline.agent.endpoints import resolve_function_endpoints
-from oxide.modules.analyzers.delt.pipeline.agent.runtime import build_worker_runtime, get_or_build_runtime
+from oxide.modules.analyzers.delt.pipeline.agent.runtime import get_or_build_runtime
 from oxide.modules.analyzers.delt.pipeline.types import AnalyzeFunctionResult, ComparisonStats
 from oxide.modules.analyzers.delt.pipeline.utils import cache, ground_truth
 from oxide.modules.analyzers.delt.pipeline.utils.callees import (
@@ -372,68 +369,26 @@ def _run_function_pairs(
     runtime: Any,
     fingerprint: str,
     added_callee_index: Optional[AddedCalleeIndex],
-    function_workers: int,
-    base_urls: List[str],
     prog: Any,
 ) -> List[Tuple[int, Dict[str, Any], Any]]:
     """Triage every modified function in a file pair, returning results in function order.
 
-    Sequential when function_workers <= 1 (uses the shared runtime). Otherwise runs N
-    long-lived worker threads, each owning its own runtime pinned to one endpoint, pulling
-    functions from a shared queue. Aggregation stays on the caller in deterministic order.
     Ticks prog once per completed function so the progress bar advances in real time."""
     func_total = len(filtered_mods)
 
-    def _compute(func_idx: int, modified: Dict[str, Any], rt: Any) -> Any:
+    ordered: List[Tuple[int, Dict[str, Any], Any]] = []
+    for func_idx, modified in enumerate(filtered_mods, 1):
         baseline_addr = ensure_decimal_str(modified.get("baseline_func_addr"))
         target_addr = ensure_decimal_str(modified.get("target_func_addr"))
-        return analyze_function_pair(
+        result = analyze_function_pair(
             baseline_oid=baseline_oid, target_oid=target_oid, baddr=baseline_addr, taddr=target_addr,
             fp_idx=fp_idx, fp_total=fp_total, func_idx=func_idx, func_total=func_total,
-            outdir=outdir, opts=opts, runtime=rt, fingerprint=fingerprint,
+            outdir=outdir, opts=opts, runtime=runtime, fingerprint=fingerprint,
             added_callee_index=added_callee_index,
         )
-
-    if function_workers <= 1 or func_total <= 1:
-        ordered: List[Tuple[int, Dict[str, Any], Any]] = []
-        for i, m in enumerate(filtered_mods, 1):
-            result = _compute(i, m, runtime)
-            ordered.append((i, m, result))
-            prog.tick()
-        return ordered
-
-    n_workers = min(function_workers, func_total)
-    endpoints: List[Optional[str]] = list(base_urls) if base_urls else [None] * n_workers
-    work: "queue.Queue[Tuple[int, Dict[str, Any]]]" = queue.Queue()
-    for i, m in enumerate(filtered_mods, 1):
-        work.put((i, m))
-    results: Dict[int, Tuple[int, Dict[str, Any], Any]] = {}
-    results_lock = threading.Lock()
-
-    def _worker(worker_idx: int) -> None:
-        base_url = endpoints[worker_idx % len(endpoints)]
-        worker_runtime = build_worker_runtime(opts, base_url)
-        while True:
-            try:
-                func_idx, modified = work.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                result: Any = _compute(func_idx, modified, worker_runtime)
-            except Exception as exc:  # noqa: BLE001 — record as a function failure, don't kill the worker
-                logger.exception("function %d/%d failed on %s", func_idx, func_total, base_url or "default")
-                result = {"label": "failed", "failure_reason": "worker_exception", "failure_detail": repr(exc)}
-            with results_lock:
-                results[func_idx] = (func_idx, modified, result)
-                prog.tick()
-            work.task_done()
-
-    threads = [threading.Thread(target=_worker, args=(w,), daemon=True) for w in range(n_workers)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    return [results[i] for i in sorted(results)]
+        ordered.append((func_idx, modified, result))
+        prog.tick()
+    return ordered
 
 
 def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]) -> Dict[str, Any]:
@@ -448,17 +403,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     include_added_callees = bool(opts.get("include_added_callees", True))
     diff_raw_for_stats = _resolve_bool_override(opts, "raw", "_diff_raw")
 
-    # Per-function parallelism (prototype, behind function_workers). When > 1, functions
-    # within each file pair are triaged concurrently by worker threads, each pinned to one
-    # Ollama endpoint. Endpoints are provisioned lazily by the module (one server per GPU).
-    function_workers = 1 if no_triage else int(opts.get("function_workers") or 1)
-    function_base_urls = resolve_function_endpoints(opts) if function_workers > 1 else []
-    if function_workers > 1:
-        logger.info(
-            "per-function parallelism enabled: %d workers, %s",
-            function_workers,
-            f"{len(function_base_urls)} endpoint(s)" if function_base_urls else "shared endpoint",
-        )
 
     filter_val = normalize_filter_value(opts.get("filter"))
     diff_mode = _coerce_str(opts.get("diff_mode")) or ("raw" if diff_raw_for_stats else "processed")
@@ -609,7 +553,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
             fp_idx=fp_idx, fp_total=len(file_pairs),
             outdir=outdir, opts=opts, runtime=runtime, fingerprint=fingerprint,
             added_callee_index=added_callee_index,
-            function_workers=function_workers, base_urls=function_base_urls,
             prog=prog,
         )
 

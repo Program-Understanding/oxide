@@ -79,12 +79,3 @@ def get_or_build_runtime(opts: Optional[Dict[str, Any]]) -> TriageRuntime:
             runtime = _build_runtime(resolved_opts)
             RUNTIMES[cache_key] = runtime
         return runtime
-
-
-def build_worker_runtime(opts: Optional[Dict[str, Any]], base_url: Optional[str] = None) -> TriageRuntime:
-    """Build a fresh (non-memoized) runtime pinned to base_url, for per-function parallel
-    workers. Each worker owns its own ChatOllama client, so concurrent function triage
-    never shares a model client across threads."""
-    resolved_opts = _resolve_runtime_opts(opts)
-    resolved_opts["ollama_base_url"] = base_url
-    return _build_runtime(resolved_opts)
