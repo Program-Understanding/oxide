@@ -28,9 +28,12 @@ def process(oid: str, opts: dict) -> bool:
 
     if functions is None: return False
 
+    # Read once and pass down; each retrieve reloads the whole ghidra_disasm blob.
+    basic_blocks = api.get_field("ghidra_disasm", oid, "original_blocks") or {}
+
     for func_addr, func_data in functions.items():
         # Get the CFG for the function; skip if not available.
-        cfg = get_func_cfg(oid, func_addr)
+        cfg = get_func_cfg(oid, func_addr, functions=functions, basic_blocks=basic_blocks)
         if cfg:
             cfg = cfg_to_llm_json(cfg, func_name=func_data['name'])
             result[func_addr] = cfg
@@ -105,9 +108,12 @@ def cfg_to_networkx(block_map: dict, bb_features: dict = None) -> nx.DiGraph:
         
     return bb_graph
 
-def _get_function_blocks(oid: str, func_addr: str) -> dict:
-    basic_blocks = api.get_field('ghidra_disasm', oid, "original_blocks")
-    functions = api.get_field('ghidra_disasm', oid, "functions")
+def _get_function_blocks(oid: str, func_addr: str, functions: dict = None,
+                         basic_blocks: dict = None) -> dict:
+    if basic_blocks is None:
+        basic_blocks = api.get_field('ghidra_disasm', oid, "original_blocks")
+    if functions is None:
+        functions = api.get_field('ghidra_disasm', oid, "functions")
     func = functions.get(func_addr)
     if not func:
         return {}
@@ -119,18 +125,23 @@ def _get_function_blocks(oid: str, func_addr: str) -> dict:
     return blocks
 
 
-def get_func_cfg(oid: str, func_addr: str):
+def get_func_cfg(oid: str, func_addr: str, functions: dict = None,
+                 basic_blocks: dict = None):
     """
     Generate the control flow graph (CFG) for a given function.
 
     Args:
         oid (str): The object identifier.
         func_addr (str): The function address.
+        functions (dict, optional): The ghidra_disasm "functions" field, when the caller
+                                    already holds it. Fetched here if not given.
+        basic_blocks (dict, optional): The ghidra_disasm "original_blocks" field, same.
 
     Returns:
         nx.DiGraph or None: The CFG as a NetworkX graph, or None if no nodes exist.
     """
-    function_bbs = _get_function_blocks(oid, func_addr)
+    function_bbs = _get_function_blocks(oid, func_addr, functions=functions,
+                                        basic_blocks=basic_blocks)
     if not function_bbs:
         return None
     bb_graph = cfg_to_networkx(function_bbs)

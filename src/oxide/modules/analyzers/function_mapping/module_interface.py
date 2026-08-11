@@ -61,13 +61,17 @@ def results(oid_list: List[str], opts: dict) -> Optional[Dict[str, str]]:
         
     diff = api.retrieve("bindiff", [target_oid, baseline_oid]) or {}
 
+    # Read each side once; every retrieve reloads the whole ghidra_disasm blob.
+    baseline_funcs = api.get_field("ghidra_disasm", baseline_oid, "functions") or {}
+    target_funcs = api.get_field("ghidra_disasm", target_oid, "functions") or {}
+
     out: Dict[str, str] = {}
     for t_addr, b_addr in _iter_match_pairs(diff):
         result = {
             "b_addr": b_addr,
-            "b_name": _get_function_name(baseline_oid, b_addr),
+            "b_name": _get_function_name(baseline_funcs, b_addr),
             "t_addr": t_addr,
-            "t_name": _get_function_name(target_oid, t_addr)
+            "t_name": _get_function_name(target_funcs, t_addr)
         }
         out[t_addr] = result
 
@@ -97,8 +101,7 @@ def _iter_match_pairs(diff: Dict[str, Any]) -> List[Tuple[Any, Any]]:
         return list(fm)
     return []
 
-def _get_function_name(oid: str, addr: Any) -> Optional[str]:
+def _get_function_name(funcs: Dict[str, Any], addr: Any) -> Optional[str]:
     if addr is None:
         return None
-    funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
     return funcs.get(addr, {}).get("name")
