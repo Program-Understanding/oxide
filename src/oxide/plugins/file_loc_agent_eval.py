@@ -3383,7 +3383,7 @@ def _prewarm_base_query_function_indexes(
                     exes,
                     {
                         "query": "prewarm",
-                        "backend": "decomp_minilm",
+                        "backend": "search_functions",
                         "search_mode": "semantic",
                         "top_k": 1,
                         "limit": 1,

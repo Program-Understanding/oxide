@@ -116,6 +116,35 @@ def _extract_ranked_function_candidates(raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def _bodied_function_addrs(oid: str) -> set:
+    """Addresses of functions Ghidra recovered a body for.
+
+    ghidra_disasm also lists external import stubs such as `<EXTERNAL>::strcpy`,
+    which carry a signature and an empty block list. Restricting to functions
+    with a body holds every method to the same candidate pool.
+    """
+    funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
+    out = set()
+    for addr, finfo in funcs.items():
+        if addr == "meta" or not isinstance(finfo, dict) or not finfo.get("blocks"):
+            continue
+        parsed = _to_int_addr(addr)
+        if parsed is not None:
+            out.add(parsed)
+    return out
+
+
+def _restrict_to_bodied(
+    candidates: Sequence[Dict[str, Any]],
+    bodied_by_oid: Dict[str, set],
+) -> List[Dict[str, Any]]:
+    """Drop bodiless candidates and renumber, so both methods rank one pool."""
+    kept = [c for c in candidates if c["function_addr"] in bodied_by_oid.get(c["oid"], ())]
+    for rank, cand in enumerate(kept, start=1):
+        cand["rank"] = rank
+    return kept
+
+
 def _first_function_rank(candidates: Sequence[Dict[str, Any]], gold_oid: str) -> Tuple[Optional[int], Optional[int], Optional[str]]:
     for row in candidates:
         if str(row.get("oid") or "") == gold_oid:
@@ -185,7 +214,7 @@ def _per_component_metrics(
 
 
 def _run_method(method_id: str, tasks: List[Dict[str, Any]], opts: Dict[str, Any]) -> Dict[str, Any]:
-    backend = "decomp_minilm" if method_id == "qf_decomp_global" else "clap_asm"
+    backend = "search_functions" if method_id == "qf_decomp_global" else "clap"
     search_mode = str(opts.get("search_mode", "semantic") or "semantic").strip().lower()
     if search_mode != "semantic":
         return {"method": method_id, "error": "query_function_eval currently supports semantic mode only."}
@@ -194,6 +223,7 @@ def _run_method(method_id: str, tasks: List[Dict[str, Any]], opts: Dict[str, Any
     function_ranks: List[Optional[int]] = []
     file_ranks: List[Optional[int]] = []
     exes_by_cid: Dict[str, List[str]] = {}
+    bodied_by_oid: Dict[str, set] = {}
 
     for task in tasks:
         cid = str(task.get("cid") or "")
@@ -205,6 +235,9 @@ def _run_method(method_id: str, tasks: List[Dict[str, Any]], opts: Dict[str, Any
             exes_by_cid[cid] = exes
         if not exes:
             continue
+        for oid in exes:
+            if oid not in bodied_by_oid:
+                bodied_by_oid[oid] = _bodied_function_addrs(oid)
 
         prompt = str(task.get("prompt") or "").strip()
         if not prompt:
@@ -214,11 +247,6 @@ def _run_method(method_id: str, tasks: List[Dict[str, Any]], opts: Dict[str, Any
             "query": prompt,
             "backend": backend,
             "search_mode": "semantic",
-            # CLAP is trained contrastively against cosine similarity, so both
-            # sides must be unit-normalized before the dot product. Without this
-            # the ranking is dominated by embedding magnitude, which tracks
-            # function length rather than relevance to the query.
-            "normalize_embeddings": True,
             "top_k": 0,
             "limit": 0,
             "offset": 0,
@@ -232,7 +260,7 @@ def _run_method(method_id: str, tasks: List[Dict[str, Any]], opts: Dict[str, Any
         out = api.retrieve("query_function", exes, retrieve_opts) or {}
         runtime_ms = (time.perf_counter_ns() - t0) / 1_000_000.0
 
-        candidates = _extract_ranked_function_candidates(out)
+        candidates = _restrict_to_bodied(_extract_ranked_function_candidates(out), bodied_by_oid)
         gold_oid = str(task.get("gold_oid") or "")
         function_rank, function_addr, function_name = _first_function_rank(candidates, gold_oid)
         file_rank = _first_file_rank(candidates, gold_oid)
