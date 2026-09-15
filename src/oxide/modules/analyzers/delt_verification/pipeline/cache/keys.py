@@ -3,7 +3,7 @@ import json
 from typing import Any, Dict, Optional
 
 
-def triage_opts_fingerprint(
+def bounded_opts_fingerprint(
     opts: Dict[str, Any], prompt_bundle: Optional[Dict[str, Any]] = None
 ) -> str:
     tracked_opts = {
@@ -13,20 +13,24 @@ def triage_opts_fingerprint(
             "filter",
             "diff_mode",
             "raw",
-            "no_triage",
+            "no_bounded",
             "include_added_callees",
+            "bounded_request_s",
+            "bounded_model_call_s",
+            "temperature",
+            "seed",
         )
     }
     prompts = {}
     if prompt_bundle:
-        for name in ("triage", "triage_with_callees"):
+        for name in ("bounded", "bounded_with_callees"):
             cfg = prompt_bundle.get(name) or {}
             prompts[name] = {"system": cfg.get("system"), "schema": cfg.get("schema")}
     blob = json.dumps({"opts": tracked_opts, "prompts": prompts}, sort_keys=True, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def verification_opts_fingerprint(
+def unbounded_opts_fingerprint(
     opts: Dict[str, Any], prompt_bundle: Optional[Dict[str, Any]] = None
 ) -> str:
     tracked_opts = {
@@ -37,68 +41,60 @@ def verification_opts_fingerprint(
             "diff_mode",
             "raw",
             "include_added_callees",
-            "verification_request_s",
-            "verification_model_call_s",
+            "unbounded_request_s",
+            "unbounded_model_call_s",
+            "temperature",
+            "seed",
         )
     }
+    # no_bounded_report is deliberately not tracked. Its only effect is blanking the claim,
+    # and unbounded_inputs_digest below already hashes the claim, so tracking it here
+    # would split the cache between arms that send the agent an identical request.
     prompts = {}
     if prompt_bundle:
-        for name in ("triage", "triage_with_callees", "verification"):
+        for name in (
+            "bounded",
+            "bounded_with_callees",
+            "unbounded",
+            "unbounded_no_report",
+        ):
             cfg = prompt_bundle.get(name) or {}
             prompts[name] = {"system": cfg.get("system"), "schema": cfg.get("schema")}
     blob = json.dumps({"opts": tracked_opts, "prompts": prompts}, sort_keys=True, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def binary_context_opts_fingerprint(
-    opts: Dict[str, Any], prompt_bundle: Optional[Dict[str, Any]] = None
-) -> str:
-    tracked_opts = {
-        key: opts.get(key)
-        for key in (
-            "model",
-            "filter",
-            "binary_context_request_s",
-            "binary_context_model_call_s",
-        )
-    }
-    prompts = {}
-    if prompt_bundle:
-        cfg = prompt_bundle.get("binary_context") or {}
-        prompts["binary_context"] = {"system": cfg.get("system"), "schema": cfg.get("schema")}
-    blob = json.dumps({"opts": tracked_opts, "prompts": prompts}, sort_keys=True, default=str)
-    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
-
-
-def triage_result_cache_key(
+def bounded_result_cache_key(
     target_oid: str,
     baseline_oid: str,
     baseline_addr: str,
     target_addr: str,
     fingerprint: str,
 ) -> str:
-    return f"triage_{target_oid}_{baseline_oid}_{baseline_addr}_{target_addr}_{fingerprint}"
+    return f"bounded_{target_oid}_{baseline_oid}_{baseline_addr}_{target_addr}_{fingerprint}"
 
 
-def verification_inputs_digest(triage_report_md: str, binary_context_md: str) -> str:
-    """Digest of the two reports handed to the verification agent.
+def unbounded_inputs_digest(
+    bounded_report_md: str, callee_texts: Optional[Dict[str, str]] = None
+) -> str:
+    """Digest of the evidence handed to the unbounded agent.
 
-    The opts fingerprint pins how the reports were produced, not what they say. Two runs
-    at the same fingerprint can still hand the agent different documents: a binary-context
-    run that timed out yields an empty report, and the retry that follows yields a real
-    one. Folding the report text into the key means a verdict is only replayed when the
-    agent would read byte-identical inputs, so a verdict reached without binary context is
-    never reused once that context exists.
+    The opts fingerprint pins how the report was produced, not what it says, and two runs
+    at the same fingerprint can still hand the agent different documents: an arm that
+    withholds the report, or one with no bounded stage at all, supplies an empty claim where
+    another supplies a real one. Folding the report text into the key means a verdict is
+    replayed only when the agent would read byte-identical inputs, which is also what lets
+    arms that send identical requests share a cached investigation.
     """
     blob = json.dumps(
-        {"triage_report_md": triage_report_md, "binary_context_md": binary_context_md},
+        {"bounded_report_md": bounded_report_md, "callee_texts": callee_texts or {}},
         sort_keys=True,
         default=str,
     )
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def verification_result_cache_key(
+def unbounded_result_cache_key(
     target_oid: str,
     baseline_oid: str,
     baseline_addr: str,
@@ -107,16 +103,8 @@ def verification_result_cache_key(
     inputs_digest: str,
 ) -> str:
     return (
-        f"verification_{target_oid}_{baseline_oid}_{baseline_addr}_{target_addr}"
+        f"unbounded_{target_oid}_{baseline_oid}_{baseline_addr}_{target_addr}"
         f"_{fingerprint}_{inputs_digest}"
     )
 
 
-def binary_context_cache_key(baseline_oid: str, fingerprint: str) -> str:
-    """Keyed by the baseline alone: the report describes only that binary.
-
-    The agent is handed the baseline OID and nothing about the target, so every pair
-    sharing a baseline (a backdoored and a safe target against the same previous release)
-    can reuse one report.
-    """
-    return f"binary_context_{baseline_oid}_{fingerprint}"

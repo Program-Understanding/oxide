@@ -1,26 +1,35 @@
 from __future__ import annotations
 
+import ast
+import configparser
+import glob
+import hashlib
+import importlib.metadata
 import json
 import logging
 import os
+import platform
 import queue
 import re
 import socket
+import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional, Set, Tuple
+from collections import Counter
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from oxide.core import oxide as oxide
 from oxide.core.oxide import api
 
-from oxide.modules.analyzers.delt_verification.pipeline.utils.drift_adapter import build_drift_file_pairs
 from oxide.modules.analyzers.delt_verification.pipeline.utils.ground_truth import (
     get_ground_truth_for_target,
     gt_row_matches_any,
     load_ground_truth_file,
 )
-from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import comparison_dir_name, ensure_decimal_str
+from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import comparison_dir_name
 
 NAME = "delt_verification_experiment"
 logger = logging.getLogger(NAME)
@@ -35,28 +44,35 @@ FP_BINS: Tuple[Tuple[str, int, Optional[int]], ...] = (
     (">25", 26, None),
 )
 
-# Structural-filter census policies reported in the paper's Filter Coverage table
-# (Table tab:filter-coverage). The AND policy is not reported, so it is not run.
-FILTER_CENSUS_CONFIGS: Tuple[Tuple[str, Optional[str]], ...] = (
-    ("filter_OR", "Call_OR_Control_Modified"),
-    ("filter_NONE", None),
-)
-
-
-# Full two-stage DELT plus one config per ablated design element. Each config perturbs
-# exactly one element away from the deployed configuration, so the paper's
-# Delta = Full - Ablated stays attributable.
+# One arm per investigation strategy, as (arm name, diff mode, structural filter, analyzer
+# opts). Each runs over both pair categories and writes into outdir/<arm name>/.
 #
-# Diff processing is not ablated here: it showed no detection or false-positive effect
-# through the triage agent, so this module runs processed diffs throughout.
+#   bounded             bounded alone, deciding each candidate from its prepared evidence
+#   multi_agent_triage  bounded, then whole-binary unbounded of what bounded retains,
+#                       carrying the bounded report
+#   no_report           the same, minus the report
+#   unbounded           whole-binary investigation of every filtered candidate
 #
-# Triage alone is not a config either. Every run records both the Triage label and the
-# post-Verification pipeline label per candidate, so the single-stage and two-stage numbers
-# both come out of one pass.
+# unbounded is the evidence-scope condition, so it starts from the same candidate anchor and
+# diff as the others and differs only in having tools instead of a prepared region.
+#
+# bounded duplicates what the bounded stage of multi_agent_triage already records, and is run
+# separately so every configuration reads from an arm of its own rather than one being
+# derived from another's stage metrics. skip_unbounded is absent from the bounded cache
+# fingerprint, so it reuses those cached bounded labels and calls no model.
+#
+# The filter and diff mode are held fixed across arms so the arms differ only in what the
+# agent is given.
 EXPERIMENT_CONFIGS: Tuple[Tuple[str, str, Optional[str], Dict[str, Any]], ...] = (
-    ("delt_verification", "processed", "Call_OR_Control_Modified", {}),
-    # ("no_added_callees", "processed", "Call_OR_Control_Modified", {"include_added_callees": False}),
-    # ("no_filter", "processed", None, {}),
+    ("bounded", "processed", "Call_OR_Control_Modified", {"skip_unbounded": True}),
+    ("multi_agent_triage", "processed", "Call_OR_Control_Modified", {}),
+    ("no_report", "processed", "Call_OR_Control_Modified", {"no_bounded_report": True}),
+    (
+        "unbounded",
+        "processed",
+        "Call_OR_Control_Modified",
+        {"skip_bounded": True},
+    ),
 )
 
 
@@ -68,11 +84,6 @@ def _read_json(path: str) -> Any:
 def _write_json(path: str, data: Any) -> None:
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, ensure_ascii=False, default=str)
-
-
-def _write_text(path: str, text: str) -> None:
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
 
 
 def _read_series_file(path: str, sep: str = ",") -> List[Tuple[str, str]]:
@@ -117,15 +128,6 @@ def _comparison_dir(target: str, baseline: str) -> str:
     return comparison_dir_name(str(target), str(baseline))
 
 
-def _resolve_pairs(args: List[str], opts: Dict[str, Any]) -> List[Tuple[str, str]]:
-    series_file = opts.get("entries")
-    if series_file:
-        return _read_series_file(series_file)
-    if len(args) == 2:
-        return [(args[0], args[1])]
-    raise ValueError("Pass either [target, baseline] or --entries with at least one target,baseline pair per line.")
-
-
 def _parse_models_file(path: str) -> List[Tuple[str, int]]:
     """Parse a models file. Each non-comment line is `model_tag [sample_workers]`
     (whitespace- or comma-separated); sample_workers defaults to 1."""
@@ -154,14 +156,14 @@ def _resolve_model_specs(opts: Dict[str, Any]) -> Tuple[List[Tuple[str, int]], b
     """Return (model_specs, nested, dry_run). Each spec is (model, sample_workers).
     `nested` is True when results should live under a per-model subdirectory (multi-model
     runs); False keeps the flat single-model layout. `dry_run` is True when no model was
-    given: the pipeline then produces every triage input (unified diffs + added-callee
+    given: the pipeline then produces every bounded input (unified diffs + added-callee
     context) without running the agent, for ground-truth authoring."""
     models_path = opts.get("models")
     if models_path:
         return _parse_models_file(models_path), True, False
     model = opts.get("model")
     if not model:
-        # No model -> dry run: produce triage inputs only, no LLM.
+        # No model -> dry run: produce bounded inputs only, no LLM.
         return [("dry_run", 1)], False, True
     sample_workers = int(opts.get("sample_workers") or 1)
     if sample_workers < 1:
@@ -208,7 +210,7 @@ def _refresh_cached_stats_ground_truth(
     gt_target_count = len(gt_norm.get("targets", []) or [])
     gt_retained = 0
     counts = {"hit": 0, "dismissed": 0, "failed": 0}
-    triage_counts = {"hit": 0, "dismissed": 0, "failed": 0}
+    bounded_counts = {"hit": 0, "dismissed": 0, "failed": 0}
 
     def _outcome(label: Any, flagged: Any) -> str:
         if flagged:
@@ -221,15 +223,15 @@ def _refresh_cached_stats_ground_truth(
         if not gt_row_matches_any(row, gt_norm):
             continue
         gt_retained += 1
-        # Rows written before verification existed carry no pipeline label; fall back to
-        # the triage label so a refreshed older run stays internally consistent.
+        # Rows written before unbounded existed carry no pipeline label; fall back to
+        # the bounded label so a refreshed older run stays internally consistent.
         counts[
             _outcome(
-                row.get("pipeline_label") or row.get("triage_label"),
-                row.get("pipeline_flagged", row.get("triage_flagged")),
+                row.get("pipeline_label") or row.get("bounded_label"),
+                row.get("pipeline_flagged", row.get("bounded_flagged")),
             )
         ] += 1
-        triage_counts[_outcome(row.get("triage_label"), row.get("triage_flagged"))] += 1
+        bounded_counts[_outcome(row.get("bounded_label"), row.get("bounded_flagged"))] += 1
 
     refreshed = dict(stats)
     refreshed.update(
@@ -245,8 +247,8 @@ def _refresh_cached_stats_ground_truth(
     stage_path = os.path.join(pair_dir, "stage_metrics.json")
     if os.path.exists(stage_path):
         stage_metrics = _read_json(stage_path)
-        if isinstance(stage_metrics, dict) and isinstance(stage_metrics.get("triage"), dict):
-            stage_metrics["triage"].update(triage_counts)
+        if isinstance(stage_metrics, dict) and isinstance(stage_metrics.get("bounded"), dict):
+            stage_metrics["bounded"].update(bounded_counts)
             _write_json(stage_path, stage_metrics)
     return refreshed
 
@@ -307,10 +309,16 @@ def _process_pair(
     # stays a clean tool-wide record with no stage fields in it.
     if isinstance(stage_metrics, dict):
         row["_stage_metrics"] = stage_metrics
+    index = _candidate_index(_pair_candidates(pair_dir), os.path.basename(pair_dir))
+    row["_index"] = index
+    row["_candidates"] = _candidate_metrics(index)
+    row["_trace"] = _pair_trace_metrics(pair_dir)
     return row
 
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+# qwen3.6:35b-a3b's native context. Pinned so every worker is sized alike; see launch().
+DEFAULT_CONTEXT_LENGTH = 262144
 DEFAULT_OLLAMA_BASE_PORT = 11435
 
 
@@ -375,6 +383,170 @@ def _port_is_free(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) != 0
 
 
+def _get_gpu_uuids() -> List[str]:
+    """Return GPU UUIDs from nvidia-smi, or [] if unavailable."""
+    try:
+        out = subprocess.check_output(["nvidia-smi", "-L"], text=True, stderr=subprocess.DEVNULL)
+        return [
+            line.split("UUID: ")[1].rstrip(")")
+            for line in out.strip().splitlines()
+            if "UUID:" in line
+        ]
+    except Exception:
+        return []
+
+
+@dataclass
+class _ManagedOllama:
+    proc: "subprocess.Popen[bytes]"
+    base_url: str
+
+
+class OllamaManager:
+    """Launch and manage Ollama subprocess instances for multi-GPU parallel runs."""
+
+    def __init__(self) -> None:
+        self._instances: List[_ManagedOllama] = []
+
+    @staticmethod
+    def _candidate_model_dirs() -> List[str]:
+        candidates: List[str] = []
+        for raw in (
+            os.environ.get("OLLAMA_MODELS"),
+            os.path.expanduser("~/.ollama/models"),
+            "/usr/share/ollama/.ollama/models",
+        ):
+            path = str(raw or "").strip()
+            if not path or path in candidates:
+                continue
+            candidates.append(path)
+        return candidates
+
+    @classmethod
+    def _manifest_path(cls, root: str, model: str) -> str:
+        name, tag = model.split(":", 1) if ":" in model else (model, "latest")
+        return os.path.join(root, "manifests", "registry.ollama.ai", "library", name, tag)
+
+    @classmethod
+    def _select_model_dir(cls, model: str) -> str:
+        for path in cls._candidate_model_dirs():
+            if os.path.isfile(cls._manifest_path(path, model)):
+                return path
+        for path in cls._candidate_model_dirs():
+            if os.path.isdir(os.path.join(path, "manifests")) and os.path.isdir(
+                os.path.join(path, "blobs")
+            ):
+                return path
+        return str(os.environ.get("OLLAMA_MODELS") or os.path.expanduser("~/.ollama/models"))
+
+    def launch(
+        self,
+        n: int,
+        model: str,
+        base_port: int = DEFAULT_OLLAMA_BASE_PORT,
+        context_length: int = DEFAULT_CONTEXT_LENGTH,
+    ) -> List[str]:
+        gpu_uuids = _get_gpu_uuids()
+        models_dir = self._select_model_dir(model)
+        logger.info("OllamaManager: using OLLAMA_MODELS=%s", models_dir)
+        urls: List[str] = []
+        for i in range(n):
+            port = base_port + i
+            base_url = f"http://127.0.0.1:{port}"
+            self._ensure_port_available(port)
+            env = dict(os.environ)
+            env["OLLAMA_HOST"] = f"127.0.0.1:{port}"
+            env["OLLAMA_MAX_LOADED_MODELS"] = "1"
+            env["OLLAMA_NUM_PARALLEL"] = "1"
+            env["OLLAMA_KEEP_ALIVE"] = "-1"
+            # Ollama otherwise sizes the context from whatever VRAM is free when each
+            # server loads, so identical cards can end up on different tiers and the run is
+            # no longer reproducible. Pinned to the model's native length, which was
+            # measured resident at 29GB of 48GB fully on GPU. This is server capacity, not
+            # a model option: nothing is added to the request.
+            env["OLLAMA_CONTEXT_LENGTH"] = str(context_length)
+            env["OLLAMA_MODELS"] = models_dir
+            if gpu_uuids and i < len(gpu_uuids):
+                env["CUDA_VISIBLE_DEVICES"] = str(i)
+                logger.info("OllamaManager: worker %d -> GPU %d port %d", i, i, port)
+            else:
+                env.pop("CUDA_VISIBLE_DEVICES", None)
+                logger.info("OllamaManager: worker %d -> CPU/shared port %d", i, port)
+            proc = subprocess.Popen(
+                ["ollama", "serve"], env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self._instances.append(_ManagedOllama(proc=proc, base_url=base_url))
+            urls.append(base_url)
+        for inst in self._instances:
+            self._wait_ready(inst.base_url)
+            self._warmup(inst.base_url, model)
+        return urls
+
+    @staticmethod
+    def _ensure_port_available(port: int) -> None:
+        if not _port_is_free(port):
+            raise RuntimeError(
+                f"Ollama worker port {port} is already in use. "
+                "Choose a different --ollama_base_port or stop the existing server."
+            )
+
+    def _wait_ready(self, base_url: str, timeout: float = 120.0) -> None:
+        deadline = time.perf_counter() + timeout
+        while time.perf_counter() < deadline:
+            try:
+                with urllib.request.urlopen(base_url + "/", timeout=2) as resp:
+                    if "Ollama is running" in resp.read().decode("utf-8", errors="replace"):
+                        return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        raise RuntimeError(f"Ollama at {base_url} did not become ready within {timeout:.0f}s")
+
+    def _warmup(self, base_url: str, model: str) -> None:
+        show_req = urllib.request.Request(
+            base_url + "/api/show",
+            data=json.dumps({"model": model}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        gen_req = urllib.request.Request(
+            base_url + "/api/generate",
+            data=json.dumps({"model": model, "prompt": "", "keep_alive": -1}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(show_req, timeout=30) as resp:
+                resp.read()
+            with urllib.request.urlopen(gen_req, timeout=120) as resp:
+                resp.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                body = ""
+            if body:
+                logger.warning(
+                    "OllamaManager: warmup failed at %s: HTTP %s %s | %s",
+                    base_url, exc.code, exc.reason, body[:400],
+                )
+            else:
+                logger.warning("OllamaManager: warmup failed at %s: %r", base_url, exc)
+        except Exception as exc:
+            logger.warning("OllamaManager: warmup failed at %s: %r", base_url, exc)
+
+    def shutdown(self) -> None:
+        for inst in self._instances:
+            try:
+                inst.proc.terminate()
+                inst.proc.wait(timeout=5)
+            except Exception:
+                try:
+                    inst.proc.kill()
+                except Exception:
+                    pass
+        self._instances.clear()
+
+
 def _provision_sample_endpoints(
     opts: Dict[str, Any], sample_workers: int
 ) -> Tuple[List[str], Any]:
@@ -396,9 +568,6 @@ def _provision_sample_endpoints(
         _preflight_endpoints([DEFAULT_OLLAMA_URL], model)
         return [], None
 
-    # Lazy import: only pull in the launcher when multi-endpoint fan-out is actually used.
-    from oxide.plugins import delt_three_stage
-
     base_port = _free_port_block(
         int(opts.get("ollama_base_port") or DEFAULT_OLLAMA_BASE_PORT), sample_workers
     )
@@ -406,16 +575,77 @@ def _provision_sample_endpoints(
         "launching %d Ollama server(s) for this run on ports %d-%d (one per GPU)",
         sample_workers, base_port, base_port + sample_workers - 1,
     )
-    manager = delt_three_stage.OllamaManager()
-    endpoints = manager.launch(sample_workers, model, base_port=base_port)
+    manager = OllamaManager()
+    endpoints = manager.launch(
+        sample_workers, model, base_port=base_port,
+        context_length=int(opts.get("context_length") or DEFAULT_CONTEXT_LENGTH),
+    )
     try:
         # OllamaManager only logs a warning when warmup fails, so a server can come up
         # pointed at the wrong model store and 404 every call. Verify before running.
         _preflight_endpoints(endpoints, model)
+        _verify_residency(endpoints, model)
     except Exception:
         manager.shutdown()
         raise
     return endpoints, manager
+
+
+def _resident_model(base_url: str, model: str, timeout: float = 10.0) -> Dict[str, Any]:
+    """What the endpoint currently holds for `model`, from /api/ps."""
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/") + "/api/ps", timeout=timeout) as resp:
+            loaded = json.loads(resp.read().decode("utf-8", errors="replace")).get("models") or []
+    except Exception as exc:  # noqa: BLE001
+        return {"error": repr(exc)}
+    for entry in loaded:
+        if entry.get("name") == model or entry.get("model") == model:
+            return entry
+    return {}
+
+
+def _verify_residency(endpoints: List[str], model: str) -> None:
+    """Fail the run if the workers are not all holding the model the same way.
+
+    Ollama sizes the context and the GPU/CPU split from whatever VRAM is free when each
+    server loads, so identical cards can end up with different contexts and with layers on
+    the CPU. A partly-offloaded 30B model cannot answer inside the per-call timeout, and the
+    run then spends hours turning that into thousands of indistinguishable timeouts. Cheaper
+    to refuse here.
+    """
+    problems: List[str] = []
+    contexts = set()
+    for url in endpoints or [DEFAULT_OLLAMA_URL]:
+        resident = _resident_model(url, model)
+        if resident.get("error"):
+            problems.append(f"  {url}: unreachable ({resident['error']})")
+            continue
+        if not resident:
+            problems.append(f"  {url}: warmed up but not holding {model!r}")
+            continue
+        size, in_vram = int(resident.get("size") or 0), int(resident.get("size_vram") or 0)
+        context = resident.get("context_length")
+        contexts.add(context)
+        on_gpu = (in_vram / size) if size else 0.0
+        logger.info(
+            "%s: %s resident, context %s, %.0f%% on GPU", url, model, context, 100 * on_gpu
+        )
+        if size and on_gpu < 0.99:
+            problems.append(
+                f"  {url}: only {100 * on_gpu:.0f}% of the model is on the GPU "
+                f"(context {context}); it will not answer inside the call timeout"
+            )
+    if len(contexts) > 1:
+        problems.append(
+            f"  workers disagree on context length: {sorted(str(c) for c in contexts)}; "
+            "set OLLAMA_CONTEXT_LENGTH so every worker is sized the same"
+        )
+    if problems:
+        raise RuntimeError(
+            "Ollama workers are not in a usable state:\n" + "\n".join(problems) + "\n"
+            "Free the GPUs (check for other ollama servers holding VRAM) and retry."
+        )
+    logger.info("residency check ok: %d worker(s) fully on GPU at one context", len(endpoints or [1]))
 
 
 def _run_category(
@@ -430,7 +660,7 @@ def _run_category(
     """Run every comparison in a category, returning rows in the input pair order.
 
     Parallelism is at the sample level: each worker runs whole comparisons end to end, so
-    triage, binary context, and verification all run concurrently across workers. Workers
+    bounded, binary context, and unbounded all run concurrently across workers. Workers
     pull from a shared queue, which self-balances the very uneven per-sample function
     counts without needing to know them up front.
     """
@@ -489,6 +719,199 @@ def _run_category(
     return [results[i] for i in sorted(results)]
 
 
+_TOOL_ARGS_RE = re.compile(r"\[agent\] tool args: (\w+)\((\{.*\})\)$", re.MULTILINE)
+
+# Tools whose arguments name a specific part of the binary, so that two calls can be
+# compared for having asked the same question. The rest take no such argument.
+LOOKUP_TOOLS = frozenset(
+    {
+        "decompile_function", "disassemble", "decomp_diff", "get_matched_function",
+        "get_control_flow_graph", "get_call_graph", "list_xrefs", "read_bytes",
+        "search_symbols_by_name", "search_strings", "search_functions",
+    }
+)
+
+STAGES = ("bounded", "unbounded")
+
+
+def _lookup_key(tool: str, raw_args: str) -> Optional[str]:
+    """Canonical identity of one lookup, or None if the arguments cannot be read.
+
+    Argument order varies between calls and offsets appear in both hex and decimal, so the
+    same request reaches the log in several forms and has to be normalized before two of
+    them can be compared.
+    """
+    try:
+        args = ast.literal_eval(raw_args)
+    except (ValueError, SyntaxError):
+        return None
+    if not isinstance(args, dict):
+        return None
+    parts = []
+    for key, value in sorted(args.items()):
+        text = str(value)
+        try:
+            text = str(int(text, 0))
+        except (TypeError, ValueError):
+            pass
+        parts.append(f"{key}={text}")
+    return f"{tool}(" + ",".join(parts) + ")"
+
+
+def _parse_trace(path: str) -> Tuple[Counter, List[str]]:
+    """(tool calls by name, canonical lookup keys) from one investigation's agent trace.
+
+    Read from the `tool args` lines, which carry the tool name and its complete arguments
+    on one line and appear exactly once per call.
+    """
+    counts: Counter = Counter()
+    lookups: List[str] = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        logger.warning("unreadable agent trace %s", path)
+        return counts, lookups
+    for match in _TOOL_ARGS_RE.finditer(text):
+        tool, raw_args = match.group(1), match.group(2)
+        counts[tool] += 1
+        if tool in LOOKUP_TOOLS:
+            key = _lookup_key(tool, raw_args)
+            if key is not None:
+                lookups.append(key)
+    return counts, lookups
+
+
+def _pair_trace_metrics(pair_dir: str) -> Dict[str, Any]:
+    """Tool use and cross-investigation overlap for one comparison.
+
+    The analyzer records tool calls only as text in each investigation's agent trace, so
+    they have to be read back out of the logs. The result is cached in the pair directory
+    because re-summarizing a finished run would otherwise re-read every trace.
+    """
+    cache = os.path.join(pair_dir, "tool_metrics.json")
+    if os.path.exists(cache):
+        return _read_json(cache)
+
+    by_stage = {stage: Counter() for stage in STAGES}
+    per_investigation: List[List[str]] = []
+    for stage in STAGES:
+        pattern = os.path.join(
+            pair_dir, "filepair_*", "modified_functions", "*", stage, "agent_trace.log"
+        )
+        for trace in glob.glob(pattern):
+            counts, lookups = _parse_trace(trace)
+            by_stage[stage] += counts
+            if stage == "unbounded" and lookups:
+                per_investigation.append(lookups)
+
+    # Counted per investigation, not per call: a lookup is shared only when separate
+    # investigations of this binary both asked for it. An agent repeating its own lookup is
+    # a different thing and must not inflate the overlap.
+    investigations_per_lookup: Counter = Counter()
+    for lookups in per_investigation:
+        investigations_per_lookup.update(set(lookups))
+    requested = sum(len(lookups) for lookups in per_investigation)
+
+    metrics = {
+        "tool_calls": {
+            stage: {"total": sum(counts.values()), "by_tool": dict(sorted(counts.items()))}
+            for stage, counts in by_stage.items()
+        },
+        "overlap": {
+            "investigations_with_lookups": len(per_investigation),
+            "lookups_requested": requested,
+            "distinct_lookups": len(investigations_per_lookup),
+            "lookups_shared_across_investigations": sum(
+                1 for n in investigations_per_lookup.values() if n > 1
+            ),
+            "redundant_lookups": sum(
+                n - 1 for n in investigations_per_lookup.values() if n > 1
+            ),
+        },
+    }
+    _write_json(cache, metrics)
+    return metrics
+
+
+def _disposition(label: Any, flagged: Any = None) -> str:
+    """One investigation's outcome as flagged / cleared / failed.
+
+    Failure is taken from the label rather than inferred from the absence of a flag, so that
+    an investigation that never returned a verdict is not counted as a clearance. Bounded
+    rows carry a separate flag field; unbounded rows have only the label.
+    """
+    if label in {"failed", "skipped", "", None}:
+        return "failed"
+    if flagged is None:
+        return "flagged" if label == "not_safe" else "cleared"
+    return "flagged" if flagged else "cleared"
+
+
+def _pair_candidates(pair_dir: str) -> List[Dict[str, Any]]:
+    path = os.path.join(pair_dir, "per_function_results.json")
+    if not os.path.exists(path):
+        return []
+    rows = _read_json(path)
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _candidate_index(rows: Iterable[Dict[str, Any]], pair: str) -> List[Dict[str, Any]]:
+    """One record per investigation, keyed so the same candidate matches across arms.
+
+    Every arm applies the same structural filter to the same pairs, so a candidate is
+    identified by its binary pair and its two function addresses. Keeping that key stable is
+    what lets a consumer join arms and compare a candidate against itself.
+    """
+    index: List[Dict[str, Any]] = []
+    for row in rows:
+        unbounded_ran = bool(row.get("unbounded_ran"))
+        index.append(
+            {
+                "pair": pair,
+                "key": ":".join(
+                    str(row.get(k) or "")
+                    for k in ("baseline_oid", "baseline_addr", "target_addr")
+                ),
+                "gt": bool(row.get("gt_match")),
+                "bounded": _disposition(row.get("bounded_label"), row.get("bounded_flagged"))
+                if row.get("bounded_ran")
+                else None,
+                "unbounded": _disposition(row.get("unbounded_label"))
+                if unbounded_ran
+                else None,
+                "final": _disposition(row.get("pipeline_label"), row.get("pipeline_flagged")),
+                "bounded_tokens": int(row.get("llm_total_tokens") or 0),
+                "unbounded_tokens": int(row.get("unbounded_llm_total_tokens") or 0),
+                "bounded_s": float(row.get("llm_elapsed_s") or 0.0),
+                "unbounded_s": float(row.get("unbounded_llm_elapsed_s") or 0.0),
+                "failure": row.get("failure_reason") or row.get("unbounded_failure_reason"),
+            }
+        )
+    return index
+
+
+def _candidate_metrics(index: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Investigation-level judgments, wall clock and failure reasons for one comparison."""
+    judgments = {stage: Counter() for stage in STAGES}
+    failures: Counter = Counter()
+    elapsed = {"bounded": 0.0, "unbounded": 0.0}
+    for record in index:
+        for stage, field in (("bounded", "bounded"), ("unbounded", "unbounded")):
+            outcome = record[field]
+            if outcome is None:
+                continue
+            judgments[stage][outcome] += 1
+            elapsed[stage] += record[f"{stage}_s"]
+        if record["failure"]:
+            failures[str(record["failure"])] += 1
+    return {
+        "judgments": {stage: dict(counts) for stage, counts in judgments.items()},
+        "elapsed_s": elapsed,
+        "failure_reasons": dict(failures),
+    }
+
+
 def _stage(row: Dict[str, Any], stage: str) -> Dict[str, Any]:
     """Per-stage metrics attached to a result row by _process_pair, or {} if absent."""
     metrics = row.get("_stage_metrics")
@@ -502,8 +925,8 @@ def _fp_bin_counts(results: List[Dict[str, Any]], stage: Optional[str] = None) -
     counts = {label: 0 for label, _, _ in FP_BINS}
     for row in results:
         source = _stage(row, stage) if stage else row
-        # Under the TPS paper definition, failed reviews remain in the final
-        # not_safe queue rather than being counted as cleared.
+        # Fail-closed: a review that never returned a verdict stays in the not_safe
+        # queue rather than counting as cleared.
         flagged = int(source.get("flagged_functions") or 0) + int(source.get("failed_functions") or 0)
         for label, lower, upper in FP_BINS:
             if flagged < lower:
@@ -517,9 +940,8 @@ def _fp_bin_counts(results: List[Dict[str, Any]], stage: Optional[str] = None) -
 
 def _summarize_category(results: List[Dict[str, Any]], category: str) -> Dict[str, Any]:
     total_pairs = len(results)
-    total_input_tokens = sum(int(row.get("input_tokens") or 0) for row in results)
-    total_output_tokens = sum(int(row.get("output_tokens") or 0) for row in results)
-    total_tokens = sum(int(row.get("total_tokens") or 0) for row in results)
+    charged_input_tokens = sum(int(row.get("input_tokens") or 0) for row in results)
+    charged_output_tokens = sum(int(row.get("output_tokens") or 0) for row in results)
     total_filtered = sum(int(row.get("filtered_functions") or 0) for row in results)
     total_flagged = sum(int(row.get("flagged_functions") or 0) for row in results)
     total_failed = sum(int(row.get("failed_functions") or 0) for row in results)
@@ -528,8 +950,39 @@ def _summarize_category(results: List[Dict[str, Any]], category: str) -> Dict[st
     def _stage_sum(stage: str, key: str) -> int:
         return sum(int(_stage(row, stage).get(key) or 0) for row in results)
 
-    triage_tokens = _stage_sum("triage", "total_tokens")
-    verification_tokens = _stage_sum("verification", "total_tokens")
+    def _accumulate(totals: Dict[str, Any], node: Dict[str, Any]) -> None:
+        for key, value in node.items():
+            if isinstance(value, dict):
+                _accumulate(totals.setdefault(key, {}), value)
+            else:
+                totals[key] = totals.get(key, 0) + value
+
+    def _merge(path: Tuple[str, ...]) -> Dict[str, Any]:
+        """Sum the leaf numbers of one nested block across every comparison."""
+        totals: Dict[str, Any] = {}
+        for row in results:
+            node: Any = row
+            for key in path:
+                node = node.get(key) if isinstance(node, dict) else None
+            if isinstance(node, dict):
+                _accumulate(totals, node)
+        return totals
+
+    def _judgments(stage: str) -> Dict[str, Any]:
+        counts = _merge(("_candidates", "judgments", stage))
+        reviewed = sum(counts.values())
+        counts["reviewed"] = reviewed
+        counts["clear_rate"] = (counts.get("cleared", 0) / reviewed) if reviewed else 0.0
+        return counts
+
+    bounded_tokens = _stage_sum("bounded", "total_tokens")
+    unbounded_tokens = _stage_sum("unbounded", "total_tokens")
+    tool_calls = _merge(("_trace", "tool_calls"))
+    elapsed = _merge(("_candidates", "elapsed_s"))
+
+    total_input_tokens = charged_input_tokens
+    total_output_tokens = charged_output_tokens
+    total_tokens = total_input_tokens + total_output_tokens
 
     summary: Dict[str, Any] = {
         "total_pairs": total_pairs,
@@ -543,25 +996,40 @@ def _summarize_category(results: List[Dict[str, Any]], category: str) -> Dict[st
         "avg_input_tokens_per_invocation": (total_input_tokens / float(total_filtered)) if total_filtered else 0.0,
         "avg_output_tokens_per_invocation": (total_output_tokens / float(total_filtered)) if total_filtered else 0.0,
         "avg_total_tokens_per_invocation": (total_tokens / float(total_filtered)) if total_filtered else 0.0,
-        # Per-stage breakdown. Triage runs on every filtered candidate; Verification only on
+        # Failure reasons across both stages, so a change in the failure rate can be told
+        # apart from a change in judgment.
+        "failure_reasons": _merge(("_candidates", "failure_reasons")),
+        "overlap": _merge(("_trace", "overlap")),
+        # Per-stage breakdown. Bounded runs on every filtered candidate, unbounded only on
         # the escalated ones, so each average carries its own denominator.
         "stages": {
-            "triage": {
-                "flagged_functions": _stage_sum("triage", "flagged_functions"),
-                "dismissed_functions": _stage_sum("triage", "dismissed_functions"),
-                "failed_functions": _stage_sum("triage", "failed_functions"),
-                "total_tokens": triage_tokens,
-                "avg_tokens_per_function": (triage_tokens / float(total_filtered)) if total_filtered else 0.0,
+            "bounded": {
+                "flagged_functions": _stage_sum("bounded", "flagged_functions"),
+                "dismissed_functions": _stage_sum("bounded", "dismissed_functions"),
+                "failed_functions": _stage_sum("bounded", "failed_functions"),
+                "total_tokens": bounded_tokens,
+                "avg_tokens_per_function": (bounded_tokens / float(total_filtered)) if total_filtered else 0.0,
+                "judgments": _judgments("bounded"),
+                "elapsed_s": elapsed.get("bounded", 0.0),
+                "tool_calls": tool_calls.get("bounded", {}),
             },
-            "verification": {
-                "investigations": _stage_sum("verification", "investigations"),
-                "with_report": _stage_sum("verification", "with_report"),
-                "without_report": _stage_sum("verification", "without_report"),
-                "flagged_functions": _stage_sum("verification", "flagged_functions"),
-                "cleared_functions": _stage_sum("verification", "cleared_functions"),
-                "failed_functions": _stage_sum("verification", "failed_functions"),
-                "total_tokens": verification_tokens,
-                "avg_tokens_per_investigation": (verification_tokens / float(investigated)) if investigated else 0.0,
+            "unbounded": {
+                "investigations": _stage_sum("unbounded", "investigations"),
+                "with_report": _stage_sum("unbounded", "with_report"),
+                "without_report": _stage_sum("unbounded", "without_report"),
+                "flagged_functions": _stage_sum("unbounded", "flagged_functions"),
+                "cleared_functions": _stage_sum("unbounded", "cleared_functions"),
+                "failed_functions": _stage_sum("unbounded", "failed_functions"),
+                "total_tokens": unbounded_tokens,
+                "avg_tokens_per_investigation": (unbounded_tokens / float(investigated)) if investigated else 0.0,
+                # Escalation from bounded, measured against investigating every filtered
+                # candidate.
+                "forwarded_functions": investigated,
+                "forward_rate": (investigated / float(total_filtered)) if total_filtered else 0.0,
+                "investigations_avoided": max(0, total_filtered - investigated),
+                "judgments": _judgments("unbounded"),
+                "elapsed_s": elapsed.get("unbounded", 0.0),
+                "tool_calls": tool_calls.get("unbounded", {}),
             },
         },
     }
@@ -582,12 +1050,11 @@ def _summarize_category(results: List[Dict[str, Any]], category: str) -> Dict[st
                 "not_safe_pairs_hit": hits,
                 "not_safe_pairs_failed": failed,
                 "safe_pairs_dismissed": dismissed,
-                "safe_pairs_no_gt_retained": max(0, safe_pairs - dismissed),
             }
 
         summary.update(_recall(results, None))
-        # Triage's recall on its own, for the single-stage comparison.
-        summary["stages"]["triage"].update(_recall(results, "triage"))
+        # Bounded's recall on its own, for the single-stage comparison.
+        summary["stages"]["bounded"].update(_recall(results, "bounded"))
     else:
         not_safe_pairs = sum(
             1
@@ -597,184 +1064,9 @@ def _summarize_category(results: List[Dict[str, Any]], category: str) -> Dict[st
         summary["not_safe_pairs"] = not_safe_pairs
         summary["safe_pairs"] = total_pairs - not_safe_pairs
         summary["fp_bins"] = _fp_bin_counts(results)
-        summary["stages"]["triage"]["fp_bins"] = _fp_bin_counts(results, "triage")
+        summary["stages"]["bounded"]["fp_bins"] = _fp_bin_counts(results, "bounded")
 
     return summary
-
-
-def _function_names(oid: str) -> Dict[str, str]:
-    """Decimal address string -> function name for one binary."""
-    funcs = api.get_field("ghidra_disasm", oid, "functions") or {}
-    return {str(addr): str((meta or {}).get("name") or "") for addr, meta in funcs.items() if addr is not None}
-
-
-def _candidate_target_addr(item: Any) -> Optional[str]:
-    """Pull the target-side address out of a drift item. Filtered functions come from
-    the drift adapter already normalized, excluded ones are still drift's raw
-    {"pair": [target, baseline]} shape, and added ones carry a bare "address"."""
-    if not isinstance(item, dict):
-        return ensure_decimal_str(item)
-    if item.get("target_func_addr") is not None:
-        return ensure_decimal_str(item.get("target_func_addr"))
-    if item.get("address") is not None:
-        return ensure_decimal_str(item.get("address"))
-    pair = item.get("pair") or []
-    return ensure_decimal_str(pair[0]) if pair else None
-
-
-def _hex_addr(addr: Optional[str]) -> str:
-    try:
-        return hex(int(str(addr)))
-    except (TypeError, ValueError):
-        return ""
-
-
-def _build_candidate_functions(
-    drift_json: Dict[str, Any],
-    gt_norm: Optional[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Flatten a comparison's drift output into one row per function drift saw, so the
-    search space can be eyeballed (and ground truth authored) without running triage."""
-    candidates: List[Dict[str, Any]] = []
-
-    for file_pair in drift_json.get("file_pairs", []) or []:
-        target_oid = file_pair.get("target_oid")
-        baseline_oid = file_pair.get("baseline_oid")
-        names = _function_names(target_oid) if target_oid else {}
-
-        for kind, items in (
-            ("filtered", file_pair.get("modified_functions") or []),
-            ("excluded", file_pair.get("excluded_functions") or []),
-            ("added", file_pair.get("added_functions") or []),
-        ):
-            for item in items:
-                addr = _candidate_target_addr(item)
-                name = names.get(addr or "") or (item.get("name") if isinstance(item, dict) else None)
-                row: Dict[str, Any] = {
-                    "kind": kind,
-                    "target_oid": target_oid,
-                    "baseline_oid": baseline_oid,
-                    "target_addr": addr,
-                    "target_addr_hex": _hex_addr(addr),
-                    "target_func_name": str(name or ""),
-                }
-                if gt_norm:
-                    row["ground_truth"] = gt_row_matches_any(
-                        {"target_addr": addr, "target_oid": target_oid}, gt_norm
-                    )
-                candidates.append(row)
-
-    return candidates
-
-
-def _run_filter_census_comparison(
-    target: str,
-    baseline: str,
-    outdir: str,
-    filter_key: Optional[str],
-    gt: Dict[str, Any],
-    target_name: str,
-) -> Dict[str, Any]:
-    os.makedirs(outdir, exist_ok=True)
-    drift_json = build_drift_file_pairs(target, baseline, filter_key) or {}
-    _write_json(os.path.join(outdir, "drift_raw.json"), drift_json)
-
-    gt_norm = get_ground_truth_for_target(gt, target_name, pair_dir=outdir, target_oid=target)
-    candidates = _build_candidate_functions(drift_json, gt_norm)
-    _write_json(os.path.join(outdir, "candidate_functions.json"), candidates)
-
-    filtered = [row for row in candidates if row["kind"] == "filtered"]
-    excluded = [row for row in candidates if row["kind"] == "excluded"]
-
-    stats = {
-        "modified_functions": len(filtered) + len(excluded),
-        "filtered_functions": len(filtered),
-        "excluded_functions": len(excluded),
-        "added_functions": sum(1 for row in candidates if row["kind"] == "added"),
-        "gt_in_filtered": int(any(row.get("ground_truth") for row in filtered)),
-        "gt_in_excluded": int(any(row.get("ground_truth") for row in excluded)),
-    }
-    _write_json(os.path.join(outdir, "stats.json"), stats)
-    return stats
-
-
-def _run_filter_census_category(
-    pairs: List[Tuple[str, str]],
-    category_outdir: str,
-    filter_key: Optional[str],
-    gt: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    os.makedirs(category_outdir, exist_ok=True)
-    results: List[Dict[str, Any]] = []
-    candidates_by_sample: Dict[str, Any] = {}
-    total = len(pairs)
-
-    for idx, (target, baseline) in enumerate(pairs, 1):
-        try:
-            target_name = oxide.api.get_colname_from_oid(target)
-        except Exception:
-            target_name = str(target)
-        try:
-            baseline_name = oxide.api.get_colname_from_oid(baseline)
-        except Exception:
-            baseline_name = str(baseline)
-
-        pair_dir = os.path.join(category_outdir, _comparison_dir(target_name, baseline_name))
-        candidates_path = os.path.join(pair_dir, "candidate_functions.json")
-        # Pairs cached by an older run have stats but no candidate dump, so re-run those
-        # (the underlying drift results are cached, only the reshaping repeats).
-        if _sample_is_complete(pair_dir) and os.path.exists(candidates_path):
-            logger.info("[%d/%d] skipping %s (already complete)", idx, total, pair_dir)
-            stats = _read_json(os.path.join(pair_dir, "stats.json"))
-            results.append(stats if isinstance(stats, dict) else {})
-            candidates_by_sample[str(target_name)] = _read_json(candidates_path)
-            continue
-
-        logger.info("[%d/%d] %s -> %s", idx, total, target_name, baseline_name)
-        stats = _run_filter_census_comparison(target, baseline, pair_dir, filter_key, gt, target_name)
-        results.append(stats)
-        candidates_by_sample[str(target_name)] = _read_json(candidates_path)
-
-    _write_json(os.path.join(category_outdir, "candidate_functions_by_sample.json"), candidates_by_sample)
-    return results
-
-
-def _summarize_filter_census(results: List[Dict[str, Any]], category: str) -> Dict[str, Any]:
-    summary: Dict[str, Any] = {
-        "total_pairs": len(results),
-        "modified_functions": sum(int(row.get("modified_functions") or 0) for row in results),
-        "filtered_functions": sum(int(row.get("filtered_functions") or 0) for row in results),
-        "excluded_functions": sum(int(row.get("excluded_functions") or 0) for row in results),
-        "added_functions": sum(int(row.get("added_functions") or 0) for row in results),
-    }
-    if category == "backdoored":
-        summary["gt_in_filter"] = sum(int(row.get("gt_in_filtered") or 0) for row in results)
-        summary["gt_in_excluded"] = sum(int(row.get("gt_in_excluded") or 0) for row in results)
-    return summary
-
-
-def _build_openwrt_rows(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for row in results:
-        rows.append(
-            {
-                "target": row.get("target_name") or row.get("target"),
-                "baseline": row.get("baseline_name") or row.get("baseline"),
-                "modified_files": int(row.get("modified_files") or 0),
-                "flagged_files": int(row.get("flagged_files") or 0),
-                "modified_functions": int(row.get("modified_functions") or 0),
-                "filtered_functions": int(row.get("filtered_functions") or 0),
-                "flagged_functions": int(row.get("flagged_functions") or 0),
-                "failed_functions": int(row.get("failed_functions") or 0),
-                "investigated_functions": int(row.get("investigated_functions") or 0),
-                "triage_total_tokens": int(_stage(row, "triage").get("total_tokens") or 0),
-                "verification_total_tokens": int(_stage(row, "verification").get("total_tokens") or 0),
-                "input_tokens": int(row.get("input_tokens") or 0),
-                "output_tokens": int(row.get("output_tokens") or 0),
-                "total_tokens": int(row.get("total_tokens") or 0),
-            }
-        )
-    return rows
 
 
 def _prepare_run_opts(opts: Dict[str, Any], *, diff_mode: str, filter_key: Optional[str], gt_path: Optional[str], overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -787,38 +1079,176 @@ def _prepare_run_opts(opts: Dict[str, Any], *, diff_mode: str, filter_key: Optio
     return run_opts
 
 
-def _run_filter_census(
-    outdir: str,
-    backdoored_pairs: List[Tuple[str, str]],
-    safe_pairs: List[Tuple[str, str]],
-    gt: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Run the model-independent structural filter census once at the experiment root."""
-    census_summaries: Dict[str, Any] = {}
-    for census_name, filter_key in FILTER_CENSUS_CONFIGS:
-        census_dir = os.path.join(outdir, census_name)
-        os.makedirs(census_dir, exist_ok=True)
-        census_summary: Dict[str, Any] = {}
+def _sha256_file(path: str) -> Optional[str]:
+    try:
+        with open(path, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return None
 
-        for category, pairs, category_gt in (
-            ("backdoored", backdoored_pairs, gt),
-            ("safe", safe_pairs, {}),
-        ):
-            if not pairs:
-                continue
-            results = _run_filter_census_category(
-                pairs,
-                os.path.join(census_dir, category),
-                filter_key,
-                category_gt,
-            )
-            summary = _summarize_filter_census(results, category)
-            census_summary[category] = summary
-            _write_json(os.path.join(census_dir, category, "series_metrics.json"), summary)
 
-        _write_json(os.path.join(census_dir, "config_summary.json"), census_summary)
-        census_summaries[census_name] = census_summary
-    return census_summaries
+def _model_provenance(base_url: str, model: str) -> Dict[str, Any]:
+    """Digest, quantization and baked-in parameters of the model actually being served."""
+    try:
+        request = urllib.request.Request(
+            base_url.rstrip("/") + "/api/show",
+            data=json.dumps({"model": model}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            shown = json.loads(response.read().decode("utf-8", errors="replace"))
+        with urllib.request.urlopen(base_url.rstrip("/") + "/api/version", timeout=10) as response:
+            version = json.loads(response.read().decode("utf-8", errors="replace")).get("version")
+    except Exception as exc:  # noqa: BLE001 -- provenance must not abort a run
+        logger.warning("could not read model provenance from %s: %r", base_url, exc)
+        return {"error": repr(exc)}
+
+    digest = ""
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/") + "/api/tags", timeout=10) as response:
+            for entry in json.loads(response.read().decode("utf-8", errors="replace")).get("models") or []:
+                if entry.get("name") == model:
+                    digest = str(entry.get("digest") or "")
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+
+    info = shown.get("model_info") or {}
+    return {
+        "tag": model,
+        "digest": digest,
+        "ollama_version": version,
+        "details": shown.get("details") or {},
+        "context_length": next(
+            (v for k, v in info.items() if k.endswith(".context_length")), None
+        ),
+        # The model's own Modelfile parameters. Anything the client does not override is
+        # what actually applies, so this has to be recorded next to what we set.
+        "modelfile_parameters": shown.get("parameters") or "",
+        "chat_template_sha256": hashlib.sha256(
+            (shown.get("template") or "").encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _loaded_models(base_url: str) -> Any:
+    """What Ollama currently has resident, including the context size it chose."""
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/") + "/api/ps", timeout=10) as response:
+            return json.loads(response.read().decode("utf-8", errors="replace")).get("models") or []
+    except Exception as exc:  # noqa: BLE001 -- provenance must not abort a run
+        return {"error": repr(exc)}
+
+
+def _environment_provenance() -> Dict[str, Any]:
+    versions: Dict[str, Any] = {"python": platform.python_version()}
+    for package in (
+        "ollama", "langchain", "langchain-core", "langchain-ollama", "langgraph",
+        "langgraph-checkpoint", "deepagents", "langchain-mcp-adapters", "mcp", "pyyaml",
+    ):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except Exception:  # noqa: BLE001
+            versions[package] = None
+
+    ghidra: Dict[str, Any] = {}
+    ghidra_path = ""
+    try:
+        from oxide.core import config as oxide_config
+
+        ghidra_path = str(getattr(getattr(oxide_config, "dir", None), "ghidra_path", "") or "")
+    except Exception:  # noqa: BLE001
+        pass
+    if not ghidra_path:
+        # The plugin may be summarizing outside a configured framework, so fall back to the
+        # config file the framework itself reads.
+        parser = configparser.ConfigParser()
+        try:
+            parser.read(os.path.expanduser("~/.config/oxide/.config.txt"))
+            ghidra_path = parser.get("dir", "ghidra_path", fallback="").strip()
+        except Exception:  # noqa: BLE001
+            pass
+    if ghidra_path:
+        ghidra["path"] = ghidra_path
+        properties = os.path.join(ghidra_path, "Ghidra", "application.properties")
+        try:
+            with open(properties, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    key, _, value = line.partition("=")
+                    if key.strip() in {"application.version", "application.build.date"}:
+                        ghidra[key.strip().split(".", 1)[1]] = value.strip()
+        except OSError:
+            pass
+
+    commit = dirty = None
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        commit = subprocess.check_output(
+            ["git", "-C", root, "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        dirty = bool(
+            subprocess.check_output(
+                ["git", "-C", root, "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL
+            ).strip()
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {"versions": versions, "ghidra": ghidra, "oxide_commit": commit, "oxide_dirty": dirty}
+
+
+def _prompt_provenance() -> Dict[str, Optional[str]]:
+    """sha256 of every prompt template, so a reworded prompt is visible in the record."""
+    prompt_dir = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "modules", "analyzers", "delt_verification", "pipeline", "prompts",
+    )
+    return {
+        os.path.basename(path): _sha256_file(path)
+        for path in sorted(glob.glob(os.path.join(prompt_dir, "*.yaml")))
+    }
+
+
+def _run_manifest(base_opts: Dict[str, Any], endpoints: List[str]) -> Dict[str, Any]:
+    """Everything needed to say what produced a set of results.
+
+    Written once per model per run. Decoding settings are recorded next to the model's own
+    baked-in parameters, because anything the client does not override still applies.
+    """
+    model = str(base_opts.get("model") or "")
+    base_url = (endpoints or [DEFAULT_OLLAMA_URL])[0]
+    # Only temperature and seed are sent as options; everything else the model and Ollama
+    # decide, so the record pairs what we set with what the model itself carries and with
+    # the context Ollama actually allocated.
+    settings = {
+        key: base_opts.get(key, default)
+        for key, default in (
+            ("temperature", 0.0), ("seed", 1),
+            ("bounded_request_s", 450.0), ("bounded_model_call_s", 180.0),
+            ("unbounded_request_s", 1000.0), ("unbounded_model_call_s", 180.0),
+        )
+    }
+    from oxide.modules.analyzers.delt_verification.pipeline.tools import binary_pair
+
+    return {
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "model": _model_provenance(base_url, model),
+        "overridden_options": ["temperature", "seed"],
+        "settings": settings,
+        # Ollama sizes the context from free VRAM unless told otherwise, so it is a property
+        # of the machine and of what else was resident. Left at the default deliberately,
+        # and therefore recorded from the loaded model rather than assumed.
+        "loaded": _loaded_models(base_url),
+        "endpoints": list(endpoints),
+        "context_length": int(base_opts.get("context_length") or DEFAULT_CONTEXT_LENGTH),
+        "configs": [
+            {"arm": name, "diff_mode": diff, "filter": filt, "opts": overrides}
+            for name, diff, filt, overrides in EXPERIMENT_CONFIGS
+        ],
+        "prompts": _prompt_provenance(),
+        "tools": {"unbounded": list(binary_pair.PAIR_TOOLS)},
+        "environment": _environment_provenance(),
+    }
 
 
 def _run_experiment_configs(
@@ -827,17 +1257,16 @@ def _run_experiment_configs(
     config_root: str,
     backdoored_pairs: List[Tuple[str, str]],
     safe_pairs: List[Tuple[str, str]],
-    openwrt_pairs: List[Tuple[str, str]],
     gt: Dict[str, Any],
     gt_path: Optional[str],
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Run the LLM experiment configs for a single model into config_root. In dry_run mode
-    only the deployed `delt_verification` config runs, with triage disabled, so each modified function
-    gets its unified diff and agent inputs on disk but the agent never runs."""
+    only the `multi_agent_triage` config runs, with bounded disabled, so each modified
+    function gets its unified diff and agent inputs on disk but the agent never runs."""
     configs = EXPERIMENT_CONFIGS
     if dry_run:
-        configs = tuple(cfg for cfg in EXPERIMENT_CONFIGS if cfg[0] == "delt_verification")
+        configs = tuple(cfg for cfg in EXPERIMENT_CONFIGS if cfg[0] == "multi_agent_triage")
     config_summaries: Dict[str, Any] = {}
     for config_name, diff_mode, filter_key, overrides in configs:
         config_dir = os.path.join(config_root, config_name)
@@ -851,20 +1280,23 @@ def _run_experiment_configs(
             "diff_mode": diff_mode,
             "filter_mode": "NONE" if not filter_key else filter_key,
             "include_added_callees": include_added_callees,
-            "verification_request_s": float(base_opts.get("verification_request_s") or 600.0),
+            "skip_bounded": bool(overrides.get("skip_bounded")),
+            "skip_unbounded": bool(overrides.get("skip_unbounded")),
+            "no_bounded_report": bool(overrides.get("no_bounded_report")),
+            "unbounded_request_s": float(base_opts.get("unbounded_request_s") or 1000.0),
+            "bounded_request_s": float(base_opts.get("bounded_request_s") or 450.0),
+            "bounded_model_call_s": float(base_opts.get("bounded_model_call_s") or 180.0),
         }
 
-        # gt_only is a backdoor-recall shortcut: only the ground-truth function is triaged.
-        # It applies to the backdoored set alone. The safe/openwrt categories have no ground
-        # truth, so they always run in full, with gt_only forced off for them below.
+        # gt_only is a backdoor-recall shortcut: only the ground-truth function is boundedd.
+        # It applies to the backdoored set alone. The safe category has no ground truth, so
+        # it always runs in full, with gt_only forced off for it below.
         gt_only = bool(base_opts.get("gt_only"))
         categories: List[Tuple[str, List[Tuple[str, str]], Optional[str], Dict[str, Any]]] = []
         if backdoored_pairs:
             categories.append(("backdoored", backdoored_pairs, gt_path, gt))
         if safe_pairs:
             categories.append(("safe", safe_pairs, None, {}))
-        if openwrt_pairs and config_name == "delt_verification":
-            categories.append(("openwrt", openwrt_pairs, None, {}))
 
         for category, pairs, category_gt_path, category_gt in categories:
             category_dir = os.path.join(config_dir, category)
@@ -875,9 +1307,9 @@ def _run_experiment_configs(
                 gt_path=category_gt_path,
                 overrides=overrides,
             )
-            # gt_only restricts triage to the ground-truth function, which only exists for
-            # the backdoored set. Force it off everywhere else so safe/openwrt triage every
-            # filtered function and their false-positive counts stay complete.
+            # gt_only restricts bounded to the ground-truth function, which only exists for
+            # the backdoored set. Force it off for safe so it boundeds every filtered
+            # function and its false-positive counts stay complete.
             run_opts["gt_only"] = gt_only and category == "backdoored"
             results = _run_category(
                 pairs, category_dir, run_opts, gt=category_gt,
@@ -888,7 +1320,10 @@ def _run_experiment_configs(
             config_summary[category] = summary
 
             comparison_rows = [
-                {"index": index + 1, **row}
+                {
+                    "index": index + 1,
+                    **{k: v for k, v in row.items() if not k.startswith("_")},
+                }
                 for index, row in enumerate(results)
             ]
             _write_json(
@@ -900,11 +1335,11 @@ def _run_experiment_configs(
                 },
             )
             _write_json(os.path.join(category_dir, "series_metrics.json"), summary)
-            if category == "openwrt":
-                _write_json(os.path.join(category_dir, "openwrt_table_rows.json"), _build_openwrt_rows(results))
-            _write_text(
-                os.path.join(category_dir, "series_summary.txt"),
-                "\n".join([f"{key}: {value}" for key, value in summary.items()]),
+            # Flattened across pairs so one arm's investigations can be joined against
+            # another's on the candidate key.
+            _write_json(
+                os.path.join(category_dir, "candidates.json"),
+                [record for row in results for record in row.get("_index") or []],
             )
 
         _write_json(os.path.join(config_dir, "config_summary.json"), config_summary)
@@ -912,48 +1347,24 @@ def _run_experiment_configs(
     return config_summaries
 
 
-def run_drift(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
-    """Run only the structural drift stage over the backdoored and safe pairs, no LLM.
-
-    Use this before `run_experiments` to see the search space each comparison produces
-    and to work out ground truth. Both filter policies are run (filter_OR and
-    filter_NONE), which is exactly the census `run_experiments` does at its root, so
-    pointing this at the same --outdir means the full run reuses these results.
-
-    Opts:
-      backdoored   -- entries file of backdoored target,baseline pairs
-      safe         -- entries file of safe target,baseline pairs
-      ground_truth -- optional ground-truth JSON; when given, each candidate row is
-                      marked with whether it matches a ground-truth target
-      outdir       -- root output directory (default: out/delt_verification_experiments)
-
-    Per comparison this writes drift_raw.json, stats.json, and candidate_functions.json
-    (one row per filtered/excluded/added function with decimal + hex target address and
-    the Ghidra function name). Each category also gets
-    candidate_functions_by_sample.json, keyed by target collection name, which is the
-    same key the ground-truth file uses.
-    """
-    backdoored_path: Optional[str] = opts.get("backdoored")
-    safe_path: Optional[str] = opts.get("safe")
-    gt_path: Optional[str] = opts.get("ground_truth")
-    outdir = str(opts.get("outdir") or "out/delt_verification_experiments")
-
-    if not backdoored_path and not safe_path:
-        raise ValueError("At least one of --backdoored or --safe must be provided.")
-
-    backdoored_pairs = _read_series_file(backdoored_path) if backdoored_path else []
-    safe_pairs = _read_series_file(safe_path) if safe_path else []
-    gt = load_ground_truth_file(gt_path) if gt_path else {}
-
-    os.makedirs(outdir, exist_ok=True)
-    census_summaries = _run_filter_census(outdir, backdoored_pairs, safe_pairs, gt)
-    _write_json(os.path.join(outdir, "drift_summary.json"), census_summaries)
-    logger.info("Drift summary written to %s", os.path.join(outdir, "drift_summary.json"))
-    return census_summaries
-
-
 def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
-    """Run the paper's full DeLT experiment matrix using the `delt_verification` analyzer.
+    """Run the experiment matrix using the `delt_verification` analyzer.
+
+    One arm per entry in EXPERIMENT_CONFIGS, each run over the backdoored and safe pair
+    sets, into outdir/<arm>/<category>/. Each category directory receives:
+
+      series_metrics.json      pair recall, tokens, alert bins, investigation-level
+                               judgments and clear rates, per-stage tool calls and wall
+                               clock, escalation counts, survey cost separated from
+                               investigation cost, failure reasons, and lookup overlap
+      candidates.json          one record per investigation, keyed by pair and function
+                               addresses so a candidate can be matched across arms
+      comparisons_summary.json per-pair stats in input order
+
+    Tool use and lookup overlap are parsed back out of each investigation's agent trace,
+    the only place the analyzer records them, and cached per pair in tool_metrics.json.
+    Completed pairs are read from cache, so re-running over an existing outdir
+    re-summarizes it without calling a model.
 
     Required/expected opts:
       backdoored   -- entries file of backdoored target,baseline pairs
@@ -964,17 +1375,18 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
       models       -- a models file (like models.txt); each line is
                       `model_tag [sample_workers]` (sample_workers defaults to 1).
                       Results for each model land under outdir/<model_slug>/.
-      (neither)    -- dry run: only the deployed `delt_verification` config runs, with triage
+      (neither)    -- dry run: only the `multi_agent_triage` config runs, with bounded
                       disabled, so each modified function gets its unified diff and the
-                      agent's input files (outdir/delt/<category>/<pair>/filepair_NN/
-                      modified_functions/<b..t..>/{diff.txt,agent_inputs/}) written to
-                      disk without invoking the agent. Use this to author ground truth.
+                      agent's input files (outdir/multi_agent_triage/<category>/<pair>/
+                      filepair_NN/modified_functions/<b..t..>/{diff.txt,agent_inputs/})
+                      written to disk without invoking the agent. Use this to author
+                      ground truth.
 
     Parallelization is owned by this plugin, not the analyzer: the analyzer runs one
     comparison sequentially, and this plugin runs several comparisons at once, one per
-    Ollama endpoint. That parallelizes all three stages -- triage, binary context, and
-    verification -- where per-function fan-out inside the analyzer would only have
-    parallelized triage, the smallest share of the work. Workers pull from a shared queue,
+    Ollama endpoint. That parallelizes all three stages -- bounded, binary context, and
+    unbounded -- where per-function fan-out inside the analyzer would only have
+    parallelized bounded, the smallest share of the work. Workers pull from a shared queue,
     which self-balances the very uneven per-sample function counts.
 
     Endpoints are handled for you: with sample_workers > 1 and no explicit endpoints, one
@@ -991,42 +1403,37 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
                       to one, and nothing is launched or shut down.
       ollama_base_port -- first port to try when launching (default 11435). Ports in use
                       are skipped, so a neighbouring server is never hijacked.
+      context_length -- OLLAMA_CONTEXT_LENGTH for every launched worker (default 262144).
+                      Pinned rather than left to Ollama, which sizes it from free VRAM and
+                      so gives identical cards different contexts. Only applies to servers
+                      this run launches; with explicit endpoints, set it there.
 
     Optional opts:
       safe         -- entries file of safe target,baseline pairs
-      openwrt      -- entries file of OpenWrt target,baseline pairs
       outdir       -- root output directory (default: out/delt_verification_experiments)
-      gt_only      -- backdoor-recall shortcut: triage only the ground-truth
+      gt_only      -- backdoor-recall shortcut: bounded only the ground-truth
                       insertion function(s) of each backdoored pair instead of every
-                      filtered candidate, and skip the safe/openwrt categories entirely
-                      (they have no ground truth). Filter counts are still reported; only
-                      the triaged subset shrinks, so it runs much faster when you only
-                      need to check whether the backdoor is detected.
-
-    To run only the structural drift stage (no LLM), use `run_drift` with the same
-    --backdoored/--safe/--outdir; this run then reuses its filter census.
+                      filtered candidate. Filter counts are still reported; only the
+                      boundedd subset shrinks, so it runs much faster when you only need
+                      to check whether the backdoor is detected. Forced off for the safe
+                      pairs, which have no ground truth.
     """
     backdoored_path: Optional[str] = opts.get("backdoored")
     safe_path: Optional[str] = opts.get("safe")
-    openwrt_path: Optional[str] = opts.get("openwrt")
     gt_path: Optional[str] = opts.get("ground_truth")
     outdir = str(opts.get("outdir") or "out/delt_verification_experiments")
 
-    if not backdoored_path and not safe_path and not openwrt_path:
-        raise ValueError("At least one of --backdoored, --safe, or --openwrt must be provided.")
+    if not backdoored_path and not safe_path:
+        raise ValueError("At least one of --backdoored or --safe must be provided.")
 
     model_specs, nested, dry_run = _resolve_model_specs(opts)
 
     backdoored_pairs = _read_series_file(backdoored_path) if backdoored_path else []
     safe_pairs = _read_series_file(safe_path) if safe_path else []
-    openwrt_pairs = _read_series_file(openwrt_path) if openwrt_path else []
     gt = load_ground_truth_file(gt_path) if gt_path else {}
 
     os.makedirs(outdir, exist_ok=True)
     experiment_summary: Dict[str, Any] = {}
-
-    # The structural filter census is model-independent; run it once at the root.
-    experiment_summary.update(_run_filter_census(outdir, backdoored_pairs, safe_pairs, gt))
 
     model_summaries: Dict[str, Any] = {}
     for model, sample_workers in model_specs:
@@ -1035,9 +1442,9 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         # Whole comparisons run concurrently here, one per endpoint; the analyzer itself is
         # sequential. See _run_category.
         base_opts["sample_workers"] = sample_workers
-        # Dry run: disable triage so the analyzer only produces per-function diffs and
+        # Dry run: disable bounded so the analyzer only produces per-function diffs and
         # agent inputs. No model client is built.
-        base_opts["no_triage"] = dry_run
+        base_opts["no_bounded"] = dry_run
         config_root = os.path.join(outdir, _model_slug(model)) if nested else outdir
         os.makedirs(config_root, exist_ok=True)
 
@@ -1045,7 +1452,7 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         # tear down anything this run launched. A dry run never calls a model.
         manager = None
         if dry_run:
-            logger.info("running dry-run (no triage) to produce triage inputs")
+            logger.info("running dry-run (no bounded) to produce bounded inputs")
         else:
             endpoints, manager = _provision_sample_endpoints(base_opts, sample_workers)
             base_opts["_endpoints"] = endpoints
@@ -1055,13 +1462,17 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
                 f"{len(endpoints)} endpoint(s)" if endpoints else "default endpoint",
             )
 
+        _write_json(
+            os.path.join(config_root, "run_manifest.json"),
+            _run_manifest(base_opts, list(base_opts.get("_endpoints") or [])),
+        )
+
         try:
             config_summaries = _run_experiment_configs(
                 base_opts,
                 config_root=config_root,
                 backdoored_pairs=backdoored_pairs,
                 safe_pairs=safe_pairs,
-                openwrt_pairs=openwrt_pairs,
                 gt=gt,
                 gt_path=gt_path,
                 dry_run=dry_run,
@@ -1085,4 +1496,4 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
     return experiment_summary
 
 
-exports = [run_experiments, run_drift]
+exports = [run_experiments]

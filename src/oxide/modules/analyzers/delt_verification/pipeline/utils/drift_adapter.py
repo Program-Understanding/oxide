@@ -1,5 +1,5 @@
 """Reshapes the `drift` analyzer's per-comparison output into the flat
-{"file_pairs": [...]} structure this package's triage pipeline consumes,
+{"file_pairs": [...]} structure this package's bounded pipeline consumes,
 grouping each comparison's modified/excluded/added functions by file pair.
 """
 

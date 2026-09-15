@@ -1,6 +1,6 @@
-"""Scoped verification tool surface for one target/baseline binary pair.
+"""Scoped unbounded tool surface for one target/baseline binary pair.
 
-Verification should investigate only the current binary pair and should not see raw OIDs,
+Unbounded should investigate only the current binary pair and should not see raw OIDs,
 so every tool addresses binaries as `target` or `baseline`.
 """
 

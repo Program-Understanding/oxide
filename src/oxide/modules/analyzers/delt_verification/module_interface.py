@@ -1,4 +1,4 @@
-DESC = "Three-phase DeLT analyzer: triage, binary context, and verification."
+DESC = "Three-phase DeLT analyzer: bounded, binary context, and unbounded."
 
 import logging
 
@@ -21,21 +21,29 @@ opts_doc = {
     "filter": {"type": str, "mangle": True, "default": "Call_OR_Control_Modified"},
     "diff_mode": {"type": str, "mangle": True, "default": "processed"},
     "model": {"type": str, "mangle": True, "default": ""},
-    "triage_prompt_file": {"type": str, "mangle": True, "default": "triage.yaml"},
-    "triage_with_callees_prompt_file": {"type": str, "mangle": True, "default": "triage_with_callees.yaml"},
-    "binary_context_prompt_file": {"type": str, "mangle": True, "default": "binary_context.yaml"},
-    "verification_prompt_file": {"type": str, "mangle": True, "default": "verification_agent.yaml"},
-    "triage_request_s": {"type": float, "mangle": True, "default": 150.0},
-    "binary_context_request_s": {"type": float, "mangle": True, "default": 450.0},
-    "binary_context_model_call_s": {"type": float, "mangle": True, "default": 120.0},
-    # Verification drives MCP tools over the whole binary pair, so it needs a longer
-    # budget than triage's single-diff review. The two are deliberately split: a single
-    # model call that stalls is cut at verification_model_call_s, leaving the rest of
-    # verification_request_s for the agent to recover in.
-    "verification_request_s": {"type": float, "mangle": True, "default": 600.0},
-    "verification_model_call_s": {"type": float, "mangle": True, "default": 180.0},
+    # Which Ollama server to use. Not mangled: the same candidate analyzed on another
+    # endpoint is the same result, so the endpoint must not split the cache.
+    "ollama_base_url": {"type": str, "mangle": False, "default": ""},
+    "bounded_prompt_file": {"type": str, "mangle": True, "default": "bounded.yaml"},
+    "bounded_with_callees_prompt_file": {"type": str, "mangle": True, "default": "bounded_with_callees.yaml"},
+    "unbounded_prompt_file": {"type": str, "mangle": True, "default": "unbounded_agent.yaml"},
+    "unbounded_no_report_prompt_file": {"type": str, "mangle": True, "default": "unbounded_no_report.yaml"},
+    "bounded_request_s": {"type": float, "mangle": True, "default": 1000.0},
+    # Measured over 225 bounded model calls: median 2.3s, p99 66.4s, with a thin tail. The
+    # longest observed generation needed 153.5s, so 90 clipped roughly 1% of calls mid-
+    # response. Matches unbounded's per-call budget.
+    "bounded_model_call_s": {"type": float, "mangle": True, "default": 180.0},
+    "unbounded_request_s": {"type": float, "mangle": True, "default": 1000.0},
+    "unbounded_model_call_s": {"type": float, "mangle": True, "default": 180.0},
+    # Greedy decoding. The model ships temperature 1, so this has to be set or runs sample.
+    # Every other sampling and runtime option is left to the model and to Ollama.
+    "temperature": {"type": float, "mangle": True, "default": 0.0},
+    "seed": {"type": int, "mangle": True, "default": 1},
     "raw": {"type": bool, "mangle": True, "default": False},
-    "no_triage": {"type": bool, "mangle": True, "default": False},
+    "no_bounded": {"type": bool, "mangle": True, "default": False},
+    "skip_bounded": {"type": bool, "mangle": True, "default": False},
+    "skip_unbounded": {"type": bool, "mangle": True, "default": False},
+    "no_bounded_report": {"type": bool, "mangle": True, "default": False},
     "include_added_callees": {"type": bool, "mangle": True, "default": True},
     "outdir": {"type": str, "mangle": True, "default": ""},
     "ground_truth": {"type": str, "mangle": True, "default": ""},

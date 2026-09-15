@@ -34,28 +34,30 @@ def load_prompt_file(filename: str) -> Dict:
 
 @lru_cache(maxsize=None)
 def _load_prompt_bundle_cached(
-    triage_file: str, triage_with_callees_file: str, binary_context_file: str, verification_file: str
+    bounded_file: str,
+    bounded_with_callees_file: str,
+    unbounded_file: str,
+    unbounded_no_report_file: str,
 ) -> Dict[str, Dict]:
     return {
-        "triage": load_prompt_file(triage_file),
-        "triage_with_callees": load_prompt_file(triage_with_callees_file),
-        "binary_context": load_prompt_file(binary_context_file),
-        "verification": load_prompt_file(verification_file),
+        "bounded": load_prompt_file(bounded_file),
+        "bounded_with_callees": load_prompt_file(bounded_with_callees_file),
+        "unbounded": load_prompt_file(unbounded_file),
+        "unbounded_no_report": load_prompt_file(unbounded_no_report_file),
     }
 
 
 def load_prompt_bundle(opts: Dict | None = None) -> Dict[str, Dict]:
     resolved_opts = dict(opts or {})
-    triage_file = str(resolved_opts.get("triage_prompt_file") or "triage.yaml")
-    triage_with_callees_file = str(
-        resolved_opts.get("triage_with_callees_prompt_file") or "triage_with_callees.yaml"
-    )
-    binary_context_file = str(
-        resolved_opts.get("binary_context_prompt_file") or "binary_context.yaml"
-    )
-    verification_file = str(
-        resolved_opts.get("verification_prompt_file") or "verification_agent.yaml"
-    )
     return _load_prompt_bundle_cached(
-        triage_file, triage_with_callees_file, binary_context_file, verification_file
+        str(resolved_opts.get("bounded_prompt_file") or "bounded.yaml"),
+        str(
+            resolved_opts.get("bounded_with_callees_prompt_file")
+            or "bounded_with_callees.yaml"
+        ),
+        str(resolved_opts.get("unbounded_prompt_file") or "unbounded_agent.yaml"),
+        str(
+            resolved_opts.get("unbounded_no_report_prompt_file")
+            or "unbounded_no_report.yaml"
+        ),
     )

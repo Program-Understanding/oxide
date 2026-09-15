@@ -1,7 +1,7 @@
-"""Verification: whole-binary investigation of one triage candidate.
+"""Unbounded: whole-binary investigation of one bounded candidate.
 
-Triage reviews a candidate from its diff alone (plus any newly-added callees).
-Verification takes that candidate's triage report and re-investigates it with live
+Bounded reviews a candidate from its diff alone (plus any newly-added callees).
+Unbounded takes that candidate's bounded report and re-investigates it with live
 binary analysis tools over the whole target binary, loaded over MCP from
 oxide_mcp_server.py. Each escalated candidate gets its own investigation; there
 is no cross-candidate aggregation.
@@ -44,9 +44,9 @@ except ImportError:
         return ... if default is _FIELD_UNSET else default
 
 
-class VerificationDecisionSchema(BaseModel):
+class UnboundedDecisionSchema(BaseModel):
     label: Literal["safe", "not_safe"] = Field(
-        description="Final verification decision for this candidate. Must be safe or not_safe.",
+        description="Final unbounded decision for this candidate. Must be safe or not_safe.",
     )
 
 
@@ -84,30 +84,31 @@ def _build_payload(
     report: str,
     *,
     candidate_manifest: Dict[str, Any],
-    binary_context_md: str = "",
     diff_text: str = "",
+    callee_texts: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     files = {"/inputs/candidate.json": create_file_data(json.dumps(candidate_manifest, indent=2))}
-    if binary_context_md.strip():
-        files["/inputs/binary_context.md"] = create_file_data(binary_context_md)
     if report.strip():
         files["/inputs/report.md"] = create_file_data(report)
     if diff_text.strip():
         files["/inputs/diff.txt"] = create_file_data(diff_text)
+    for addr, text in (callee_texts or {}).items():
+        if text.strip():
+            files[f"/inputs/added_functions/{addr}.c"] = create_file_data(text)
     return {
         "messages": [{"role": "user", "content": prompt}],
         "files": files,
     }
 
 
-def _build_prompt(*, has_report: bool, has_diff: bool, has_binary_context: bool) -> str:
+def _build_prompt(*, has_report: bool, has_diff: bool, has_callees: bool = False) -> str:
     evidence = []
-    if has_binary_context:
-        evidence.append("the binary context under /inputs/binary_context.md")
     if has_report:
         evidence.append("the claim under /inputs/report.md")
     if has_diff:
         evidence.append("the diff under /inputs/diff.txt")
+    if has_callees:
+        evidence.append("the added functions under /inputs/added_functions/")
     evidence.append("the candidate manifest under /inputs/candidate.json")
     return (
         f"Review {', '.join(evidence)}, then use the binary analysis tools to verify "
@@ -120,6 +121,15 @@ def _build_prompt(*, has_report: bool, has_diff: bool, has_binary_context: bool)
     )
 
 
+def _select_system_prompt(runtime: Any, *, has_report: bool) -> str:
+    """Pick the prompt whose evidence list matches the files the agent will actually get.
+
+    The report is optional and naming an absent one sends the agent looking for a file that
+    was never written, so there is one prompt for each case.
+    """
+    return runtime.unbounded_sys if has_report else runtime.unbounded_no_report_sys
+
+
 def _read_tail(path: str, max_chars: int = 4000) -> str:
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -130,24 +140,24 @@ def _read_tail(path: str, max_chars: int = 4000) -> str:
     return text[-max_chars:] if len(text) > max_chars else text
 
 
-def run_verification_agent(
+def run_unbounded_agent(
     runtime: Any,
     report: str,
     *,
     candidate: Dict[str, Any],
-    binary_context_md: str = "",
     diff_text: str = "",
+    callee_texts: Optional[Dict[str, str]] = None,
     trace_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Investigate one escalated candidate with binary analysis tools; return its result dict."""
     request_timeout_s = float(
-        getattr(runtime, "verification_request_timeout_s", None)
-        or getattr(runtime, "triage_request_timeout_s", 600.0)
+        getattr(runtime, "unbounded_request_timeout_s", None)
+        or getattr(runtime, "bounded_request_timeout_s", 600.0)
     )
     prompt = _build_prompt(
-        has_binary_context=bool(binary_context_md.strip()),
         has_report=bool(report.strip()),
         has_diff=bool(diff_text.strip()),
+        has_callees=bool(callee_texts),
     )
 
     file_mirror: Dict[str, str] = {}
@@ -166,10 +176,10 @@ def run_verification_agent(
     }
     decision_tool = deepagent_runtime.make_decision_tool(
         "submit_decision",
-        VerificationDecisionSchema,
+        UnboundedDecisionSchema,
         final_holder,
         _normalize_decision_payload,
-        doc="Submit the final verification decision as your last action",
+        doc="Submit the final unbounded decision as your last action",
         precondition=deepagent_runtime.require_report_before_not_safe(file_mirror),
     )
     oxide_server_path = resolve_mcp_server_path()
@@ -221,13 +231,15 @@ def run_verification_agent(
                         baseline_oid=_coerce_str(candidate.get("baseline_oid")),
                     )
                     session_ready["ok"] = True
-                    agent = deepagent_runtime.build_triage_agent(
-                        main_model=getattr(runtime, "verification_llm", None) or runtime.triage_llm,
+                    agent = deepagent_runtime.build_bounded_agent(
+                        main_model=getattr(runtime, "unbounded_llm", None) or runtime.bounded_llm,
                         file_mirror=file_mirror,
                         decision_tool=decision_tool,
-                        system_prompt=runtime.verification_sys,
+                        system_prompt=_select_system_prompt(
+                            runtime, has_report=bool(report.strip())
+                        ),
                         extra_tools=scoped_tools,
-                        agent_name="delt_verification_verification_agent",
+                        agent_name="delt_verification_unbounded_agent",
                     )
                     trace_logger = TraceLogger(trace_path)
                     append_trace_line(trace_path, "[   0.00s] [agent] start", truncate=True)
@@ -235,14 +247,14 @@ def run_verification_agent(
                         trace_path,
                         f"[   0.00s] [agent] scoped tools: {len(scoped_tools)} | run budget "
                         f"{request_timeout_s:g}s, model call "
-                        f"{getattr(runtime, 'verification_model_call_timeout_s', 0.0):g}s",
+                        f"{getattr(runtime, 'unbounded_model_call_timeout_s', 0.0):g}s",
                     )
-                    config = {"configurable": {"thread_id": f"delt_verification_verification_{time.time_ns()}"}}
+                    config = {"configurable": {"thread_id": f"delt_verification_unbounded_{time.time_ns()}"}}
                     payload = _build_payload(
                         prompt,
                         report,
                         candidate_manifest=candidate_manifest,
-                        binary_context_md=binary_context_md,
+                        callee_texts=callee_texts,
                         diff_text=diff_text,
                     )
                     holder["out"] = await deepagent_runtime.ainvoke_agent_with_timeout(
@@ -252,6 +264,28 @@ def run_verification_agent(
                         timeout_s=request_timeout_s,
                         trace_logger=trace_logger,
                     )
+                    # The investigation can finish without the decision being recorded, most
+                    # often because the model typed the call into its message instead of
+                    # emitting one. The work is done and the report is written by this point,
+                    # so ask for the call on the same thread rather than discarding it: the
+                    # alternative is another full investigation to reach the same conclusion.
+                    if not isinstance(final_holder.get("final"), dict):
+                        append_trace_line(
+                            trace_path,
+                            f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] "
+                            "no decision recorded; nudging for submit_decision",
+                        )
+                        nudged = await deepagent_runtime.anudge_for_decision(
+                            agent,
+                            config=config,
+                            final_holder=final_holder,
+                            tool_name="submit_decision",
+                            deadline_s=request_timeout_s,
+                            started_at=invoke_t0,
+                            trace_logger=trace_logger,
+                        )
+                        if nudged is not None:
+                            holder["out"] = nudged
                     return holder["out"]
 
     invoke_t0 = time.perf_counter()
@@ -271,7 +305,7 @@ def run_verification_agent(
             # Never got a usable MCP session, so the server itself is the suspect.
             detail = _read_tail(stderr_path) or repr(exc)
             failure_reason, why = "mcp_subprocess_failed", (
-                "The verification MCP server subprocess failed before the investigation could run. "
+                "The unbounded MCP server subprocess failed before the investigation could run. "
                 f"Interpreter: {sys.executable}. Server stderr captured at {stderr_path}."
             )
         else:
@@ -282,15 +316,15 @@ def run_verification_agent(
                 failure_reason, why = "repeated_tool_call", str(exc)
             elif deepagent_runtime.is_malformed_model_response_error(exc):
                 failure_reason, why = "malformed_model_response", (
-                    "The model emitted a response the provider could not parse, so verification "
+                    "The model emitted a response the provider could not parse, so unbounded "
                     "stopped before reaching a final decision."
                 )
             elif isinstance(exc, TimeoutError) or "timeout" in detail.lower():
                 failure_reason, why = "timeout", (
-                    f"Verification timed out after {request_timeout_s:g}s before reaching a final decision."
+                    f"Unbounded timed out after {request_timeout_s:g}s before reaching a final decision."
                 )
             else:
-                failure_reason, why = "invoke_failed", "Verification failed before reaching a final decision."
+                failure_reason, why = "invoke_failed", "Unbounded failed before reaching a final decision."
         if "out" not in holder:
             append_trace_line(trace_path, f"[{invoke_elapsed_s:7.2f}s] [agent] error: {failure_reason}")
             return _error_result(
@@ -309,7 +343,7 @@ def run_verification_agent(
     if not isinstance(final, dict) or final.get("label") not in {"safe", "not_safe"}:
         append_trace_line(trace_path, f"[{invoke_elapsed_s:7.2f}s] [agent] error: missing_final_answer")
         result = _error_result(
-            "The verification agent did not call submit_decision before the run ended.",
+            "The unbounded agent did not call submit_decision before the run ended.",
             failure_reason="missing_final_answer",
             elapsed_s=invoke_elapsed_s,
             usage=usage,
@@ -323,7 +357,7 @@ def run_verification_agent(
     if label == "not_safe" and not final_md.strip():
         append_trace_line(trace_path, f"[{invoke_elapsed_s:7.2f}s] [agent] error: missing_final_md")
         return _error_result(
-            "The verification agent labeled the candidate not_safe but did not write /work/final.md.",
+            "The unbounded agent labeled the candidate not_safe but did not write /work/final.md.",
             failure_reason="missing_final_md",
             elapsed_s=invoke_elapsed_s,
             usage=usage,
@@ -331,7 +365,7 @@ def run_verification_agent(
     if final_md.strip():
         append_trace_line(trace_path, f"[{invoke_elapsed_s:7.2f}s] [agent] wrote /work/final.md")
 
-    summary = "Verification decision completed."
+    summary = "Unbounded decision completed."
     if final_md.strip():
         summary = final_md.splitlines()[0].strip() or summary
 

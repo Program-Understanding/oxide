@@ -3,8 +3,8 @@ import os
 from typing import Any, Dict, Optional
 
 from oxide.modules.analyzers.delt_verification.config import NAME
-from oxide.modules.analyzers.delt_verification.pipeline.agents.nodes.triage_agent import (
-    run_triage_agent,
+from oxide.modules.analyzers.delt_verification.pipeline.agents.nodes.bounded_agent import (
+    run_bounded_agent,
 )
 from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import _coerce_str, preview_text
 
@@ -19,10 +19,10 @@ def _derive_why(agent_result: Dict[str, Any]) -> str:
     final_md = _coerce_str(agent_result.get("final_md"))
     if final_md:
         return preview_text(final_md, limit=400)
-    return "Agent completed triage; see final.md for reasoning."
+    return "Agent completed bounded; see final.md for reasoning."
 
 
-def run_triage(
+def run_bounded(
     runtime: Any,
     unified_diff: str,
     notes: Dict[str, Any],
@@ -30,14 +30,14 @@ def run_triage(
     callee_texts: Optional[Dict[str, str]] = None,
     trace_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run the triage agent over one modified-function diff and return its result dict."""
+    """Run the bounded agent over one modified-function diff and return its result dict."""
     from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import ascii_sanitize
 
     diff_text = ascii_sanitize(unified_diff)
 
     log_handler = None
     if trace_path:
-        log_path = os.path.join(os.path.dirname(os.path.abspath(trace_path)), "triage.log")
+        log_path = os.path.join(os.path.dirname(os.path.abspath(trace_path)), "bounded.log")
         try:
             import logging as _logging
 
@@ -50,7 +50,7 @@ def run_triage(
             log_handler = None
 
     try:
-        result = run_triage_agent(
+        result = run_bounded_agent(
             runtime,
             diff_text=diff_text,
             notes=notes,

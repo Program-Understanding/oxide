@@ -16,16 +16,16 @@ _ASCII_MAP = {
 
 _EMPTY_DECOMP_FAILURE_MESSAGES: Dict[str, Dict[str, str]] = {
     "empty_baseline_decomp": {
-        "observation": "baseline decompilation was empty. Triage skipped and recorded as failed.",
-        "final_why": "The baseline decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because triage did not run, not because the agent identified a trigger.",
+        "observation": "baseline decompilation was empty. Bounded skipped and recorded as failed.",
+        "final_why": "The baseline decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because bounded did not run, not because the agent identified a trigger.",
     },
     "empty_target_decomp": {
-        "observation": "target decompilation was empty. Triage skipped and recorded as failed.",
-        "final_why": "The target decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because triage did not run, not because the agent identified a trigger.",
+        "observation": "target decompilation was empty. Bounded skipped and recorded as failed.",
+        "final_why": "The target decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because bounded did not run, not because the agent identified a trigger.",
     },
     "empty_both_decomp": {
-        "observation": "baseline and target decompilations were empty. Triage skipped and recorded as failed.",
-        "final_why": "Both baseline and target decompilations were empty, so the system could not compute a two-sided function diff. The function was recorded as failed because triage did not run, not because the agent identified a trigger.",
+        "observation": "baseline and target decompilations were empty. Bounded skipped and recorded as failed.",
+        "final_why": "Both baseline and target decompilations were empty, so the system could not compute a two-sided function diff. The function was recorded as failed because bounded did not run, not because the agent identified a trigger.",
     },
 }
 
@@ -56,7 +56,7 @@ def _coerce_result_label(label: Any, failure_reason: Any = None) -> str:
     label_norm = _coerce_label(label)
     if label_norm == "error":
         return "failed"
-    if label_norm in {"safe", "not_safe", "failed"}:
+    if label_norm in {"safe", "not_safe", "failed", "skipped"}:
         return label_norm
     return "failed"
 

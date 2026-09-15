@@ -14,21 +14,17 @@ from oxide.modules.analyzers.delt_verification.pipeline.agents.telemetry.agent_t
 )
 from oxide.modules.analyzers.delt_verification.pipeline.cache import keys as cache_keys
 from oxide.modules.analyzers.delt_verification.pipeline.cache.artifacts import (
-    restore_cached_binary_context_artifacts,
-    restore_cached_triage_artifacts,
-    restore_cached_verification_artifacts,
+    restore_cached_bounded_artifacts,
+    restore_cached_unbounded_artifacts,
 )
 from oxide.modules.analyzers.delt_verification.pipeline.cache.store import (
     load_cached_stage_result,
     stage_cache_opts,
     store_cached_stage_result,
 )
-from oxide.modules.analyzers.delt_verification.pipeline.phases.binary_context import (
-    run_binary_context_analysis,
-)
-from oxide.modules.analyzers.delt_verification.pipeline.phases.triage import run_triage
-from oxide.modules.analyzers.delt_verification.pipeline.phases.verification import (
-    run_verification,
+from oxide.modules.analyzers.delt_verification.pipeline.phases.bounded import run_bounded
+from oxide.modules.analyzers.delt_verification.pipeline.phases.unbounded import (
+    run_unbounded,
 )
 from oxide.modules.analyzers.delt_verification.pipeline.reporting.results import (
     build_analyzer_result,
@@ -104,8 +100,8 @@ def _get_empty_decomp_failure_messages(reason: str) -> Dict[str, str]:
     return _EMPTY_DECOMP_FAILURE_MESSAGES.get(
         reason,
         {
-            "observation": "one side of the decompilation was empty. Triage skipped and recorded as failed.",
-            "final_why": "One side of the decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because triage did not run, not because the agent identified a trigger.",
+            "observation": "one side of the decompilation was empty. Bounded skipped and recorded as failed.",
+            "final_why": "One side of the decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because bounded did not run, not because the agent identified a trigger.",
         },
     )
 
@@ -165,19 +161,19 @@ def _read_text_file(path: str) -> str:
         return ""
 
 
-def write_diff_artifacts(triage_dir: str, unified: str, diff_meta: Dict[str, Any]) -> None:
-    write_text(f"{triage_dir}/diff.txt", unified or "")
-    write_json(f"{triage_dir}/diff_meta.json", diff_meta or {})
+def write_diff_artifacts(bounded_dir: str, unified: str, diff_meta: Dict[str, Any]) -> None:
+    write_text(f"{bounded_dir}/diff.txt", unified or "")
+    write_json(f"{bounded_dir}/diff_meta.json", diff_meta or {})
 
 
-def write_agent_inputs(triage_dir: str, unified: str, callee_texts: Dict[str, str]) -> None:
-    """Mirror the exact files the triage agent would see under /inputs/ to
-    triage_dir/agent_inputs/, so a dry run produces the full evidence set the agent
+def write_agent_inputs(bounded_dir: str, unified: str, callee_texts: Dict[str, str]) -> None:
+    """Mirror the exact files the bounded agent would see under /inputs/ to
+    bounded_dir/agent_inputs/, so a dry run produces the full evidence set the agent
     receives without running it. Layout matches agent_runtime.build_agent_payload:
-    unified_diff.txt plus one added_functions/<addr>.c per reachable added callee."""
-    inputs_dir = os.path.join(triage_dir, "agent_inputs")
+    diff.txt plus one added_functions/<addr>.c per reachable added callee."""
+    inputs_dir = os.path.join(bounded_dir, "agent_inputs")
     os.makedirs(inputs_dir, exist_ok=True)
-    write_text(os.path.join(inputs_dir, "unified_diff.txt"), ascii_sanitize(unified or ""))
+    write_text(os.path.join(inputs_dir, "diff.txt"), ascii_sanitize(unified or ""))
     added_dir = os.path.join(inputs_dir, "added_functions")
     for addr, text in (callee_texts or {}).items():
         if text.strip():
@@ -197,8 +193,8 @@ def _set_pipeline_outcome(row: Dict[str, Any], label: str) -> None:
     """ Record a candidate's end-to-end verdict on its per-function row.
 
         pipeline_* and final_* are the same verdict under both names, so a reader of
-        either agrees. What triage decided before any escalation stays available
-        separately as triage_label/triage_flagged.
+        either agrees. What bounded decided before any escalation stays available
+        separately as bounded_label/bounded_flagged.
     """
     flagged = label == "not_safe"
     row["pipeline_label"] = label
@@ -220,30 +216,30 @@ def analyze_function_pair(
     outdir: str,
     opts: Dict[str, Any],
     runtime: Any,
-    triage_fingerprint: str,
+    bounded_fingerprint: str,
     fp_total: int = 0,
     func_total: int = 0,
     added_callee_index: Optional[AddedCalleeIndex] = None,
 ) -> AnalyzeFunctionResult:
     func_dir = _make_function_dir(outdir, fp_idx, func_idx, baddr, taddr)
-    triage_dir = os.path.join(func_dir, "triage")
+    bounded_dir = os.path.join(func_dir, "bounded")
     diff_raw = _resolve_bool_override(opts, "raw", "_diff_raw")
-    triage_cache_key = cache_keys.triage_result_cache_key(
-        target_oid, baseline_oid, baddr, taddr, triage_fingerprint
+    bounded_cache_key = cache_keys.bounded_result_cache_key(
+        target_oid, baseline_oid, baddr, taddr, bounded_fingerprint
     )
-    triage_cache_opts = stage_cache_opts("triage_result", triage_fingerprint)
+    bounded_cache_opts = stage_cache_opts("bounded_result", bounded_fingerprint)
 
     os.makedirs(func_dir, exist_ok=True)
-    os.makedirs(triage_dir, exist_ok=True)
-    notes_path = os.path.join(triage_dir, "notes.json")
-    analysis_path = os.path.join(triage_dir, "analysis.json")
-    trace_path = os.path.join(triage_dir, "agent_trace.log")
+    os.makedirs(bounded_dir, exist_ok=True)
+    notes_path = os.path.join(bounded_dir, "notes.json")
+    analysis_path = os.path.join(bounded_dir, "analysis.json")
+    trace_path = os.path.join(bounded_dir, "agent_trace.log")
 
     def _write_analysis(
         *,
         label: str,
         why: str,
-        triage_ran: bool,
+        bounded_ran: bool,
         failure_reason: Optional[str],
         failure_detail: str,
         diff_elapsed_s: float,
@@ -256,17 +252,18 @@ def analyze_function_pair(
         callee_augmented: bool = False,
         diff_text: str = "",
         diff_meta: Optional[Dict[str, Any]] = None,
+        callee_texts: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         label = _coerce_result_label(label, failure_reason)
         flagged = label == "not_safe"
-        verdict_label = "needs further inspection" if flagged else ("safe" if label == "safe" else "failed")
+        verdict_label = "needs further inspection" if flagged else label
         verdict = f"Label: {verdict_label} - {why or 'model provided no reason'}"
 
         if final_md.strip():
-            write_text(os.path.join(triage_dir, "final.md"), final_md)
-            notes["artifacts"].append({"kind": "agent_final", "path": "triage/final.md"})
+            write_text(os.path.join(bounded_dir, "final.md"), final_md)
+            notes["artifacts"].append({"kind": "agent_final", "path": "bounded/final.md"})
         if os.path.exists(trace_path) and os.path.getsize(trace_path) > 0:
-            notes["artifacts"].append({"kind": "agent_trace", "path": "triage/agent_trace.log"})
+            notes["artifacts"].append({"kind": "agent_trace", "path": "bounded/agent_trace.log"})
 
         write_json(notes_path, notes)
         write_json(
@@ -276,7 +273,7 @@ def analyze_function_pair(
                 "why": why,
                 "flagged": flagged,
                 "verdict": verdict,
-                "triage_ran": triage_ran,
+                "bounded_ran": bounded_ran,
                 "failure_reason": failure_reason,
                 "failure_detail": failure_detail,
                 "callee_augmented": callee_augmented,
@@ -292,14 +289,14 @@ def analyze_function_pair(
                 },
             },
         )
-        write_text(os.path.join(triage_dir, "verdict.txt"), verdict)
+        write_text(os.path.join(bounded_dir, "verdict.txt"), verdict)
         return {
             "label": label,
             "why": why,
             "flagged": flagged,
             "verdict": verdict,
             "func_dir": func_dir,
-            "triage_ran": triage_ran,
+            "bounded_ran": bounded_ran,
             "failure_reason": failure_reason,
             "failure_detail": failure_detail,
             "diff_elapsed_s": diff_elapsed_s,
@@ -308,15 +305,25 @@ def analyze_function_pair(
             "llm_output_tokens": llm_output_tokens,
             "llm_total_tokens": llm_total_tokens,
             "callee_augmented": callee_augmented,
-            "triage_final_md": final_md,
-            "triage_diff_text": diff_text,
-            "triage_diff_meta": diff_meta or {},
+            "bounded_final_md": final_md,
+            "bounded_diff_text": diff_text,
+            "bounded_diff_meta": diff_meta or {},
+            "callee_texts": callee_texts or {},
         }
 
-    cached_triage = load_cached_stage_result(target_oid, triage_cache_opts, triage_cache_key)
-    if cached_triage is not None:
-        restore_cached_triage_artifacts(triage_dir, cached_triage)
-        return cached_triage
+    skip_bounded = bool(opts.get("skip_bounded"))
+    cached_bounded = (
+        None if skip_bounded
+        else load_cached_stage_result(target_oid, bounded_cache_opts, bounded_cache_key)
+    )
+    if cached_bounded is not None:
+        restore_cached_bounded_artifacts(bounded_dir, cached_bounded)
+        # The cached record holds the func_dir of whichever run first produced it. Later
+        # stages build their output paths from this field, so a replay under a different
+        # output root has to be re-stamped with its own directory or it writes its
+        # artifacts back over the run that populated the cache.
+        cached_bounded = dict(cached_bounded, func_dir=func_dir)
+        return cached_bounded
 
     def _run_fresh() -> Dict[str, Any]:
         notes: Dict[str, Any] = {"observations": [], "artifacts": []}
@@ -329,35 +336,36 @@ def analyze_function_pair(
             )
             diff_elapsed_s = time.perf_counter() - diff_t0
             diff_info = normalize_function_decomp_diff_response(diff)
-            write_diff_artifacts(triage_dir, diff_info["unified"], diff_info["artifact_meta"])
-            notes["artifacts"].append({"kind": "diff_meta", "path": "triage/diff_meta.json"})
+            write_diff_artifacts(bounded_dir, diff_info["unified"], diff_info["artifact_meta"])
+            notes["artifacts"].append({"kind": "diff_meta", "path": "bounded/diff_meta.json"})
             return diff_info, diff_elapsed_s
 
         diff_info, diff_elapsed_s = _fetch_and_write_diff()
 
-        if opts.get("no_triage"):
-            # Dry run: produce everything the triage agent would receive (the unified diff
+        if opts.get("no_bounded"):
+            # Dry run: produce everything the bounded agent would receive (the unified diff
             # plus the reachable added-callee decomps) on disk, but don't run the agent.
             unified = diff_info.get("unified") or ""
             callee_texts: Dict[str, str] = {}
             if unified.strip() and not diff_info["tool_error"]:
                 callee_texts = callee_added_funcs(taddr, added_callee_index)
-            write_agent_inputs(triage_dir, unified, callee_texts)
+            write_agent_inputs(bounded_dir, unified, callee_texts)
             return _write_analysis(
-                label="skipped", why="Dry run: triage inputs produced, agent not run.", triage_ran=False,
+                label="skipped", why="Dry run: bounded inputs produced, agent not run.", bounded_ran=False,
                 failure_reason="dry_run", failure_detail="", diff_elapsed_s=diff_elapsed_s,
                 llm_elapsed_s=0.0, llm_input_tokens=0, llm_output_tokens=0, llm_total_tokens=0, notes=notes,
                 callee_augmented=bool(callee_texts), diff_text=unified,
                 diff_meta=diff_info.get("artifact_meta") or {},
+                callee_texts=callee_texts,
             )
 
-        triage_ran = False
+        bounded_ran = False
         failure_reason: Optional[str] = None
 
         if diff_info["tool_error"]:
             notes["observations"].append(f"diff tool failed: {diff_info.get('error')!r}")
             return _write_analysis(
-                label="failed", why="Diff generation failed before triage could run.", triage_ran=False,
+                label="failed", why="Diff generation failed before bounded could run.", bounded_ran=False,
                 failure_reason="diff_tool_error", failure_detail="", diff_elapsed_s=diff_elapsed_s,
                 llm_elapsed_s=0.0, llm_input_tokens=0, llm_output_tokens=0, llm_total_tokens=0, notes=notes,
                 diff_text=diff_info.get("unified") or "", diff_meta=diff_info.get("artifact_meta") or {},
@@ -369,13 +377,23 @@ def analyze_function_pair(
             messages = _get_empty_decomp_failure_messages(failure_reason)
             notes["observations"].append(messages["observation"])
             return _write_analysis(
-                label="failed", why=messages["final_why"], triage_ran=False,
+                label="failed", why=messages["final_why"], bounded_ran=False,
                 failure_reason=failure_reason, failure_detail="", diff_elapsed_s=diff_elapsed_s,
                 llm_elapsed_s=0.0, llm_input_tokens=0, llm_output_tokens=0, llm_total_tokens=0, notes=notes,
                 diff_text=diff_info.get("unified") or "", diff_meta=diff_info.get("artifact_meta") or {},
             )
 
         unified = diff_info["unified"] or ""
+
+        if skip_bounded and unified.strip():
+            return _write_analysis(
+                label="skipped", why="Bounded skipped: candidate escalated to unbounded without a bounded report.",
+                bounded_ran=False, failure_reason=None, failure_detail="",
+                diff_elapsed_s=diff_elapsed_s, llm_elapsed_s=0.0, llm_input_tokens=0,
+                llm_output_tokens=0, llm_total_tokens=0, notes=notes,
+                diff_text=unified, diff_meta=diff_info.get("artifact_meta") or {},
+                callee_texts=callee_added_funcs(taddr, added_callee_index),
+            )
 
         callee_texts: Dict[str, str] = {}
         if unified.strip():
@@ -387,45 +405,46 @@ def analyze_function_pair(
         llm_total_tokens = 0
 
         if unified.strip():
-            triage_ran = True
-            triage = run_triage(
+            bounded_ran = True
+            bounded = run_bounded(
                 runtime,
                 unified_diff=unified,
                 notes=notes,
                 callee_texts=callee_texts,
                 trace_path=trace_path,
             )
-            label = triage.get("label", "failed")
-            why = (triage.get("why") or "").strip()
-            failure_reason = triage.get("failure_reason")
-            failure_detail = (triage.get("failure_detail") or "").strip()
-            llm_elapsed_s = float(triage.get("llm_elapsed_s") or 0.0)
-            llm_input_tokens = int(triage.get("llm_input_tokens") or 0)
-            llm_output_tokens = int(triage.get("llm_output_tokens") or 0)
-            llm_total_tokens = int(triage.get("llm_total_tokens") or 0)
+            label = bounded.get("label", "failed")
+            why = (bounded.get("why") or "").strip()
+            failure_reason = bounded.get("failure_reason")
+            failure_detail = (bounded.get("failure_detail") or "").strip()
+            llm_elapsed_s = float(bounded.get("llm_elapsed_s") or 0.0)
+            llm_input_tokens = int(bounded.get("llm_input_tokens") or 0)
+            llm_output_tokens = int(bounded.get("llm_output_tokens") or 0)
+            llm_total_tokens = int(bounded.get("llm_total_tokens") or 0)
         else:
             failure_reason = "empty_unified_diff"
             failure_detail = ""
             notes["observations"].append("empty unified diff; recorded as failed")
             label = "failed"
-            why = "Triage did not run because the unified diff was empty."
-            triage = {"final_md": ""}
+            why = "Bounded did not run because the unified diff was empty."
+            bounded = {"final_md": ""}
 
         label = _coerce_result_label(label, failure_reason)
         if failure_detail and label == "failed":
             why = f"{why} Detail: {failure_detail}".strip()
         result = _write_analysis(
-            label=label, why=why, triage_ran=triage_ran, failure_reason=failure_reason,
+            label=label, why=why, bounded_ran=bounded_ran, failure_reason=failure_reason,
             failure_detail=failure_detail, diff_elapsed_s=diff_elapsed_s, llm_elapsed_s=llm_elapsed_s,
             llm_input_tokens=llm_input_tokens, llm_output_tokens=llm_output_tokens,
             llm_total_tokens=llm_total_tokens, notes=notes,
-            final_md=_coerce_str(triage.get("final_md")),
+            final_md=_coerce_str(bounded.get("final_md")),
             callee_augmented=bool(callee_texts), diff_text=unified,
             diff_meta=diff_info.get("artifact_meta") or {},
+            callee_texts=callee_texts,
         )
         if os.path.exists(trace_path):
-            write_trace_view(trace_path, os.path.join(triage_dir, "trace_view.txt"))
-        store_cached_stage_result(target_oid, triage_cache_opts, triage_cache_key, result)
+            write_trace_view(trace_path, os.path.join(bounded_dir, "trace_view.txt"))
+        store_cached_stage_result(target_oid, bounded_cache_opts, bounded_cache_key, result)
         return result
 
     return _run_fresh()
@@ -441,15 +460,15 @@ def _run_function_pairs(
     outdir: str,
     opts: Dict[str, Any],
     runtime: Any,
-    triage_fingerprint: str,
+    bounded_fingerprint: str,
     added_callee_index: Optional[AddedCalleeIndex],
     label: str,
 ) -> List[Tuple[int, Dict[str, Any], Any]]:
-    """Triage every modified function in a file pair, returning results in function order.
+    """Bounded every modified function in a file pair, returning results in function order.
 
     Sequential by design: one comparison owns one model endpoint. Concurrency is the
     caller's job, run one whole comparison per endpoint (see delt_verification_experiment),
-    which parallelizes triage, binary context, and verification rather than triage alone.
+    which parallelizes bounded, binary context, and unbounded rather than bounded alone.
 
     Progress is logged rather than drawn as a bar. Several comparisons run at once and a
     Progress bar redraws one stderr line with a carriage return, so concurrent bars
@@ -466,7 +485,7 @@ def _run_function_pairs(
         result = analyze_function_pair(
             baseline_oid=baseline_oid, target_oid=target_oid, baddr=baseline_addr, taddr=target_addr,
             fp_idx=fp_idx, fp_total=fp_total, func_idx=func_idx, func_total=func_total,
-            outdir=outdir, opts=opts, runtime=runtime, triage_fingerprint=triage_fingerprint,
+            outdir=outdir, opts=opts, runtime=runtime, bounded_fingerprint=bounded_fingerprint,
             added_callee_index=added_callee_index,
         )
         ordered.append((func_idx, modified, result))
@@ -474,7 +493,7 @@ def _run_function_pairs(
             elapsed = time.perf_counter() - t0
             rate = func_idx / elapsed if elapsed > 0 else 0.0
             logger.info(
-                "%s: triage %d/%d (%.0f%%) elapsed %.1fm eta %.1fm",
+                "%s: bounded %d/%d (%.0f%%) elapsed %.1fm eta %.1fm",
                 label, func_idx, func_total, 100.0 * func_idx / func_total,
                 elapsed / 60.0,
                 ((func_total - func_idx) / rate / 60.0) if rate > 0 else 0.0,
@@ -486,15 +505,25 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     opts = _normalize_run_opts(opts)
     os.makedirs(outdir, exist_ok=True)
 
-    # Dry run (no_triage): no model is needed, so skip building the Ollama runtime and run
+    # Dry run (no_bounded): no model is needed, so skip building the Ollama runtime and run
     # single-threaded -- the per-function loop only fetches diffs and writes agent inputs.
-    no_triage = bool(opts.get("no_triage"))
-    runtime = None if no_triage else get_or_build_runtime(opts)
+    no_bounded = bool(opts.get("no_bounded"))
+    runtime = None if no_bounded else get_or_build_runtime(opts)
     prompt_bundle = load_prompt_bundle(opts)
-    triage_fingerprint = cache_keys.triage_opts_fingerprint(opts, prompt_bundle)
-    binary_context_fingerprint = cache_keys.binary_context_opts_fingerprint(opts, prompt_bundle)
-    verification_fingerprint = cache_keys.verification_opts_fingerprint(opts, prompt_bundle)
+    bounded_fingerprint = cache_keys.bounded_opts_fingerprint(opts, prompt_bundle)
+    unbounded_fingerprint = cache_keys.unbounded_opts_fingerprint(opts, prompt_bundle)
     include_added_callees = bool(opts.get("include_added_callees", True))
+    skip_bounded = bool(opts.get("skip_bounded"))
+    # Ablation: run bounded and escalate on its decision as usual, but withhold its report
+    # from unbounded. Unbounded then starts from the same candidate and diff with no
+    # claim to react to, which separates the report as evidence from the report as a
+    # conclusion. Distinct from skip_bounded, where bounded never runs and every filtered
+    # candidate is verified.
+    no_bounded_report = bool(opts.get("no_bounded_report"))
+    # Ablation: stop after bounded, so each candidate is decided from the prepared evidence
+    # alone with no whole-binary follow-up. Bounded itself is unchanged, so a run at this
+    # setting reuses the cached bounded labels of the full pipeline.
+    skip_unbounded = bool(opts.get("skip_unbounded"))
     diff_raw_for_stats = _resolve_bool_override(opts, "raw", "_diff_raw")
 
     filter_val = normalize_filter_value(opts.get("filter"))
@@ -535,10 +564,10 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     report_lines.append(f"Filter:       {filter_mode}")
     report_lines.append("")
 
-    # gt_only: restrict triage to the ground-truth insertion function(s) so a
+    # gt_only: restrict bounded to the ground-truth insertion function(s) so a
     # backdoor-recall check spends LLM budget only on the GT candidate. The full
-    # filtered set is still counted/reported; only the triaged subset shrinks.
-    # Pairs with no ground truth (e.g. safe variants) triage nothing under gt_only.
+    # filtered set is still counted/reported; only the boundedd subset shrinks.
+    # Pairs with no ground truth (e.g. safe variants) bounded nothing under gt_only.
     gt_only = bool(opts.get("gt_only"))
     gt_only_norm: Optional[Dict[str, Any]] = None
     if gt_only:
@@ -558,10 +587,9 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         else:
             logger.info("gt_only: no ground truth for %s; triaging no functions", target_name)
 
-    triage_index: List[Dict[str, Any]] = []
+    bounded_index: List[Dict[str, Any]] = []
     per_function_results: List[Dict[str, Any]] = []
-    binary_context_results: List[Dict[str, Any]] = []
-    verification_results: List[Dict[str, Any]] = []
+    unbounded_results: List[Dict[str, Any]] = []
 
     total_modified_all = 0
     total_modified_filtered = 0
@@ -575,17 +603,15 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     sum_llm_output_tokens = 0
     sum_llm_total_tokens = 0
     callee_augmented_count = 0
-    binary_context_run_count = 0
-    binary_context_input_tokens = 0
-    binary_context_output_tokens = 0
-    binary_context_total_tokens = 0
-    verification_ran_count = 0
-    verification_flagged_functions = 0
-    verification_cleared_functions = 0
-    verification_failed_functions = 0
-    verification_input_tokens = 0
-    verification_output_tokens = 0
-    verification_total_tokens = 0
+    # Counted separately from the runs: a replay attaches a report without spending
+    # tokens, so the two together explain why runs can exceed the token totals.
+    unbounded_ran_count = 0
+    unbounded_flagged_functions = 0
+    unbounded_cleared_functions = 0
+    unbounded_failed_functions = 0
+    unbounded_input_tokens = 0
+    unbounded_output_tokens = 0
+    unbounded_total_tokens = 0
 
     if not file_pairs:
         report_lines.append("No file pairs or modifications were reported by drift.")
@@ -610,7 +636,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         report_lines.append(f"## File Pair {fp_idx}")
         report_lines.append(f"- target_oid:   {target_oid}")
         report_lines.append(f"- baseline_oid: {baseline_oid}")
-        report_lines.append(f"- Triage candidate functions (filtered): {len(filtered_mods)}")
+        report_lines.append(f"- Bounded candidate functions (filtered): {len(filtered_mods)}")
         report_lines.append(f"- added functions: {len(added_funcs)}")
         if excluded_mods:
             try:
@@ -619,10 +645,10 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                 report_lines.append("- modified functions (excluded by filter): <unknown>")
         report_lines.append("")
 
-        # Under gt_only, triage only the ground-truth candidate(s); otherwise the whole
+        # Under gt_only, bounded only the ground-truth candidate(s); otherwise the whole
         # filtered set. filtered_mods stays intact above so the filter counts are unchanged.
         if gt_only:
-            triage_mods = [
+            bounded_mods = [
                 m for m in filtered_mods
                 if gt_only_norm
                 and ground_truth.gt_row_matches_any(
@@ -634,13 +660,13 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                 )
             ]
             report_lines.append(
-                f"- gt_only: triaging {len(triage_mods)} of {len(filtered_mods)} filtered function(s)"
+                f"- gt_only: triaging {len(bounded_mods)} of {len(filtered_mods)} filtered function(s)"
             )
             report_lines.append("")
         else:
-            triage_mods = filtered_mods
+            bounded_mods = filtered_mods
 
-        # Build the CFG and BinDiff artifacts the Verification tools sit on before any agent
+        # Build the CFG and BinDiff artifacts the Unbounded tools sit on before any agent
         # starts, so a cold miss costs wall clock here instead of eating a run budget.
         prewarm_summary = prewarm_filepair_artifacts(
             baseline_oid=baseline_oid,
@@ -658,7 +684,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         report_lines.append("")
 
         added_callee_index: Optional[AddedCalleeIndex] = None
-        if include_added_callees and added_funcs and triage_mods:
+        if include_added_callees and added_funcs and bounded_mods:
             added_func_decomp = fetch_added_func_decomps(target_oid, added_funcs)
             save_added_function_artifacts(
                 target_oid=target_oid, added_functions=added_funcs, fp_idx=fp_idx,
@@ -671,16 +697,15 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         fp_label = f"{target_name} fp{fp_idx}/{len(file_pairs)}"
 
         function_results = _run_function_pairs(
-            triage_mods,
+            bounded_mods,
             baseline_oid=baseline_oid, target_oid=target_oid,
             fp_idx=fp_idx, fp_total=len(file_pairs),
-            outdir=outdir, opts=opts, runtime=runtime, triage_fingerprint=triage_fingerprint,
+            outdir=outdir, opts=opts, runtime=runtime, bounded_fingerprint=bounded_fingerprint,
             added_callee_index=added_callee_index,
             label=fp_label,
         )
 
-        filepair_verification_results: List[Dict[str, Any]] = []
-        binary_context_result: Optional[Dict[str, Any]] = None
+        filepair_unbounded_results: List[Dict[str, Any]] = []
         for func_idx, modified, result in function_results:
             baseline_addr = ensure_decimal_str(modified.get("baseline_func_addr"))
             target_addr = ensure_decimal_str(modified.get("target_func_addr"))
@@ -691,8 +716,8 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
             sum_llm_output_tokens += _llm_out
             sum_llm_total_tokens += _llm_tot
 
-            triage_label = _coerce_result_label(result.get("label"), result.get("failure_reason"))
-            triage_flagged = bool(triage_label == "not_safe")
+            bounded_label = _coerce_result_label(result.get("label"), result.get("failure_reason"))
+            bounded_flagged = bool(bounded_label == "not_safe")
             callee_augmented = bool(result.get("callee_augmented"))
             if callee_augmented:
                 callee_augmented_count += 1
@@ -704,212 +729,159 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                 "target_oid": target_oid,
                 "baseline_addr": baseline_addr,
                 "target_addr": target_addr,
-                "triage_label": triage_label,
-                "triage_flagged": triage_flagged,
+                "bounded_label": bounded_label,
+                "bounded_flagged": bounded_flagged,
                 "diff_elapsed_s": float(result.get("diff_elapsed_s") or 0.0),
                 "llm_elapsed_s": float(result.get("llm_elapsed_s") or 0.0),
                 "llm_input_tokens": _llm_in,
                 "llm_output_tokens": _llm_out,
                 "llm_total_tokens": _llm_tot,
-                "triage_ran": bool(result.get("triage_ran")),
+                "bounded_ran": bool(result.get("bounded_ran")),
                 "failure_reason": result.get("failure_reason"),
                 "failure_detail": result.get("failure_detail", ""),
                 "callee_augmented": callee_augmented,
             })
-            if triage_flagged:
+            if bounded_flagged:
                 flagged_filtered += 1
-                triage_index.append({
+                bounded_index.append({
                     "filepair_index": fp_idx,
                     "function_index": func_idx,
                     "baseline_addr": baseline_addr,
                     "target_addr": target_addr,
-                    "label": triage_label,
+                    "label": bounded_label,
                     "verdict": result.get("verdict"),
                     "dir": result.get("func_dir"),
                     "baseline_oid": baseline_oid,
                     "target_oid": target_oid,
                 })
-            elif triage_label == "failed":
+            elif bounded_label == "failed":
                 failed_filtered += 1
-            elif triage_label == "skipped":
+            elif bounded_label == "skipped":
                 skipped_filtered += 1
             else:
                 safe_filtered += 1
 
-            # Verification escalation. Candidates Triage retained go on to a binary-wide
-            # investigation: flagged ones to confirm, and Triage failures because the
-            # fail-closed policy retains those as alert burden, so Verification is the only
-            # place they can be cleared. Triage writes final.md only when it decides
+            # Unbounded escalation. Candidates Bounded retained go on to a binary-wide
+            # investigation: flagged ones to confirm, and Bounded failures because the
+            # fail-closed policy retains those as alert burden, so Unbounded is the only
+            # place they can be cleared. Bounded writes final.md only when it decides
             # not_safe, so a failure escalates with the diff alone.
             row = per_function_results[-1]
-            escalate = runtime is not None and triage_label in {"not_safe", "failed"}
-            row["verification_ran"] = escalate
+            escalate = runtime is not None and not skip_unbounded and (
+                bounded_label in {"not_safe", "failed"}
+                or (skip_bounded and not result.get("failure_reason"))
+            )
+            row["unbounded_ran"] = escalate
             if not escalate:
-                row["verification_label"] = ""
-                _set_pipeline_outcome(row, triage_label)
+                row["unbounded_label"] = ""
+                _set_pipeline_outcome(row, bounded_label)
                 continue
 
-            if binary_context_result is None:
-                # Cached against the baseline only, since the report describes just that
-                # binary. Every target compared against the same baseline reuses it.
-                binary_context_cache_key = cache_keys.binary_context_cache_key(
-                    baseline_oid, binary_context_fingerprint
-                )
-                binary_context_cache_opts = stage_cache_opts(
-                    "binary_context_result", binary_context_fingerprint
-                )
-                binary_context_result = load_cached_stage_result(
-                    baseline_oid, binary_context_cache_opts, binary_context_cache_key
-                )
-                binary_context_dir = os.path.join(outdir, f"filepair_{fp_idx:02d}", "binary_context")
-                if binary_context_result is None:
-                    binary_context_result = run_binary_context_analysis(
-                        runtime=runtime,
-                        fp_idx=fp_idx,
-                        baseline_oid=baseline_oid,
-                        target_oid=target_oid,
-                        outdir=outdir,
-                    )
-                    # Only a complete report is cacheable. A timeout or a salvaged partial
-                    # says nothing about the binary, and since the key is the baseline
-                    # alone one such run would otherwise deny context to every pair sharing
-                    # that baseline, for every later run at this fingerprint.
-                    if _coerce_str(binary_context_result.get("status")) == "complete":
-                        store_cached_stage_result(
-                            baseline_oid,
-                            binary_context_cache_opts,
-                            binary_context_cache_key,
-                            binary_context_result,
-                        )
-                    else:
-                        logger.warning(
-                            "%s: binary context for baseline %s not cached (status=%s, reason=%s)",
-                            fp_label,
-                            baseline_oid,
-                            _coerce_str(binary_context_result.get("status")) or "failed",
-                            _coerce_str(binary_context_result.get("failure_reason")) or "unknown",
-                        )
-                else:
-                    # The cached record was written for whichever pair ran it first, so
-                    # re-stamp the fields that belong to this comparison before the
-                    # artifacts land in this pair's directory.
-                    binary_context_result = dict(binary_context_result)
-                    binary_context_result["target_oid"] = _coerce_str(target_oid)
-                    binary_context_result["filepair_index"] = fp_idx
-                    binary_context_result["outdir"] = binary_context_dir
-                    restore_cached_binary_context_artifacts(
-                        binary_context_dir,
-                        binary_context_result,
-                    )
-                binary_context_results.append(binary_context_result)
-                binary_context_run_count += 1
-                binary_context_input_tokens += int(
-                    binary_context_result.get("llm_input_tokens") or 0
-                )
-                binary_context_output_tokens += int(
-                    binary_context_result.get("llm_output_tokens") or 0
-                )
-                binary_context_total_tokens += int(
-                    binary_context_result.get("llm_total_tokens") or 0
-                )
-                report_lines.append(
-                    f"- Binary context: {_coerce_str(binary_context_result.get('status')) or 'failed'}"
-                )
-
-            triage_dir = os.path.join(result.get("func_dir") or "", "triage")
-            final_md_path = os.path.join(triage_dir, "final.md")
+            bounded_dir = os.path.join(result.get("func_dir") or "", "bounded")
+            final_md_path = os.path.join(bounded_dir, "final.md")
             local_report = {
                 "function_index": func_idx,
                 "func_dir": result.get("func_dir"),
                 "baseline_addr": baseline_addr,
                 "target_addr": target_addr,
-                "label": triage_label,
-                "final_md": _coerce_str(result.get("triage_final_md")) or _read_text_file(final_md_path),
+                "label": bounded_label,
+                "final_md": (
+                    "" if no_bounded_report
+                    else _coerce_str(result.get("bounded_final_md")) or _read_text_file(final_md_path)
+                ),
                 "final_md_path": final_md_path,
-                "diff_path": os.path.join(triage_dir, "diff.txt"),
-                "diff_text": _coerce_str(result.get("triage_diff_text")),
+                "diff_path": os.path.join(bounded_dir, "diff.txt"),
+                "diff_text": _coerce_str(result.get("bounded_diff_text")),
+                "callee_texts": result.get("callee_texts") or {},
             }
-            verification_cache_key = cache_keys.verification_result_cache_key(
+            unbounded_cache_key = cache_keys.unbounded_result_cache_key(
                 target_oid,
                 baseline_oid,
                 baseline_addr,
                 target_addr,
-                verification_fingerprint,
-                cache_keys.verification_inputs_digest(
+                unbounded_fingerprint,
+                cache_keys.unbounded_inputs_digest(
                     _coerce_str(local_report.get("final_md")),
-                    _coerce_str((binary_context_result or {}).get("binary_context_md")),
+                    local_report.get("callee_texts") or {},
                 ),
             )
-            verification_cache_opts = stage_cache_opts("verification_result", verification_fingerprint)
-            verification_result = load_cached_stage_result(target_oid, verification_cache_opts, verification_cache_key)
-            if verification_result is None:
-                # Verification is the long pole, minutes per investigation against the
+            unbounded_cache_opts = stage_cache_opts("unbounded_result", unbounded_fingerprint)
+            unbounded_result = load_cached_stage_result(target_oid, unbounded_cache_opts, unbounded_cache_key)
+            if unbounded_result is None:
+                # Unbounded is the long pole, minutes per investigation against the
                 # whole binary. Log each one starting, or a running comparison looks hung.
                 logger.info(
-                    "%s: verification %d starting (function %d, triage=%s)",
-                    fp_label, verification_ran_count + 1, func_idx, triage_label,
+                    "%s: unbounded %d starting (function %d, bounded=%s)",
+                    fp_label, unbounded_ran_count + 1, func_idx, bounded_label,
                 )
                 verify_t0 = time.perf_counter()
-                verification_result = run_verification(
+                unbounded_result = run_unbounded(
                     runtime=runtime,
                     fp_idx=fp_idx,
                     baseline_oid=baseline_oid,
                     target_oid=target_oid,
                     local_report=local_report,
-                    binary_context=binary_context_result,
                 )
-                store_cached_stage_result(target_oid, verification_cache_opts, verification_cache_key, verification_result)
+                store_cached_stage_result(
+                    target_oid, unbounded_cache_opts, unbounded_cache_key, unbounded_result
+                )
                 logger.info(
-                    "%s: verification %d done in %.1fm -> %s%s",
-                    fp_label, verification_ran_count + 1,
+                    "%s: unbounded %d done in %.1fm -> %s%s",
+                    fp_label, unbounded_ran_count + 1,
                     (time.perf_counter() - verify_t0) / 60.0,
-                    _coerce_str(verification_result.get("label")) or "failed",
-                    f" ({_coerce_str(verification_result.get('failure_reason'))})"
-                    if verification_result.get("failure_reason") else "",
+                    _coerce_str(unbounded_result.get("label")) or "failed",
+                    f" ({_coerce_str(unbounded_result.get('failure_reason'))})"
+                    if unbounded_result.get("failure_reason") else "",
                 )
             else:
-                restore_cached_verification_artifacts(
-                    os.path.join(result.get("func_dir") or "", "verification"),
-                    verification_result,
-                )
-            filepair_verification_results.append(verification_result)
-            verification_results.append(verification_result)
-            verification_ran_count += 1
-            verification_input_tokens += int(verification_result.get("llm_input_tokens") or 0)
-            verification_output_tokens += int(verification_result.get("llm_output_tokens") or 0)
-            verification_total_tokens += int(verification_result.get("llm_total_tokens") or 0)
+                unbounded_dir = os.path.join(result.get("func_dir") or "", "unbounded")
+                unbounded_result = dict(unbounded_result)
+                unbounded_result["filepair_index"] = fp_idx
+                unbounded_result["function_index"] = func_idx
+                unbounded_result["bounded_label"] = bounded_label
+                unbounded_result["outdir"] = unbounded_dir
+                if _coerce_str(unbounded_result.get("final_md")):
+                    unbounded_result["final_md_path"] = os.path.join(unbounded_dir, "final.md")
+                restore_cached_unbounded_artifacts(unbounded_dir, unbounded_result)
+            filepair_unbounded_results.append(unbounded_result)
+            unbounded_results.append(unbounded_result)
+            unbounded_ran_count += 1
+            unbounded_input_tokens += int(unbounded_result.get("llm_input_tokens") or 0)
+            unbounded_output_tokens += int(unbounded_result.get("llm_output_tokens") or 0)
+            unbounded_total_tokens += int(unbounded_result.get("llm_total_tokens") or 0)
 
-            # Verification is authoritative over the candidates it reaches: it can clear a
-            # Triage flag but never raise a new one. A Verification failure is not a verdict,
-            # so the candidate keeps its Triage label and stays retained.
-            verification_label = _coerce_str(verification_result.get("label"))
-            if verification_label == "not_safe":
-                verification_flagged_functions += 1
+            # The last stage to run owns the verdict. Unbounded is authoritative over the
+            # candidates it reaches, including when it fails: inheriting the Bounded label
+            # instead would record an unresolved investigation as a confirmed one, so a
+            # failure would be invisible in the flagged counts and would silently earn
+            # detection credit that no stage actually established. The candidate is still
+            # retained under the fail-closed policy, because burden counts flagged plus
+            # failed; only the attribution changes.
+            unbounded_label = _coerce_str(unbounded_result.get("label"))
+            if unbounded_label == "not_safe":
+                unbounded_flagged_functions += 1
                 pipeline_label = "not_safe"
-            elif verification_label == "safe":
-                verification_cleared_functions += 1
+            elif unbounded_label == "safe":
+                unbounded_cleared_functions += 1
                 pipeline_label = "safe"
             else:
-                verification_failed_functions += 1
-                pipeline_label = triage_label
-            row["verification_label"] = verification_label
-            row["binary_context_status"] = (
-                _coerce_str(binary_context_result.get("status")) if binary_context_result else ""
-            )
-            row["verification_failure_reason"] = verification_result.get("failure_reason")
-            row["verification_llm_elapsed_s"] = float(verification_result.get("llm_elapsed_s") or 0.0)
-            row["verification_llm_input_tokens"] = int(verification_result.get("llm_input_tokens") or 0)
-            row["verification_llm_output_tokens"] = int(verification_result.get("llm_output_tokens") or 0)
-            row["verification_llm_total_tokens"] = int(verification_result.get("llm_total_tokens") or 0)
+                unbounded_failed_functions += 1
+                pipeline_label = "failed"
+            row["unbounded_label"] = unbounded_label
+            row["unbounded_failure_reason"] = unbounded_result.get("failure_reason")
+            row["unbounded_llm_elapsed_s"] = float(unbounded_result.get("llm_elapsed_s") or 0.0)
+            row["unbounded_llm_input_tokens"] = int(unbounded_result.get("llm_input_tokens") or 0)
+            row["unbounded_llm_output_tokens"] = int(unbounded_result.get("llm_output_tokens") or 0)
+            row["unbounded_llm_total_tokens"] = int(unbounded_result.get("llm_total_tokens") or 0)
             _set_pipeline_outcome(row, pipeline_label)
 
-        if filepair_verification_results:
-            report_lines.append(f"- Verification investigations: {len(filepair_verification_results)}")
-            for verification_result in filepair_verification_results:
-                fn = int(verification_result.get("function_index") or 0)
+        if filepair_unbounded_results:
+            report_lines.append(f"- Unbounded investigations: {len(filepair_unbounded_results)}")
+            for unbounded_result in filepair_unbounded_results:
+                fn = int(unbounded_result.get("function_index") or 0)
                 report_lines.append(
-                    f"  - function {fn:02d}: {_coerce_str(verification_result.get('label')) or 'failed'}"
-                    f" - {_coerce_str(verification_result.get('summary'))}"
+                    f"  - function {fn:02d}: {_coerce_str(unbounded_result.get('label')) or 'failed'}"
+                    f" - {_coerce_str(unbounded_result.get('summary'))}"
                 )
             report_lines.append("")
 
@@ -929,11 +901,11 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     hit_count = 0
     dismissed_count = 0
     failed_gt_count = 0
-    # The same outcomes scored on Triage's label alone, kept for the per-stage file so a
+    # The same outcomes scored on Bounded's label alone, kept for the per-stage file so a
     # two-stage run stays comparable to a single-stage one.
-    triage_hit_count = 0
-    triage_dismissed_count = 0
-    triage_failed_count = 0
+    bounded_hit_count = 0
+    bounded_dismissed_count = 0
+    bounded_failed_count = 0
 
     def _outcome(label: str, flagged: bool) -> str:
         if flagged:
@@ -956,14 +928,14 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
             hit_count += outcome == "hit"
             dismissed_count += outcome == "dismissed"
             failed_gt_count += outcome == "failed"
-            # Triage's own outcome, for the per-stage breakdown.
-            triage_outcome = _outcome(
-                _coerce_str(row.get("triage_label")), bool(row.get("triage_flagged"))
+            # Bounded's own outcome, for the per-stage breakdown.
+            bounded_outcome = _outcome(
+                _coerce_str(row.get("bounded_label")), bool(row.get("bounded_flagged"))
             )
-            row["gt_outcome_triage"] = triage_outcome
-            triage_hit_count += triage_outcome == "hit"
-            triage_dismissed_count += triage_outcome == "dismissed"
-            triage_failed_count += triage_outcome == "failed"
+            row["gt_outcome_bounded"] = bounded_outcome
+            bounded_hit_count += bounded_outcome == "hit"
+            bounded_dismissed_count += bounded_outcome == "dismissed"
+            bounded_failed_count += bounded_outcome == "failed"
     else:
         for row in per_function_results:
             row["gt_match"] = False
@@ -977,11 +949,11 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     final_flagged_files = len(
         {row.get("filepair_index") for row in per_function_results if row.get("pipeline_flagged")}
     )
-    verification_with_report = sum(1 for r in verification_results if r.get("had_triage_report"))
+    unbounded_with_report = sum(1 for r in unbounded_results if r.get("had_bounded_report"))
 
-    total_input_tokens = sum_llm_input_tokens + binary_context_input_tokens + verification_input_tokens
-    total_output_tokens = sum_llm_output_tokens + binary_context_output_tokens + verification_output_tokens
-    total_tokens = sum_llm_total_tokens + binary_context_total_tokens + verification_total_tokens
+    total_input_tokens = sum_llm_input_tokens + unbounded_input_tokens
+    total_output_tokens = sum_llm_output_tokens + unbounded_output_tokens
+    total_tokens = sum_llm_total_tokens + unbounded_total_tokens
 
     # The tool's own results. Every count here describes what the analyst is handed once
     # both stages are done -- no stage appears in this file. Per-stage detail, including
@@ -998,8 +970,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         "modified_functions": total_modified_all,
         "filtered_functions": total_modified_filtered,
         "excluded_functions": total_excluded_functions,
-        "binary_context_runs": binary_context_run_count,
-        "investigated_functions": verification_ran_count,
+        "investigated_functions": unbounded_ran_count,
         "callee_augmented_count": callee_augmented_count,
         # Result: the alert burden left on the analyst.
         "flagged_files": final_flagged_files,
@@ -1027,18 +998,18 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         ) if total_modified_filtered else 0.0,
     }
 
-    # Per-stage breakdown. Triage's counts are what a single-stage run of this
+    # Per-stage breakdown. Bounded's counts are what a single-stage run of this
     # configuration would have reported, so the two are directly comparable.
     stage_metrics: Dict[str, Any] = {
-        "triage": {
+        "bounded": {
             "reviewed_functions": len(per_function_results),
             "flagged_functions": flagged_filtered,
             "dismissed_functions": safe_filtered,
             "failed_functions": failed_filtered,
             "skipped_functions": skipped_filtered,
-            "hit": triage_hit_count,
-            "dismissed": triage_dismissed_count,
-            "failed": triage_failed_count,
+            "hit": bounded_hit_count,
+            "dismissed": bounded_dismissed_count,
+            "failed": bounded_failed_count,
             "input_tokens": sum_llm_input_tokens,
             "output_tokens": sum_llm_output_tokens,
             "total_tokens": sum_llm_total_tokens,
@@ -1046,30 +1017,26 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                 sum_llm_total_tokens / float(total_modified_filtered)
             ) if total_modified_filtered else 0.0,
         },
-        "verification": {
-            "binary_context_runs": binary_context_run_count,
-            "binary_context_input_tokens": binary_context_input_tokens,
-            "binary_context_output_tokens": binary_context_output_tokens,
-            "binary_context_total_tokens": binary_context_total_tokens,
-            "investigations": verification_ran_count,
-            "with_report": verification_with_report,
-            "without_report": verification_ran_count - verification_with_report,
-            "flagged_functions": verification_flagged_functions,
-            "cleared_functions": verification_cleared_functions,
-            "failed_functions": verification_failed_functions,
-            "input_tokens": verification_input_tokens,
-            "output_tokens": verification_output_tokens,
-            "total_tokens": verification_total_tokens,
+        "unbounded": {
+            "investigations": unbounded_ran_count,
+            "with_report": unbounded_with_report,
+            "without_report": unbounded_ran_count - unbounded_with_report,
+            "flagged_functions": unbounded_flagged_functions,
+            "cleared_functions": unbounded_cleared_functions,
+            "failed_functions": unbounded_failed_functions,
+            "input_tokens": unbounded_input_tokens,
+            "output_tokens": unbounded_output_tokens,
+            "total_tokens": unbounded_total_tokens,
             "avg_total_tokens_per_investigation": (
-                verification_total_tokens / float(verification_ran_count)
-            ) if verification_ran_count else 0.0,
+                unbounded_total_tokens / float(unbounded_ran_count)
+            ) if unbounded_ran_count else 0.0,
         },
     }
 
     write_comparison_outputs(
         outdir=outdir,
         per_function_results=per_function_results,
-        verification_results=verification_results,
+        unbounded_results=unbounded_results,
         stage_metrics=stage_metrics,
         stats=stats,
     )
@@ -1080,6 +1047,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         stats=stats,
         stage_metrics=stage_metrics,
         per_function_results=per_function_results,
-        verification_results=verification_results,
+        unbounded_results=unbounded_results,
         file_pairs=file_pairs,
     )

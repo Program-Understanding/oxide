@@ -1,6 +1,6 @@
 """Build the expensive MCP-backed artifacts before the agents can ask for them.
 
-Two of the tools the Verification agents call are bimodal: instant on a cache hit, minutes on
+Two of the tools the Unbounded agents call are bimodal: instant on a cache hit, minutes on
 a miss, because a miss runs Ghidra or BinDiff inside the agent's run budget.
 ``get_control_flow_graph`` retrieves ``mcp_control_flow_graph`` for one binary, and
 ``get_matched_function`` retrieves ``function_mapping`` for one ordered binary pair. A
@@ -80,7 +80,7 @@ def prewarm_filepair_artifacts(
     baseline = _coerce_str(baseline_oid)
     target = _coerce_str(target_oid)
 
-    # The binary-context agent is scoped to the baseline; the verification agent addresses
+    # The binary-context agent is scoped to the baseline; the unbounded agent addresses
     # both sides of the pair.
     oids = [o for o in dict.fromkeys([baseline, target]) if o]
     pairs = [(t, b) for t, b in ((target, baseline), (baseline, target)) if t and b and t != b]

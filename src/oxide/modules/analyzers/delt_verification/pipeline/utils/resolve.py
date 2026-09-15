@@ -8,10 +8,10 @@ from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import 
 
 
 def resolve_mcp_server_path() -> str:
-    """Absolute path to oxide_mcp_server.py, the stdio server backing Verification's tools.
+    """Absolute path to oxide_mcp_server.py, the stdio server backing Unbounded's tools.
 
     Resolved by walking up from this file to the repository root rather than from
-    the caller's working directory, so Verification works the same under rshell, the
+    the caller's working directory, so Unbounded works the same under rshell, the
     experiment plugin, and a bare python -c.
     """
     here = os.path.dirname(os.path.abspath(__file__))

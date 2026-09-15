@@ -1,4 +1,4 @@
-"""The triage agent: a file-backed local agent that reviews one modified-function
+"""The bounded agent: a file-backed local agent that reviews one modified-function
 diff and decides whether the update inserted a backdoor. When the changed function
 calls a newly-added function, the callee decompilations are attached as extra evidence.
 """
@@ -34,7 +34,7 @@ except ImportError:
 logger = logging.getLogger(NAME)
 
 
-class TriageDecisionSchema(BaseModel):
+class BoundedDecisionSchema(BaseModel):
     label: Literal["safe", "not_safe"] = Field(
         description="Final decision for the diff. Must be safe or not_safe.",
     )
@@ -61,32 +61,33 @@ def _error_result(why: str, *, failure_reason: str, failure_detail: str = "") ->
     }
 
 
-def run_triage_agent(
+def run_bounded_agent(
     runtime: Any,
     diff_text: str,
     notes: Dict[str, Any],
     trace_path: Optional[str],
     callee_texts: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Run the triage agent on a pre-sanitized diff. Returns a result dict."""
+    """Run the bounded agent on a pre-sanitized diff. Returns a result dict."""
     callee_texts = callee_texts or {}
-    request_timeout_s = float(getattr(runtime, "triage_request_timeout_s", 150.0))
+    request_timeout_s = float(getattr(runtime, "bounded_request_timeout_s", 1000.0))
+    model_call_timeout_s = float(getattr(runtime, "bounded_model_call_timeout_s", 0.0))
 
-    sys_prompt = runtime.triage_with_callees_sys if callee_texts else runtime.triage_sys
+    sys_prompt = runtime.bounded_with_callees_sys if callee_texts else runtime.bounded_sys
     prompt = "Review the evidence under /inputs/ and decide whether this update inserts a backdoor."
 
     file_mirror: Dict[str, str] = {}
     final_holder: Dict[str, Any] = {}
     decision_tool = deepagent_runtime.make_decision_tool(
         "submit_decision",
-        TriageDecisionSchema,
+        BoundedDecisionSchema,
         final_holder,
         _normalize_decision_payload,
-        doc="Submit the final triage decision as your last action",
+        doc="Submit the final bounded decision as your last action",
         precondition=deepagent_runtime.require_report_before_not_safe(file_mirror),
     )
-    agent = deepagent_runtime.build_triage_agent(
-        main_model=runtime.triage_llm,
+    agent = deepagent_runtime.build_bounded_agent(
+        main_model=runtime.bounded_llm,
         file_mirror=file_mirror,
         decision_tool=decision_tool,
         system_prompt=sys_prompt,
@@ -99,20 +100,50 @@ def run_triage_agent(
     try:
         append_trace_line(trace_path, "[   0.00s] [agent] start", truncate=True)
         append_trace_line(trace_path, "[   0.00s] [agent] mode: astream (live trace + state collection)")
+        append_trace_line(
+            trace_path,
+            f"[   0.00s] [agent] run budget {request_timeout_s:g}s, model call "
+            f"{model_call_timeout_s:g}s",
+        )
         config = {"configurable": {"thread_id": f"delt_agent_{time.time_ns()}"}}
         payload = deepagent_runtime.build_agent_payload(diff_text, prompt, callee_texts)
         out = deepagent_runtime.invoke_agent_with_timeout(
             agent, payload, config=config,
             timeout_s=request_timeout_s, trace_logger=trace_logger,
         )
+        # Finishing without a recorded decision usually means the model typed the call into
+        # its message rather than emitting one. Ask for it on the same thread instead of
+        # discarding a completed review; see anudge_for_decision.
+        if not isinstance(final_holder.get("final"), dict):
+            append_trace_line(
+                trace_path,
+                f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] "
+                "no decision recorded; nudging for submit_decision",
+            )
+            nudged = deepagent_runtime.nudge_for_decision(
+                agent,
+                config=config,
+                final_holder=final_holder,
+                tool_name="submit_decision",
+                deadline_s=request_timeout_s,
+                started_at=invoke_t0,
+                trace_logger=trace_logger,
+            )
+            if nudged is not None:
+                out = nudged
         invoke_elapsed_s = time.perf_counter() - invoke_t0
     except TimeoutError as exc:
         msg = f"The agent timed out: {exc}."
         notes["observations"].append(msg)
         append_trace_line(trace_path, f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] error: timeout {exc}")
+        call_capped = "model call exceeded" in str(exc)
         return _error_result(
-            f"The agent timed out after {request_timeout_s:g}s before reaching a final decision.",
-            failure_reason="timeout", failure_detail=str(exc),
+            f"A single model call exceeded {model_call_timeout_s:g}s, so bounded stopped before "
+            "reaching a final decision."
+            if call_capped
+            else f"The agent timed out after {request_timeout_s:g}s before reaching a final decision.",
+            failure_reason="model_call_timeout" if call_capped else "timeout",
+            failure_detail=str(exc),
         )
     except deepagent_runtime.RepeatedToolCallError as exc:
         notes["observations"].append(f"Agent repeated tool call: {exc}")
@@ -122,7 +153,7 @@ def run_triage_agent(
         notes["observations"].append(f"Agent response rejected by provider: {exc}")
         append_trace_line(trace_path, f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] error: malformed_model_response {exc}")
         return _error_result(
-            "The model emitted a response the provider could not parse, so triage stopped "
+            "The model emitted a response the provider could not parse, so bounded stopped "
             "before reaching a final decision.",
             failure_reason="malformed_model_response",
             failure_detail=str(exc),
@@ -140,7 +171,7 @@ def run_triage_agent(
         notes["observations"].append(f"Agent invoke failed: {exc}.")
         why = ("The agent timed out before reaching a final decision."
                if failure_reason == "timeout"
-               else "Agent triage pipeline failed before reaching a final decision.")
+               else "Agent bounded pipeline failed before reaching a final decision.")
         append_trace_line(trace_path, f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] error: {failure_reason} {exc}")
         return _error_result(why, failure_reason=failure_reason, failure_detail=detail)
 

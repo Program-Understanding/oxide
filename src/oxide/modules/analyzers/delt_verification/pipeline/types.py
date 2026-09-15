@@ -15,7 +15,7 @@ class AnalyzerResult(TypedDict, total=False):
     stats: Dict[str, Any]
     stage_metrics: Dict[str, Any]
     per_function_results: List[Dict[str, Any]]
-    verification_results: List[Dict[str, Any]]
+    unbounded_results: List[Dict[str, Any]]
     file_pairs: List[Dict[str, Any]]
     artifact_root: Optional[str]
 
@@ -37,7 +37,7 @@ class AnalyzeFunctionResult(TypedDict, total=False):
     flagged: bool
     verdict: str
     func_dir: str
-    triage_ran: bool
+    bounded_ran: bool
     failure_reason: Optional[str]
     failure_detail: str
     diff_elapsed_s: float
@@ -59,7 +59,6 @@ class ComparisonStats(TypedDict, total=False):
     modified_functions: int
     filtered_functions: int
     excluded_functions: int
-    binary_context_runs: int
     investigated_functions: int
     callee_augmented_count: int
     flagged_files: int

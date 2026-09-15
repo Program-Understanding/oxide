@@ -1,7 +1,7 @@
 """Scope the oxide MCP tools to the binaries one agent is allowed to look at.
 
 The agents must not choose which binary they read. The binary-context agent works on one
-binary; the verification agent works on one target/baseline pair and should address them
+binary; the unbounded agent works on one target/baseline pair and should address them
 only as ``target``/``baseline``, never by raw OID. Both are the same operation: take the
 tool surface the MCP server publishes and remove the OID parameters, either by binding
 them to a fixed value or by replacing them with a choice among named binaries.

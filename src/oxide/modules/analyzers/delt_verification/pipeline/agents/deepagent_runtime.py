@@ -237,12 +237,30 @@ class WallClockChatOllama(ChatOllama):
 
 
 def make_agent_model(
-    model: str, *, request_timeout_s: float, base_url: Optional[str] = None
+    model: str,
+    *,
+    request_timeout_s: float,
+    base_url: Optional[str] = None,
+    temperature: float = 0.0,
+    seed: int = 1,
 ) -> ChatOllama:
+    """Build the stage's chat client with decoding pinned to greedy.
+
+    Only temperature and seed are set. Every other sampling and runtime option is left to
+    the model's own parameters and to Ollama's defaults, so an option absent here is absent
+    from the request too and the server decides it.
+    """
     kwargs: Dict[str, Any] = {
         "model": model,
-        "keep_alive": "10m",
+        # Never unload. A request's keep_alive overrides the server's OLLAMA_KEEP_ALIVE, so
+        # a finite value here silently defeats the launcher's -1: a worker that spends
+        # longer than it on diffing or decompilation comes back to an unloaded model, and
+        # the next call blocks on reloading tens of GB. That reload is counted against
+        # call_timeout_s, so it surfaces as a model_call_timeout with no tokens.
+        "keep_alive": -1,
         "profile": {"max_input_tokens": 262144},
+        "temperature": temperature,
+        "seed": seed,
     }
     if base_url:
         kwargs["base_url"] = base_url
@@ -252,7 +270,7 @@ def make_agent_model(
     return WallClockChatOllama(**kwargs)
 
 
-def build_triage_agent(
+def build_bounded_agent(
     *,
     main_model: ChatOllama,
     file_mirror: Dict[str, str],
@@ -285,7 +303,7 @@ def build_triage_agent(
 
 
 def build_agent_payload(diff_text: str, prompt: str, callee_texts: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    files: Dict[str, Any] = {"/inputs/unified_diff.txt": create_file_data(diff_text)}
+    files: Dict[str, Any] = {"/inputs/diff.txt": create_file_data(diff_text)}
     for addr, text in (callee_texts or {}).items():
         if text.strip():
             files[f"/inputs/added_functions/{addr}.c"] = create_file_data(text)
@@ -396,6 +414,73 @@ async def _stream_agent_core(
     return await _stream_guarding_response_errors()
 
 
+DECISION_NUDGE = (
+    "You have not recorded a decision yet. Call the {tool} tool now. Emit a real tool call, "
+    "not text that looks like one. Do not investigate further and do not restate your "
+    "analysis; your report is already written. Respond with the tool call and nothing else."
+)
+
+
+async def anudge_for_decision(
+    agent: Any,
+    *,
+    config: Dict[str, Any],
+    final_holder: Dict[str, Any],
+    tool_name: str,
+    deadline_s: float,
+    started_at: float,
+    trace_logger: Any = None,
+    attempts: int = 2,
+) -> Optional[Any]:
+    """Ask an agent that stopped without calling its decision tool to call it.
+
+    A long investigation sometimes ends with the model typing the call into its message
+    instead of emitting one. The analysis is finished and the report is already written, so
+    re-running the investigation spends another full budget to arrive back at the same
+    place. One more turn on the same thread recovers the verdict for a few hundred tokens.
+
+    Returns the last agent state, or None if no turn could be run. The agent keeps its
+    thread, so the returned state carries the whole conversation and usage totals stay
+    correct.
+    """
+    out = None
+    for attempt in range(attempts):
+        remaining = deadline_s - (time.perf_counter() - started_at)
+        if remaining <= 10:
+            return out
+        payload = {"messages": [{"role": "user", "content": DECISION_NUDGE.format(tool=tool_name)}]}
+        try:
+            out = await _stream_agent_core(
+                agent, payload, config=config, timeout_s=remaining, trace_logger=trace_logger,
+            )
+        except Exception:  # noqa: BLE001 -- a failed nudge leaves the original failure standing
+            return out
+        if isinstance(final_holder.get("final"), dict):
+            return out
+    return out
+
+
+def nudge_for_decision(
+    agent: Any,
+    *,
+    config: Dict[str, Any],
+    final_holder: Dict[str, Any],
+    tool_name: str,
+    deadline_s: float,
+    started_at: float,
+    trace_logger: Any = None,
+    attempts: int = 2,
+) -> Optional[Any]:
+    """Sync entry point for anudge_for_decision, for callers outside an event loop."""
+    return get_async_runner().run(
+        anudge_for_decision(
+            agent, config=config, final_holder=final_holder, tool_name=tool_name,
+            deadline_s=deadline_s, started_at=started_at, trace_logger=trace_logger,
+            attempts=attempts,
+        )
+    )
+
+
 def invoke_agent_with_timeout(
     agent: Any,
     payload: Dict[str, Any],
@@ -405,7 +490,7 @@ def invoke_agent_with_timeout(
     trace_logger: Any = None,
     max_consecutive_repeated_tool_calls: int = DEFAULT_MAX_CONSECUTIVE_REPEATED_TOOL_CALLS,
 ) -> Any:
-    """ Sync entry point for the triage agent (called from plain sync code): runs
+    """ Sync entry point for the bounded agent (called from plain sync code): runs
         _stream_agent_core in a dedicated, reused asyncio.Runner.
     """
     return get_async_runner().run(

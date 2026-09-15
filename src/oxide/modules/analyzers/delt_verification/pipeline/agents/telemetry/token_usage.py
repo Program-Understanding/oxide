@@ -1,4 +1,4 @@
-"""LLM token-usage accounting for the triage agent."""
+"""LLM token-usage accounting for the bounded agent."""
 
 from typing import Any, Dict
 
