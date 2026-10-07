@@ -410,7 +410,7 @@ def _nx_to_mermaid(G: nx.DiGraph, offset_to_name: dict) -> str:
 # ── MCP Tools ─────────────────────────────────────────────────────────────────
 
 
-# @mcp.tool()
+@mcp.tool()
 async def list_binaries(collection_name: str = None) -> list[dict] | str:
     """
     List all binaries known to Oxide, optionally filtered to a named collection.
