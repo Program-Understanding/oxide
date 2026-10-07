@@ -175,6 +175,19 @@ def _resolve_or_error(name_or_oid: str) -> tuple[Optional[str], Optional[str]]:
     return oid, None
 
 
+def _resolve_binary_pair_or_error(
+    target_oid_or_name: str, baseline_oid_or_name: str
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve a target/baseline pair, returning (target_oid, baseline_oid, err)."""
+    target_oid, err = _resolve_or_error(target_oid_or_name)
+    if err:
+        return None, None, err
+    baseline_oid, err = _resolve_or_error(baseline_oid_or_name)
+    if err:
+        return None, None, err
+    return target_oid, baseline_oid, None
+
+
 def _to_offset(value) -> Optional[int]:
     """Parse an offset from an int, decimal string, or hex ('0x..') string.
 
@@ -189,6 +202,23 @@ def _to_offset(value) -> Optional[int]:
         except ValueError:
             return None
     return None
+
+
+def _parse_offset_or_error(value, label: str) -> tuple[Optional[int], Optional[str]]:
+    off = _to_offset(value)
+    if off is None:
+        return None, (
+            f"Invalid {label}: use a decimal integer or 0x-prefixed hex string, "
+            f"not {value!r}."
+        )
+    if off < 0:
+        return None, f"Invalid {label}: must be non-negative."
+    return off, None
+
+
+def _load_function_mapping(target_oid: str, baseline_oid: str) -> dict:
+    mapping = oxide.retrieve("function_mapping", [target_oid, baseline_oid]) or {}
+    return mapping if isinstance(mapping, dict) else {}
 
 
 def _unwrap(result, oid: str):
@@ -265,13 +295,39 @@ def _get_offset_to_name(oid: str) -> dict:
     }
 
 
+def _function_index(oid: str) -> dict:
+    """Build {name: {offset, num_insns, complexity, signature}} from ghidra_disasm and
+    cyclo_complexity. Functions with no instructions are omitted."""
+    disasm = _get_ghidra_disasm(oid)
+    funcs = disasm.get("functions") or {}
+    blocks = disasm.get("original_blocks") or {}
+    complexity = _unwrap(oxide.retrieve("cyclo_complexity", [oid]), oid) or {}
+
+    index: dict = {}
+    for off, info in funcs.items():
+        if off == "meta" or not isinstance(info, dict):
+            continue
+        num_insns = sum(
+            len((blocks.get(b) or {}).get("members") or []) for b in info.get("blocks") or []
+        )
+        if num_insns == 0:
+            continue
+        entry = complexity.get(off) if isinstance(complexity, dict) else None
+        index[info.get("name", str(off))] = {
+            "offset": off,
+            "num_insns": num_insns,
+            "complexity": entry.get("complexity") if isinstance(entry, dict) else None,
+            "signature": info.get("signature"),
+        }
+    return index
+
+
 def _resolve_func_name_and_offset(oid: str, name_or_offset: str) -> tuple[Optional[str], Optional[int]]:
     """Return (func_name, offset) by resolving a name or numeric offset string.
 
-    Numeric offsets are the common case (agents pass decompiler offsets): resolve
-    the name straight from the cheap in-memory ghidra_disasm functions and skip the
-    expensive function_summary computation. Only by-name lookups consult
-    function_summary.
+    Numeric offsets are the common case (agents pass decompiler offsets), and resolve
+    straight from the in-memory ghidra_disasm functions. Only by-name lookups need the
+    full function index.
     """
     off = _to_offset(name_or_offset)
     if off is not None:
@@ -279,7 +335,7 @@ def _resolve_func_name_and_offset(oid: str, name_or_offset: str) -> tuple[Option
         name = info.get("name", str(off)) if isinstance(info, dict) else name_or_offset
         return name, off
 
-    summary = oxide.get_field("function_summary", [oid], oid) or {}
+    summary = _function_index(oid)
     if name_or_offset in summary:
         return name_or_offset, summary[name_or_offset].get("offset")
     return name_or_offset, None
@@ -354,7 +410,7 @@ def _nx_to_mermaid(G: nx.DiGraph, offset_to_name: dict) -> str:
 # ── MCP Tools ─────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+# @mcp.tool()
 async def list_binaries(collection_name: str = None) -> list[dict] | str:
     """
     List all binaries known to Oxide, optionally filtered to a named collection.
@@ -420,11 +476,8 @@ async def get_binary_metadata(oid_or_name: str) -> dict | str:
         bits = getattr(header, "insn_mode", None)
         endian = {True: "big", False: "little"}.get(getattr(header, "big_endian", None))
 
-    num_functions = num_sections = None
-    s = _unwrap(oxide.retrieve("file_stats", [oid]), oid)
-    if isinstance(s, dict):
-        num_functions = s.get("Number of functions")
-        num_sections = s.get("Number of sections")
+    num_sections = len(getattr(header, "section_info", None) or {}) if header else None
+    num_functions = len(_function_index(oid)) or None
 
     return BinaryMetadata(
         oid=oid, names=names, arch=arch, bits=bits, endian=endian,
@@ -462,7 +515,7 @@ async def get_function_list(oid_or_name: str,
     if err:
         return err
 
-    result = oxide.get_field("function_summary", [oid], oid) or {}
+    result = _function_index(oid)
     if not result:
         return _no_data(oid_or_name, "function data")
 
@@ -505,7 +558,7 @@ async def search_symbols_by_name(oid_or_name: str, query: str,
 
     stripped_query = query.strip()
 
-    result = oxide.get_field("function_summary", [oid], oid) or {}
+    result = _function_index(oid)
     if not result:
         return _no_data(oid_or_name, "function data")
 
@@ -573,11 +626,11 @@ async def get_strings(oid_or_name: str,
 async def search_strings(oid_or_name: str, query: str,
                          limit: int = 100, offset: int = 0) -> dict | str:
     """
-    Search for strings in a binary that contain a given substring.
+    Search for strings in a binary using a regular expression.
 
     Args:
         oid_or_name: OID or filename.
-        query: Substring to search for (case-sensitive).
+        query: Regular expression to search for (case-sensitive).
         limit: Maximum results (default 100).
         offset: Pagination offset into the offset-sorted matches (default 0).
 
@@ -596,10 +649,15 @@ async def search_strings(oid_or_name: str, query: str,
     if not data:
         return _no_data(oid_or_name, "strings data")
 
+    try:
+        regex = re.compile(query)
+    except re.error as exc:
+        return f"Invalid regex {query!r}: {exc}"
+
     matches = sorted(
         [StringResult(value=str(v), offset=int(k)).model_dump()
          for k, v in data.items()
-         if query in str(v)],
+         if regex.search(str(v))],
         key=lambda s: s["offset"],
     )
     return _paginate(matches, offset, limit)
@@ -1021,6 +1079,180 @@ async def get_control_flow_graph(oid_or_name: str, function_name_or_offset: str)
             return cfg_data
 
     return f"Function '{function_name_or_offset}' not found in CFG data."
+
+
+@mcp.tool(name="function_decomp_diff")
+async def function_decomp_diff_tool(
+    target_oid_or_name: str,
+    baseline_oid_or_name: str,
+    target_function_offset: int | str,
+    baseline_function_offset: int | str,
+    raw: bool = False,
+) -> dict | str:
+    """
+    Compare one target function against one baseline function and return their decompiled diff.
+
+    Args:
+        target_oid_or_name: Updated binary OID or filename.
+        baseline_oid_or_name: Baseline binary OID or filename.
+        target_function_offset: Target function offset as decimal int or 0x-prefixed hex.
+        baseline_function_offset: Baseline function offset as decimal int or 0x-prefixed hex.
+        raw: Request the raw diff from function_decomp_diff.
+
+    Returns:
+        The cached function_decomp_diff payload for this function pair, or an error string.
+    """
+    target_oid, baseline_oid, err = _resolve_binary_pair_or_error(
+        target_oid_or_name, baseline_oid_or_name
+    )
+    if err:
+        return err
+
+    target_off, err = _parse_offset_or_error(target_function_offset, "target_function_offset")
+    if err:
+        return err
+    baseline_off, err = _parse_offset_or_error(
+        baseline_function_offset, "baseline_function_offset"
+    )
+    if err:
+        return err
+
+    result = oxide.retrieve(
+        "function_decomp_diff",
+        [target_oid, baseline_oid],
+        {
+            "target": str(target_off),
+            "baseline": str(baseline_off),
+            "raw": bool(raw),
+        },
+    )
+    if not result:
+        return (
+            "No decompiled diff data was returned for this function pair. "
+            "The diff analysis may not have run, or one side may not have decompilation."
+        )
+    return result
+
+
+@mcp.tool(name="function_call_diff")
+async def function_call_diff_tool(
+    target_oid_or_name: str,
+    baseline_oid_or_name: str,
+    target_function_offset: int | str,
+    baseline_function_offset: int | str,
+) -> dict | str:
+    """
+    Compare one target function's call edges against one baseline function's call edges.
+
+    Args:
+        target_oid_or_name: Updated binary OID or filename.
+        baseline_oid_or_name: Baseline binary OID or filename.
+        target_function_offset: Target function offset as decimal int or 0x-prefixed hex.
+        baseline_function_offset: Baseline function offset as decimal int or 0x-prefixed hex.
+
+    Returns:
+        The cached function_call_diff payload for this function pair, or an error string.
+    """
+    target_oid, baseline_oid, err = _resolve_binary_pair_or_error(
+        target_oid_or_name, baseline_oid_or_name
+    )
+    if err:
+        return err
+
+    target_off, err = _parse_offset_or_error(target_function_offset, "target_function_offset")
+    if err:
+        return err
+    baseline_off, err = _parse_offset_or_error(
+        baseline_function_offset, "baseline_function_offset"
+    )
+    if err:
+        return err
+
+    result = oxide.retrieve(
+        "function_call_diff",
+        [target_oid, baseline_oid],
+        {
+            "target": str(target_off),
+            "baseline": str(baseline_off),
+        },
+    )
+    if not result:
+        return (
+            "No function-call diff data was returned for this function pair. "
+            "The call-diff analysis may not have run for this binary pair."
+        )
+    return result
+
+
+@mcp.tool()
+async def get_matched_function(
+    source_oid_or_name: str,
+    destination_oid_or_name: str,
+    function_offset: int | str,
+) -> dict | str:
+    """
+    Resolve the BinDiff-matched function for one function when mapping from a source binary
+    into a destination binary.
+
+    Args:
+        source_oid_or_name: Source binary OID or filename.
+        destination_oid_or_name: Destination binary OID or filename.
+        function_offset: Source function offset as decimal int or 0x-prefixed hex.
+
+    Returns:
+        {source, destination} where each side includes oid/addr/name, or an error string if no match exists.
+    """
+    source_oid, err = _resolve_or_error(source_oid_or_name)
+    if err:
+        return err
+    destination_oid, err = _resolve_or_error(destination_oid_or_name)
+    if err:
+        return err
+    source_off, err = _parse_offset_or_error(function_offset, "function_offset")
+    if err:
+        return err
+
+    # First try the natural direction: source as target, destination as baseline.
+    direct_map = _load_function_mapping(source_oid, destination_oid)
+    direct_entry = direct_map.get(str(source_off)) or direct_map.get(source_off)
+    if isinstance(direct_entry, dict):
+        return {
+            "source": {
+                "oid": source_oid,
+                "addr": str(direct_entry.get("t_addr") or source_off),
+                "name": direct_entry.get("t_name"),
+            },
+            "destination": {
+                "oid": destination_oid,
+                "addr": str(direct_entry.get("b_addr") or ""),
+                "name": direct_entry.get("b_name"),
+            },
+        }
+
+    # Then try the reverse direction: source as baseline, destination as target.
+    reverse_map = _load_function_mapping(destination_oid, source_oid)
+    for destination_key, reverse_entry in reverse_map.items():
+        if not isinstance(reverse_entry, dict):
+            continue
+        if str(reverse_entry.get("b_addr")) != str(source_off):
+            continue
+        return {
+            "source": {
+                "oid": source_oid,
+                "addr": str(reverse_entry.get("b_addr") or source_off),
+                "name": reverse_entry.get("b_name"),
+            },
+            "destination": {
+                "oid": destination_oid,
+                "addr": str(reverse_entry.get("t_addr") or destination_key),
+                "name": reverse_entry.get("t_name"),
+            },
+        }
+
+    return (
+        f"No matched function was found for offset {source_off} when mapping from "
+        f"'{source_oid_or_name}' to '{destination_oid_or_name}'. The function may be unmatched in BinDiff."
+    )
 
 
 @mcp.tool()
