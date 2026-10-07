@@ -44,35 +44,12 @@ FP_BINS: Tuple[Tuple[str, int, Optional[int]], ...] = (
     (">25", 26, None),
 )
 
-# One arm per investigation strategy, as (arm name, diff mode, structural filter, analyzer
-# opts). Each runs over both pair categories and writes into outdir/<arm name>/.
-#
-#   bounded             bounded alone, deciding each candidate from its prepared evidence
-#   multi_agent_triage  bounded, then whole-binary unbounded of what bounded retains,
-#                       carrying the bounded report
-#   no_report           the same, minus the report
-#   unbounded           whole-binary investigation of every filtered candidate
-#
-# unbounded is the evidence-scope condition, so it starts from the same candidate anchor and
-# diff as the others and differs only in having tools instead of a prepared region.
-#
-# bounded duplicates what the bounded stage of multi_agent_triage already records, and is run
-# separately so every configuration reads from an arm of its own rather than one being
-# derived from another's stage metrics. skip_unbounded is absent from the bounded cache
-# fingerprint, so it reuses those cached bounded labels and calls no model.
-#
-# The filter and diff mode are held fixed across arms so the arms differ only in what the
-# agent is given.
+
 EXPERIMENT_CONFIGS: Tuple[Tuple[str, str, Optional[str], Dict[str, Any]], ...] = (
     ("bounded", "processed", "Call_OR_Control_Modified", {"skip_unbounded": True}),
-    ("multi_agent_triage", "processed", "Call_OR_Control_Modified", {}),
-    ("no_report", "processed", "Call_OR_Control_Modified", {"no_bounded_report": True}),
-    (
-        "unbounded",
-        "processed",
-        "Call_OR_Control_Modified",
-        {"skip_bounded": True},
-    ),
+    ("bounded_all", "processed", "none", {"skip_unbounded": True}),
+    ("bounded_raw", "raw", "Call_OR_Control_Modified", {"skip_unbounded": True}),
+    ("unbounded", "processed", "Call_OR_Control_Modified", {"skip_bounded": True}),
 )
 
 
@@ -177,8 +154,13 @@ def _run_one_comparison(target: str, baseline: str, outdir: str, opts: Dict[str,
     return api.retrieve("delt_verification", [target, baseline], call_opts) or {}
 
 
-def _sample_is_complete(sample_outdir: str) -> bool:
-    return os.path.exists(os.path.join(sample_outdir, "stats.json"))
+GT_ONLY_MARKER = "gt_only.marker"
+
+
+def _sample_is_complete(sample_outdir: str, gt_only: bool = False) -> bool:
+    if not os.path.exists(os.path.join(sample_outdir, "stats.json")):
+        return False
+    return gt_only or not os.path.exists(os.path.join(sample_outdir, GT_ONLY_MARKER))
 
 
 def _refresh_cached_stats_ground_truth(
@@ -280,7 +262,7 @@ def _process_pair(
         baseline_name = str(baseline)
 
     pair_dir = os.path.join(category_outdir, _comparison_dir(target_name, baseline_name))
-    if _sample_is_complete(pair_dir):
+    if _sample_is_complete(pair_dir, bool(run_opts.get("gt_only"))):
         logger.info("[%d/%d] %s -> %s (cached)", idx, total, target_name, baseline_name)
         stats = _read_json(os.path.join(pair_dir, "stats.json"))
         if gt:
@@ -290,6 +272,12 @@ def _process_pair(
         logger.info("[%d/%d] START %s -> %s", idx, total, target_name, baseline_name)
         pair_t0 = time.perf_counter()
         result = _run_one_comparison(target, baseline, pair_dir, run_opts)
+        marker = os.path.join(pair_dir, GT_ONLY_MARKER)
+        if run_opts.get("gt_only"):
+            os.makedirs(pair_dir, exist_ok=True)
+            open(marker, "w").close()
+        elif os.path.exists(marker):
+            os.remove(marker)
         stats = result.get("stats")
         stage_metrics = result.get("stage_metrics")
         # Without a finish line an interleaved run shows only starts, so there is no way
@@ -795,13 +783,28 @@ def _pair_trace_metrics(pair_dir: str) -> Dict[str, Any]:
 
     by_stage = {stage: Counter() for stage in STAGES}
     per_investigation: List[List[str]] = []
+    row_fields = {"bounded": "tool_calls", "unbounded": "unbounded_tool_calls"}
+    counted = {stage: set() for stage in STAGES}
+    rows_path = os.path.join(pair_dir, "per_function_results.json")
+    rows = _read_json(rows_path) if os.path.exists(rows_path) else []
+    for row in rows if isinstance(rows, list) else []:
+        func_dir = os.path.join(
+            pair_dir, f"filepair_{int(row.get('filepair_index') or 0):02d}", "modified_functions",
+            f"b{row.get('baseline_addr')}__t{row.get('target_addr')}",
+        )
+        for stage, field in row_fields.items():
+            if isinstance(row.get(field), dict) and row[field]:
+                by_stage[stage] += Counter(row[field].get("by_tool", row[field]))
+                counted[stage].add(os.path.normpath(func_dir))
     for stage in STAGES:
         pattern = os.path.join(
             pair_dir, "filepair_*", "modified_functions", "*", stage, "agent_trace.log"
         )
         for trace in glob.glob(pattern):
             counts, lookups = _parse_trace(trace)
-            by_stage[stage] += counts
+            func_dir = os.path.normpath(os.path.dirname(os.path.dirname(trace)))
+            if func_dir not in counted[stage]:
+                by_stage[stage] += counts
             if stage == "unbounded" and lookups:
                 per_investigation.append(lookups)
 
@@ -1209,6 +1212,29 @@ def _prompt_provenance() -> Dict[str, Optional[str]]:
     }
 
 
+def _resolved_analyzer_opts(base_opts: Dict[str, Any]) -> Dict[str, Any]:
+    """The opts the analyzer will actually run with.
+
+    Oxide fills opts_doc defaults for mangled opts at the module boundary, and the runtime
+    then applies its negative-means-unsent convention to the sampling options. Reading
+    base_opts instead reports the plugin's own fallbacks for anything the caller left
+    unset, which is how a run came to record a bounded budget it never used and an empty
+    overridden_options while every sampling option was in fact pinned.
+    """
+    from oxide.modules.analyzers.delt_verification import module_interface as delt_module
+    from oxide.modules.analyzers.delt_verification.pipeline.agents.runtime import (
+        _resolve_runtime_opts,
+    )
+
+    merged = dict(base_opts)
+    for key, spec in delt_module.opts_doc.items():
+        if spec.get("mangle") and key not in merged and "default" in spec:
+            merged[key] = spec["default"]
+    if not str(merged.get("model") or "").strip():
+        merged["model"] = "unset"
+    return _resolve_runtime_opts(merged)
+
+
 def _run_manifest(base_opts: Dict[str, Any], endpoints: List[str]) -> Dict[str, Any]:
     """Everything needed to say what produced a set of results.
 
@@ -1217,23 +1243,28 @@ def _run_manifest(base_opts: Dict[str, Any], endpoints: List[str]) -> Dict[str, 
     """
     model = str(base_opts.get("model") or "")
     base_url = (endpoints or [DEFAULT_OLLAMA_URL])[0]
-    # Only temperature and seed are sent as options; everything else the model and Ollama
-    # decide, so the record pairs what we set with what the model itself carries and with
-    # the context Ollama actually allocated.
+    from oxide.modules.analyzers.delt_verification.pipeline.agents.runtime import SAMPLING_OPTS
+
+    resolved = _resolved_analyzer_opts(base_opts)
     settings = {
-        key: base_opts.get(key, default)
-        for key, default in (
-            ("temperature", 0.0), ("seed", 1),
-            ("bounded_request_s", 450.0), ("bounded_model_call_s", 180.0),
-            ("unbounded_request_s", 1000.0), ("unbounded_model_call_s", 180.0),
+        key: resolved[key]
+        for key in (
+            "bounded_request_s", "bounded_model_call_s",
+            "unbounded_request_s", "unbounded_model_call_s",
         )
     }
+    overridden = []
+    for key in SAMPLING_OPTS:
+        if resolved.get(key) is None:
+            continue
+        settings[key] = resolved[key]
+        overridden.append(key)
     from oxide.modules.analyzers.delt_verification.pipeline.tools import binary_pair
 
     return {
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "model": _model_provenance(base_url, model),
-        "overridden_options": ["temperature", "seed"],
+        "overridden_options": overridden,
         "settings": settings,
         # Ollama sizes the context from free VRAM unless told otherwise, so it is a property
         # of the machine and of what else was resident. Left at the default deliberately,
@@ -1262,11 +1293,15 @@ def _run_experiment_configs(
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Run the LLM experiment configs for a single model into config_root. In dry_run mode
-    only the `multi_agent_triage` config runs, with bounded disabled, so each modified
+    only the `bounded` config runs, with bounded disabled, so each modified
     function gets its unified diff and agent inputs on disk but the agent never runs."""
+    from oxide.modules.analyzers.delt_verification.pipeline.agents.runtime import SAMPLING_OPTS
+
+    SAMPLING_OPT_NAMES = set(SAMPLING_OPTS)
+    resolved_opts = _resolved_analyzer_opts(base_opts)
     configs = EXPERIMENT_CONFIGS
     if dry_run:
-        configs = tuple(cfg for cfg in EXPERIMENT_CONFIGS if cfg[0] == "multi_agent_triage")
+        configs = tuple(cfg for cfg in EXPERIMENT_CONFIGS if cfg[0] == "bounded")
     config_summaries: Dict[str, Any] = {}
     for config_name, diff_mode, filter_key, overrides in configs:
         config_dir = os.path.join(config_root, config_name)
@@ -1283,9 +1318,14 @@ def _run_experiment_configs(
             "skip_bounded": bool(overrides.get("skip_bounded")),
             "skip_unbounded": bool(overrides.get("skip_unbounded")),
             "no_bounded_report": bool(overrides.get("no_bounded_report")),
-            "unbounded_request_s": float(base_opts.get("unbounded_request_s") or 1000.0),
-            "bounded_request_s": float(base_opts.get("bounded_request_s") or 450.0),
-            "bounded_model_call_s": float(base_opts.get("bounded_model_call_s") or 180.0),
+            "unbounded_request_s": resolved_opts["unbounded_request_s"],
+            "bounded_request_s": resolved_opts["bounded_request_s"],
+            "bounded_model_call_s": resolved_opts["bounded_model_call_s"],
+            "sampling": {
+                key: value
+                for key, value in resolved_opts.items()
+                if key in SAMPLING_OPT_NAMES and value is not None
+            },
         }
 
         # gt_only is a backdoor-recall shortcut: only the ground-truth function is boundedd.
@@ -1375,9 +1415,9 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
       models       -- a models file (like models.txt); each line is
                       `model_tag [sample_workers]` (sample_workers defaults to 1).
                       Results for each model land under outdir/<model_slug>/.
-      (neither)    -- dry run: only the `multi_agent_triage` config runs, with bounded
+      (neither)    -- dry run: only the `bounded` config runs, with bounded
                       disabled, so each modified function gets its unified diff and the
-                      agent's input files (outdir/multi_agent_triage/<category>/<pair>/
+                      agent's input files (outdir/bounded/<category>/<pair>/
                       filepair_NN/modified_functions/<b..t..>/{diff.txt,agent_inputs/})
                       written to disk without invoking the agent. Use this to author
                       ground truth.
