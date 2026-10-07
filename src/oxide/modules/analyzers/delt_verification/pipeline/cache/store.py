@@ -4,6 +4,31 @@ from typing import Any, Dict, Optional
 from oxide.core import api
 
 
+# Failure reasons that describe the candidate's inputs rather than the run, so recomputing
+# one returns the same answer and replaying it is sound.
+DETERMINISTIC_FAILURES = frozenset(
+    {
+        "empty_baseline_decomp",
+        "empty_target_decomp",
+        "empty_both_decomp",
+        "empty_unified_diff",
+        "diff_tool_error",
+    }
+)
+
+
+def is_cacheable(result: Dict[str, Any]) -> bool:
+    """True if replaying this result would give what recomputing it would.
+
+    A decided verdict and an input-side failure both hold on a re-run. Everything else is a
+    run that might have succeeded, or a description of the machine rather than the
+    candidate, and caching those makes an interruption permanent: killing a run leaves its
+    in-flight connection errors in the cache, and the restart adopts them as findings.
+    """
+    reason = str(result.get("failure_reason") or "").strip()
+    return not reason or reason in DETERMINISTIC_FAILURES
+
+
 def stage_cache_opts(kind: str, fingerprint: str) -> Dict[str, Any]:
     return {"_cache_kind": kind, "_cache_fingerprint": fingerprint}
 

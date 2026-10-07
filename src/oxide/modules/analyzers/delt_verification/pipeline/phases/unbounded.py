@@ -12,17 +12,8 @@ from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import 
     ascii_sanitize,
     write_json,
     write_text,
+    read_text,
 )
-
-
-def _read_file(path: str) -> str:
-    if not path or not os.path.isfile(path):
-        return ""
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return handle.read()
-    except OSError:
-        return ""
 
 
 def _render_claim(local_report: Dict[str, Any]) -> str:
@@ -65,7 +56,7 @@ def run_unbounded(
     claim = _render_claim(local_report)
     diff_text = ascii_sanitize(
         _coerce_str(local_report.get("diff_text"))
-        or _read_file(_coerce_str(local_report.get("diff_path")))
+        or read_text(_coerce_str(local_report.get("diff_path")))
     )
     candidate = {
         "target_oid": _coerce_str(target_oid),

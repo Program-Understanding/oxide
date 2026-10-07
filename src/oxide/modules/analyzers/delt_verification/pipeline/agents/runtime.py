@@ -33,10 +33,22 @@ class AnalyzerRuntime:
     # Per-model-call timeout inside that budget. Must stay well below it, or one stalled
     # call consumes the entire investigation and the run is lost with no verdict.
     unbounded_model_call_timeout_s: float
-    # Greedy decoding. Everything else is left to the model and to Ollama; carried here so
-    # a run can record what it asked for.
+    # Only the sampling options this run pins. Empty means decoding is entirely the model's
+    # Modelfile and Ollama's defaults; carried here so a run can record what it asked for.
     sampling: Dict[str, Any]
 
+
+# Every sampling option the runtime may pin, with the type each is sent as.
+SAMPLING_OPTS: Dict[str, Any] = {
+    "temperature": float,
+    "seed": int,
+    "top_p": float,
+    "top_k": int,
+    "min_p": float,
+    "presence_penalty": float,
+    "repeat_penalty": float,
+    "max_output_tokens": int,
+}
 
 RUNTIMES: Dict[str, AnalyzerRuntime] = {}
 RUNTIMES_LOCK = threading.Lock()
@@ -55,9 +67,8 @@ def _runtime_cache_key(opts: Dict[str, Any]) -> str:
             str(opts.get("bounded_model_call_s") or ""),
             str(opts.get("unbounded_request_s") or ""),
             str(opts.get("unbounded_model_call_s") or ""),
-            str(opts.get("temperature")),
-            str(opts.get("seed")),
         ]
+        + [str(opts.get(key)) for key in SAMPLING_OPTS]
     )
 
 
@@ -71,7 +82,7 @@ def _build_runtime(opts: Dict[str, Any]) -> AnalyzerRuntime:
     bounded_model_call_timeout_s = float(opts["bounded_model_call_s"])
     unbounded_request_timeout_s = float(opts["unbounded_request_s"])
     unbounded_model_call_timeout_s = float(opts["unbounded_model_call_s"])
-    sampling = {"temperature": float(opts["temperature"]), "seed": int(opts["seed"])}
+    sampling = {key: opts[key] for key in SAMPLING_OPTS if opts[key] is not None}
 
     return AnalyzerRuntime(
         bounded_llm=deepagent_runtime.make_agent_model(
@@ -102,21 +113,23 @@ def _resolve_runtime_opts(opts: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             "no default model is configured."
         )
     resolved_opts["model"] = model
-    resolved_opts["bounded_request_s"] = float(resolved_opts.get("bounded_request_s") or 1000.0)
+    resolved_opts["bounded_request_s"] = float(resolved_opts.get("bounded_request_s") or 1800.0)
     resolved_opts["bounded_model_call_s"] = float(
-        resolved_opts.get("bounded_model_call_s") or 180.0
+        resolved_opts.get("bounded_model_call_s") or 900.0
     )
     resolved_opts["unbounded_request_s"] = float(
-        resolved_opts.get("unbounded_request_s") or 1000.0
+        resolved_opts.get("unbounded_request_s") or 1800.0
     )
     resolved_opts["unbounded_model_call_s"] = float(
-        resolved_opts.get("unbounded_model_call_s") or 180.0
+        resolved_opts.get("unbounded_model_call_s") or 900.0
     )
-    # `or` would turn a deliberate 0 back into the default, and 0 is the value that matters
-    # most here, so each falls back only when the opt is absent or empty.
-    for key, default in (("temperature", 0.0), ("seed", 1)):
+    # Negative or absent means the option is never sent, so the model's own Modelfile value
+    # stands. 0 is a real value for temperature, min_p and presence_penalty and has to
+    # survive, which rules out an `or` fallback.
+    for key, cast in SAMPLING_OPTS.items():
         value = resolved_opts.get(key)
-        resolved_opts[key] = type(default)(default if value in (None, "") else value)
+        value = None if value in (None, "") else cast(value)
+        resolved_opts[key] = None if value is None or value < 0 else value
     return resolved_opts
 
 

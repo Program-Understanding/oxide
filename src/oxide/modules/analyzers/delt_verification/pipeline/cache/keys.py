@@ -2,66 +2,62 @@ import hashlib
 import json
 from typing import Any, Dict, Optional
 
+_SHARED_OPT_KEYS = ("model", "diff_mode", "raw", "include_added_callees",
+                    "temperature", "seed", "top_p", "top_k", "min_p",
+                    "presence_penalty", "repeat_penalty")
+
+
+def _sha1_16(payload: Any) -> str:
+    return hashlib.sha1(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _opts_fingerprint(
+    opts: Dict[str, Any],
+    prompt_bundle: Optional[Dict[str, Any]],
+    *,
+    opt_keys: tuple,
+    prompt_names: tuple,
+) -> str:
+    """Hash the opts and prompts a stage's verdict depends on.
+
+    Shared so an opt that affects both stages cannot be remembered in one list and
+    forgotten in the other -- that failure mode replays a stale verdict rather than
+    raising.
+    """
+    tracked_opts = {key: opts.get(key) for key in opt_keys}
+    prompts = {}
+    if prompt_bundle:
+        for name in prompt_names:
+            cfg = prompt_bundle.get(name) or {}
+            prompts[name] = {"system": cfg.get("system"), "schema": cfg.get("schema")}
+    return _sha1_16({"opts": tracked_opts, "prompts": prompts})
+
 
 def bounded_opts_fingerprint(
     opts: Dict[str, Any], prompt_bundle: Optional[Dict[str, Any]] = None
 ) -> str:
-    tracked_opts = {
-        key: opts.get(key)
-        for key in (
-            "model",
-            "filter",
-            "diff_mode",
-            "raw",
-            "no_bounded",
-            "include_added_callees",
-            "bounded_request_s",
-            "bounded_model_call_s",
-            "temperature",
-            "seed",
-        )
-    }
-    prompts = {}
-    if prompt_bundle:
-        for name in ("bounded", "bounded_with_callees"):
-            cfg = prompt_bundle.get(name) or {}
-            prompts[name] = {"system": cfg.get("system"), "schema": cfg.get("schema")}
-    blob = json.dumps({"opts": tracked_opts, "prompts": prompts}, sort_keys=True, default=str)
-    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+    return _opts_fingerprint(
+        opts,
+        prompt_bundle,
+        opt_keys=_SHARED_OPT_KEYS + ("no_bounded", "bounded_request_s", "bounded_model_call_s"),
+        prompt_names=("bounded", "bounded_with_callees"),
+    )
 
 
 def unbounded_opts_fingerprint(
     opts: Dict[str, Any], prompt_bundle: Optional[Dict[str, Any]] = None
 ) -> str:
-    tracked_opts = {
-        key: opts.get(key)
-        for key in (
-            "model",
-            "filter",
-            "diff_mode",
-            "raw",
-            "include_added_callees",
-            "unbounded_request_s",
-            "unbounded_model_call_s",
-            "temperature",
-            "seed",
-        )
-    }
     # no_bounded_report is deliberately not tracked. Its only effect is blanking the claim,
     # and unbounded_inputs_digest below already hashes the claim, so tracking it here
     # would split the cache between arms that send the agent an identical request.
-    prompts = {}
-    if prompt_bundle:
-        for name in (
-            "bounded",
-            "bounded_with_callees",
-            "unbounded",
-            "unbounded_no_report",
-        ):
-            cfg = prompt_bundle.get(name) or {}
-            prompts[name] = {"system": cfg.get("system"), "schema": cfg.get("schema")}
-    blob = json.dumps({"opts": tracked_opts, "prompts": prompts}, sort_keys=True, default=str)
-    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+    return _opts_fingerprint(
+        opts,
+        prompt_bundle,
+        opt_keys=_SHARED_OPT_KEYS + ("unbounded_request_s", "unbounded_model_call_s"),
+        prompt_names=("bounded", "bounded_with_callees", "unbounded", "unbounded_no_report"),
+    )
 
 
 def bounded_result_cache_key(
@@ -86,12 +82,7 @@ def unbounded_inputs_digest(
     replayed only when the agent would read byte-identical inputs, which is also what lets
     arms that send identical requests share a cached investigation.
     """
-    blob = json.dumps(
-        {"bounded_report_md": bounded_report_md, "callee_texts": callee_texts or {}},
-        sort_keys=True,
-        default=str,
-    )
-    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+    return _sha1_16({"bounded_report_md": bounded_report_md, "callee_texts": callee_texts or {}})
 
 
 def unbounded_result_cache_key(

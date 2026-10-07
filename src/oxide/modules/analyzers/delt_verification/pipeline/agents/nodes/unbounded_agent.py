@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 import time
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from deepagents.backends.utils import create_file_data
 
@@ -28,7 +28,11 @@ from oxide.modules.analyzers.delt_verification.pipeline.agents.telemetry.token_u
     collect_llm_usage_counts,
 )
 from oxide.modules.analyzers.delt_verification.pipeline.utils.resolve import resolve_mcp_server_path
-from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import _coerce_label, _coerce_str
+from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import (
+    _coerce_label,
+    _coerce_str,
+    read_text,
+)
 
 try:
     from pydantic import BaseModel, Field
@@ -45,8 +49,12 @@ except ImportError:
 
 
 class UnboundedDecisionSchema(BaseModel):
-    label: Literal["safe", "not_safe"] = Field(
-        description="Final unbounded decision for this candidate. Must be safe or not_safe.",
+    # Optional so an omitted or misspelled label reaches the tool body and fails the run
+    # by name. A schema rejection is handed back to the model as text instead, which is
+    # how a call with no arguments used to end as a generic missing_final_answer.
+    label: Optional[str] = Field(
+        default=None,
+        description='Final unbounded decision for this candidate. Must be exactly "safe" or "not_safe".',
     )
 
 
@@ -117,7 +125,7 @@ def _build_prompt(*, has_report: bool, has_diff: bool, has_callees: bool = False
         "'target' or 'baseline'; do not invent or request OIDs.\n"
         "Write your report to /work/final.md only if you decide not_safe, then call submit_decision.\n"
         'Example: submit_decision(label="not_safe")\n'
-        "The run is not complete until you call submit_decision.\n"
+        "Call submit_decision to end the run.\n"
     )
 
 
@@ -130,16 +138,6 @@ def _select_system_prompt(runtime: Any, *, has_report: bool) -> str:
     return runtime.unbounded_sys if has_report else runtime.unbounded_no_report_sys
 
 
-def _read_tail(path: str, max_chars: int = 4000) -> str:
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-    except OSError:
-        return ""
-    text = text.strip()
-    return text[-max_chars:] if len(text) > max_chars else text
-
-
 def run_unbounded_agent(
     runtime: Any,
     report: str,
@@ -150,10 +148,7 @@ def run_unbounded_agent(
     trace_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Investigate one escalated candidate with binary analysis tools; return its result dict."""
-    request_timeout_s = float(
-        getattr(runtime, "unbounded_request_timeout_s", None)
-        or getattr(runtime, "bounded_request_timeout_s", 600.0)
-    )
+    request_timeout_s = runtime.unbounded_request_timeout_s
     prompt = _build_prompt(
         has_report=bool(report.strip()),
         has_diff=bool(diff_text.strip()),
@@ -232,12 +227,13 @@ def run_unbounded_agent(
                     )
                     session_ready["ok"] = True
                     agent = deepagent_runtime.build_bounded_agent(
-                        main_model=getattr(runtime, "unbounded_llm", None) or runtime.bounded_llm,
+                        main_model=runtime.unbounded_llm,
                         file_mirror=file_mirror,
                         decision_tool=decision_tool,
                         system_prompt=_select_system_prompt(
                             runtime, has_report=bool(report.strip())
                         ),
+                        final_holder=final_holder,
                         extra_tools=scoped_tools,
                         agent_name="delt_verification_unbounded_agent",
                     )
@@ -247,9 +243,8 @@ def run_unbounded_agent(
                         trace_path,
                         f"[   0.00s] [agent] scoped tools: {len(scoped_tools)} | run budget "
                         f"{request_timeout_s:g}s, model call "
-                        f"{getattr(runtime, 'unbounded_model_call_timeout_s', 0.0):g}s",
+                        f"{runtime.unbounded_model_call_timeout_s:g}s",
                     )
-                    config = {"configurable": {"thread_id": f"delt_verification_unbounded_{time.time_ns()}"}}
                     payload = _build_payload(
                         prompt,
                         report,
@@ -260,32 +255,10 @@ def run_unbounded_agent(
                     holder["out"] = await deepagent_runtime.ainvoke_agent_with_timeout(
                         agent,
                         payload,
-                        config=config,
+                        config={},
                         timeout_s=request_timeout_s,
                         trace_logger=trace_logger,
                     )
-                    # The investigation can finish without the decision being recorded, most
-                    # often because the model typed the call into its message instead of
-                    # emitting one. The work is done and the report is written by this point,
-                    # so ask for the call on the same thread rather than discarding it: the
-                    # alternative is another full investigation to reach the same conclusion.
-                    if not isinstance(final_holder.get("final"), dict):
-                        append_trace_line(
-                            trace_path,
-                            f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] "
-                            "no decision recorded; nudging for submit_decision",
-                        )
-                        nudged = await deepagent_runtime.anudge_for_decision(
-                            agent,
-                            config=config,
-                            final_holder=final_holder,
-                            tool_name="submit_decision",
-                            deadline_s=request_timeout_s,
-                            started_at=invoke_t0,
-                            trace_logger=trace_logger,
-                        )
-                        if nudged is not None:
-                            holder["out"] = nudged
                     return holder["out"]
 
     invoke_t0 = time.perf_counter()
@@ -301,42 +274,33 @@ def run_unbounded_agent(
                 f"[{invoke_elapsed_s:7.2f}s] [agent] mcp teardown raised after completion; keeping result",
             )
             out = holder["out"]
-        elif not session_ready["ok"]:
-            # Never got a usable MCP session, so the server itself is the suspect.
-            detail = _read_tail(stderr_path) or repr(exc)
-            failure_reason, why = "mcp_subprocess_failed", (
-                "The unbounded MCP server subprocess failed before the investigation could run. "
-                f"Interpreter: {sys.executable}. Server stderr captured at {stderr_path}."
-            )
         else:
-            # Session was up, so this is an agent-side failure. ChatOllama surfaces a
-            # per-request timeout as an httpx error, not TimeoutError, so match on text too.
-            detail = repr(exc)
-            if deepagent_runtime.is_repeated_tool_call_error(exc):
-                failure_reason, why = "repeated_tool_call", str(exc)
-            elif deepagent_runtime.is_malformed_model_response_error(exc):
-                failure_reason, why = "malformed_model_response", (
-                    "The model emitted a response the provider could not parse, so unbounded "
-                    "stopped before reaching a final decision."
-                )
-            elif isinstance(exc, TimeoutError) or "timeout" in detail.lower():
-                failure_reason, why = "timeout", (
-                    f"Unbounded timed out after {request_timeout_s:g}s before reaching a final decision."
+            if not session_ready["ok"]:
+                # Never got a usable MCP session, so the server itself is the suspect.
+                detail = read_text(stderr_path, tail_chars=4000) or repr(exc)
+                failure_reason, why = "mcp_subprocess_failed", (
+                    "The unbounded MCP server subprocess failed before the investigation could run. "
+                    f"Interpreter: {sys.executable}. Server stderr captured at {stderr_path}."
                 )
             else:
-                failure_reason, why = "invoke_failed", "Unbounded failed before reaching a final decision."
-        if "out" not in holder:
+                detail = repr(exc)
+                failure_reason, why = deepagent_runtime.classify_agent_failure(
+                    exc,
+                    request_timeout_s=request_timeout_s,
+                    model_call_timeout_s=runtime.unbounded_model_call_timeout_s,
+                )
             append_trace_line(trace_path, f"[{invoke_elapsed_s:7.2f}s] [agent] error: {failure_reason}")
             return _error_result(
                 why,
                 failure_reason=failure_reason,
                 failure_detail=detail,
                 elapsed_s=invoke_elapsed_s,
+                usage=collect_llm_usage_counts(deepagent_runtime.partial_messages(exc)),
             )
     invoke_elapsed_s = time.perf_counter() - invoke_t0
 
     final_md = _coerce_str(file_mirror.get("/work/final.md"))
-    messages = out.get("messages") if isinstance(out, dict) else getattr(out, "messages", None)
+    messages = deepagent_runtime.agent_messages(out)
     usage = collect_llm_usage_counts(messages)
     final = final_holder.get("final")
 

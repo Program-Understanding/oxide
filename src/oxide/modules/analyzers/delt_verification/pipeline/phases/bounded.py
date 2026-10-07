@@ -18,7 +18,7 @@ def _derive_why(agent_result: Dict[str, Any]) -> str:
     """
     final_md = _coerce_str(agent_result.get("final_md"))
     if final_md:
-        return preview_text(final_md, limit=400)
+        return preview_text(final_md)[:400]
     return "Agent completed bounded; see final.md for reasoning."
 
 

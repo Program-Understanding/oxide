@@ -14,8 +14,8 @@ system: |
   - /inputs/diff.txt holds the unified diff of the candidate function.
   - /inputs/added_functions/ holds the decompilation of each newly added function reachable from the candidate, when the update introduces any.
 
-  If your final decision is "not_safe", write a report to /work/final.md outlining the backdoor identifying the specific trigger path, and payoff along with security impact.
-  Your final action should be calling submit_decision with the single field "label" which will end the run.
+  If your final decision is "not_safe", write a report on the backdoor to /work/final.md, first identifying the specific trigger condition and then the alternate functionality it enables with security impact.
+  Once you have made your decision (and written the report if not safe) your final action should be calling submit_decision with the single field "label" which will end the run.
   Example: 
     submit_decision(label="not_safe")
       or

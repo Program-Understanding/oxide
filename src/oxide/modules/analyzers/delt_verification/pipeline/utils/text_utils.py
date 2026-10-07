@@ -77,50 +77,6 @@ def ensure_decimal_str(addr: Any) -> Optional[str]:
         return text
 
 
-def _extract_first_balanced_json_object(text: str) -> Optional[dict]:
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    for index in range(start, len(text)):
-        char = text[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                blob = text[start : index + 1]
-                try:
-                    return json.loads(blob)
-                except Exception:
-                    return None
-    return None
-
-
-def parse_llm_json(text: str) -> Any:
-    text = text.strip()
-    for fence in ("```json", "```"):
-        if text.startswith(fence):
-            text = text[len(fence):].lstrip()
-            if text.endswith("```"):
-                text = text[:-3].rstrip()
-    try:
-        return json.loads(text)
-    except Exception:
-        return _extract_first_balanced_json_object(text)
-
-
-def coerce_json_like(value: Any) -> Optional[dict]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except Exception:
-            return _extract_first_balanced_json_object(value)
-    return None
-
-
 def normalize_filter_value(value: Any) -> Optional[str]:
     """ Map "and"/"or" shorthand to the drift analyzer's actual filter card names. """
     if value is None:
@@ -139,11 +95,9 @@ def normalize_filter_value(value: Any) -> Optional[str]:
     return value_str
 
 
-def preview_text(value: Any, limit: int = 160) -> str:
-    text = _coerce_str(value).replace("\n", " ").strip()
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)] + "..."
+def preview_text(value: Any) -> str:
+    """Flatten value onto a single line, whole."""
+    return _coerce_str(value).replace("\n", " ").strip()
 
 
 def comparison_dir_name(target_name: str, baseline_name: str) -> str:
@@ -154,6 +108,23 @@ def comparison_dir_name(target_name: str, baseline_name: str) -> str:
     if os.altsep:
         pair_dir_name = pair_dir_name.replace(os.altsep, "_")
     return pair_dir_name
+
+
+def read_text(path: str, *, tail_chars: int = 0) -> str:
+    """File contents, or "" if it cannot be read. tail_chars > 0 keeps only the last chars.
+
+    errors="replace" because callers include MCP subprocess stderr, where non-UTF-8 bytes
+    are likely and losing the whole tail to a decode error hides why a server died.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    if tail_chars <= 0:
+        return text
+    text = text.strip()
+    return text[-tail_chars:] if len(text) > tail_chars else text
 
 
 def read_json(path: str) -> Any:

@@ -5,7 +5,7 @@ calls a newly-added function, the callee decompilations are attached as extra ev
 
 import logging
 import time
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from oxide.modules.analyzers.delt_verification.config import NAME
 from oxide.modules.analyzers.delt_verification.pipeline.agents import deepagent_runtime
@@ -35,8 +35,12 @@ logger = logging.getLogger(NAME)
 
 
 class BoundedDecisionSchema(BaseModel):
-    label: Literal["safe", "not_safe"] = Field(
-        description="Final decision for the diff. Must be safe or not_safe.",
+    # Optional so an omitted or misspelled label reaches the tool body and fails the run
+    # by name. A schema rejection is handed back to the model as text instead, which is
+    # how a call with no arguments used to end as a generic missing_final_answer.
+    label: Optional[str] = Field(
+        default=None,
+        description='Final decision for the diff. Must be exactly "safe" or "not_safe".',
     )
 
 
@@ -47,7 +51,14 @@ def _normalize_decision_payload(payload: Dict[str, Any]) -> Tuple[Optional[Dict[
     return {"label": label}, True
 
 
-def _error_result(why: str, *, failure_reason: str, failure_detail: str = "") -> Dict[str, Any]:
+def _error_result(
+    why: str,
+    *,
+    failure_reason: str,
+    failure_detail: str = "",
+    usage: Optional[Dict[str, int]] = None,
+) -> Dict[str, Any]:
+    usage = usage or {}
     return {
         "label": "failed",
         "why": _coerce_str(why),
@@ -55,9 +66,9 @@ def _error_result(why: str, *, failure_reason: str, failure_detail: str = "") ->
         "failure_reason": failure_reason,
         "failure_detail": _coerce_str(failure_detail),
         "llm_elapsed_s": 0.0,
-        "llm_input_tokens": 0,
-        "llm_output_tokens": 0,
-        "llm_total_tokens": 0,
+        "llm_input_tokens": int(usage.get("input_tokens") or 0),
+        "llm_output_tokens": int(usage.get("output_tokens") or 0),
+        "llm_total_tokens": int(usage.get("total_tokens") or 0),
     }
 
 
@@ -70,8 +81,8 @@ def run_bounded_agent(
 ) -> Dict[str, Any]:
     """Run the bounded agent on a pre-sanitized diff. Returns a result dict."""
     callee_texts = callee_texts or {}
-    request_timeout_s = float(getattr(runtime, "bounded_request_timeout_s", 1000.0))
-    model_call_timeout_s = float(getattr(runtime, "bounded_model_call_timeout_s", 0.0))
+    request_timeout_s = runtime.bounded_request_timeout_s
+    model_call_timeout_s = runtime.bounded_model_call_timeout_s
 
     sys_prompt = runtime.bounded_with_callees_sys if callee_texts else runtime.bounded_sys
     prompt = "Review the evidence under /inputs/ and decide whether this update inserts a backdoor."
@@ -91,10 +102,9 @@ def run_bounded_agent(
         file_mirror=file_mirror,
         decision_tool=decision_tool,
         system_prompt=sys_prompt,
+        final_holder=final_holder,
     )
 
-    out: Any = None
-    invoke_elapsed_s = 0.0
     invoke_t0 = time.perf_counter()
     trace_logger = TraceLogger(trace_path)
     try:
@@ -105,78 +115,32 @@ def run_bounded_agent(
             f"[   0.00s] [agent] run budget {request_timeout_s:g}s, model call "
             f"{model_call_timeout_s:g}s",
         )
-        config = {"configurable": {"thread_id": f"delt_agent_{time.time_ns()}"}}
         payload = deepagent_runtime.build_agent_payload(diff_text, prompt, callee_texts)
         out = deepagent_runtime.invoke_agent_with_timeout(
-            agent, payload, config=config,
+            agent, payload, config={},
             timeout_s=request_timeout_s, trace_logger=trace_logger,
         )
-        # Finishing without a recorded decision usually means the model typed the call into
-        # its message rather than emitting one. Ask for it on the same thread instead of
-        # discarding a completed review; see anudge_for_decision.
-        if not isinstance(final_holder.get("final"), dict):
-            append_trace_line(
-                trace_path,
-                f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] "
-                "no decision recorded; nudging for submit_decision",
-            )
-            nudged = deepagent_runtime.nudge_for_decision(
-                agent,
-                config=config,
-                final_holder=final_holder,
-                tool_name="submit_decision",
-                deadline_s=request_timeout_s,
-                started_at=invoke_t0,
-                trace_logger=trace_logger,
-            )
-            if nudged is not None:
-                out = nudged
         invoke_elapsed_s = time.perf_counter() - invoke_t0
-    except TimeoutError as exc:
-        msg = f"The agent timed out: {exc}."
-        notes["observations"].append(msg)
-        append_trace_line(trace_path, f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] error: timeout {exc}")
-        call_capped = "model call exceeded" in str(exc)
-        return _error_result(
-            f"A single model call exceeded {model_call_timeout_s:g}s, so bounded stopped before "
-            "reaching a final decision."
-            if call_capped
-            else f"The agent timed out after {request_timeout_s:g}s before reaching a final decision.",
-            failure_reason="model_call_timeout" if call_capped else "timeout",
-            failure_detail=str(exc),
+    except BaseException as exc:  # noqa: BLE001 -- every agent-side failure is classified, not raised
+        failure_reason, why = deepagent_runtime.classify_agent_failure(
+            exc,
+            request_timeout_s=request_timeout_s,
+            model_call_timeout_s=model_call_timeout_s,
         )
-    except deepagent_runtime.RepeatedToolCallError as exc:
-        notes["observations"].append(f"Agent repeated tool call: {exc}")
-        append_trace_line(trace_path, f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] error: repeated_tool_call {exc}")
-        return _error_result(str(exc), failure_reason="repeated_tool_call")
-    except deepagent_runtime.MalformedModelResponseError as exc:
-        notes["observations"].append(f"Agent response rejected by provider: {exc}")
-        append_trace_line(trace_path, f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] error: malformed_model_response {exc}")
-        return _error_result(
-            "The model emitted a response the provider could not parse, so bounded stopped "
-            "before reaching a final decision.",
-            failure_reason="malformed_model_response",
-            failure_detail=str(exc),
+        notes["observations"].append(f"Agent {failure_reason}: {exc}.")
+        append_trace_line(
+            trace_path,
+            f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] error: {failure_reason} {exc}",
         )
-    except Exception as exc:
-        detail = str(exc)
-        # The typed clauses above catch it bare; this catches it nested inside the
-        # ExceptionGroup an anyio task group raises.
-        if deepagent_runtime.is_malformed_model_response_error(exc):
-            failure_reason = "malformed_model_response"
-        elif "timeout" in detail.lower():
-            failure_reason = "timeout"
-        else:
-            failure_reason = "invoke_failed"
-        notes["observations"].append(f"Agent invoke failed: {exc}.")
-        why = ("The agent timed out before reaching a final decision."
-               if failure_reason == "timeout"
-               else "Agent bounded pipeline failed before reaching a final decision.")
-        append_trace_line(trace_path, f"[{time.perf_counter() - invoke_t0:7.2f}s] [agent] error: {failure_reason} {exc}")
-        return _error_result(why, failure_reason=failure_reason, failure_detail=detail)
+        return _error_result(
+            why,
+            failure_reason=failure_reason,
+            failure_detail=str(exc),
+            usage=collect_llm_usage_counts(deepagent_runtime.partial_messages(exc)),
+        )
 
     final_md = _coerce_str(file_mirror.get("/work/final.md"))
-    messages = out.get("messages") if isinstance(out, dict) else getattr(out, "messages", None)
+    messages = deepagent_runtime.agent_messages(out)
     llm_usage = collect_llm_usage_counts(messages)
     llm_input_tokens = int(llm_usage.get("input_tokens") or 0)
     llm_output_tokens = int(llm_usage.get("output_tokens") or 0)

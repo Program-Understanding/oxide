@@ -1,6 +1,7 @@
 """Isolated deepagents construction and invocation surface.
 
-Validated against: deepagents==0.6.10, langgraph==1.2.5, langchain-ollama==1.1.0.
+Validated against: deepagents==0.7.15, langchain==1.4.1, langgraph==1.2.11,
+langchain-ollama==1.1.0.
 If a future upstream release breaks GuardedStateBackend's constructor contract,
 create_deep_agent's kwargs, or agent.astream's stream_mode/version behavior,
 this file is the single, obvious place to fix it. It owns everything
@@ -18,30 +19,25 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
+from deepagents.middleware.filesystem import FilesystemPermission
 from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.utils import create_file_data
 from langchain_ollama import ChatOllama
-from langgraph.checkpoint.memory import MemorySaver
+from pydantic import Field
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
+from langchain.agents.middleware import after_model
 
 _thread_local = threading.local()
 
 DEFAULT_MAX_CONSECUTIVE_REPEATED_TOOL_CALLS = 10
 
 
-class RepeatedToolCallError(Exception):
-    """Raised when the agent calls the same tool with identical arguments too many times in a row."""
+class PartialRunError(Exception):
+    """Base for failures that cut a run mid-flight.
 
-
-class MalformedModelResponseError(Exception):
-    """Raised when the provider rejects the model's own output mid-run.
-
-    Local models occasionally emit tool-call syntax the provider cannot parse
-    (e.g. a <function> block closed by </parameter>), and Ollama surfaces that
-    as a ResponseError. That is a spoiled response, not a broken pipeline, so it
-    is typed separately instead of landing in the generic invoke_failed bucket.
-    Whatever the run accumulated before the bad response is carried on .partial
-    so callers can still count token usage.
+    Carries whatever the run accumulated on .partial so callers can still count the tokens
+    the run spent before it was cut.
     """
 
     def __init__(self, message: str, *, partial: Optional[Dict[str, Any]] = None) -> None:
@@ -49,28 +45,117 @@ class MalformedModelResponseError(Exception):
         self.partial: Dict[str, Any] = partial if isinstance(partial, dict) else {"messages": []}
 
 
-def is_repeated_tool_call_error(exc: BaseException) -> bool:
-    """True if exc is, or nests, a RepeatedToolCallError.
+class RepeatedToolCallError(PartialRunError):
+    """Raised when the agent calls the same tool with identical arguments too many times in a row."""
 
-    The agent runs under anyio task groups, so the error surfaces to callers wrapped in
-    one or more ExceptionGroups rather than as itself.
+
+class AgentRunTimeout(PartialRunError, TimeoutError):
+    """A run cut by the wall-clock budget.
+
+    Subclasses TimeoutError so existing timeout handling still matches it.
     """
-    if isinstance(exc, RepeatedToolCallError):
-        return True
-    nested = getattr(exc, "exceptions", None)
-    if isinstance(nested, (list, tuple)):
-        return any(is_repeated_tool_call_error(inner) for inner in nested)
-    return False
 
 
-def is_malformed_model_response_error(exc: BaseException) -> bool:
-    """True if exc is, or nests, a MalformedModelResponseError."""
-    if isinstance(exc, MalformedModelResponseError):
-        return True
+class ModelCallTimeout(AgentRunTimeout):
+    """A run cut because one model call outlived the per-call cap.
+
+    Typed rather than distinguished by message text: which of the two caps fired decides
+    the failure_reason every stage records, and that must not depend on how the message
+    happens to be worded or formatted.
+    """
+
+
+class MalformedModelResponseError(PartialRunError):
+    """Raised when the provider rejects the model's own output mid-run.
+
+    Local models occasionally emit tool-call syntax the provider cannot parse
+    (e.g. a <function> block closed by </parameter>), and Ollama surfaces that
+    as a ResponseError. That is a spoiled response, not a broken pipeline, so it
+    is typed separately instead of landing in the generic invoke_failed bucket.
+    """
+
+
+def find_nested(exc: BaseException, predicate: Callable[[BaseException], bool]) -> Optional[BaseException]:
+    """Return exc, or the first exception it nests, satisfying predicate; else None.
+
+    Failures raised inside the agent's task groups reach callers wrapped in one or more
+    ExceptionGroups, so anything that distinguishes them is only reachable by unwrapping.
+    """
+    if predicate(exc):
+        return exc
     nested = getattr(exc, "exceptions", None)
     if isinstance(nested, (list, tuple)):
-        return any(is_malformed_model_response_error(inner) for inner in nested)
-    return False
+        for inner in nested:
+            found = find_nested(inner, predicate)
+            if found is not None:
+                return found
+    return None
+
+
+def find_timeout_error(exc: BaseException) -> Optional[BaseException]:
+    """Return the TimeoutError exc is, or nests, else None."""
+    return find_nested(exc, lambda e: isinstance(e, TimeoutError))
+
+
+def attach_partial(exc: BaseException, accumulated: Dict[str, Any]) -> None:
+    carriers = []
+
+    def collect(e: BaseException) -> None:
+        if isinstance(e, PartialRunError):
+            carriers.append(e)
+        for inner in getattr(e, "exceptions", None) or ():
+            collect(inner)
+
+    collect(exc)
+    for carrier in carriers:
+        if not carrier.partial.get("messages"):
+            carrier.partial = accumulated
+    if not carriers:
+        try:
+            exc.partial = accumulated
+        except AttributeError:
+            pass
+
+
+def partial_messages(exc: BaseException) -> list:
+    """Messages accumulated before exc cut the run, for token accounting.
+
+    The unbounded stage runs the agent inside the MCP session's task group, which rewraps
+    its failures, so the payload is only reachable by unwrapping.
+    """
+    carrier = find_nested(exc, lambda e: isinstance(getattr(e, "partial", None), dict))
+    partial = getattr(carrier, "partial", None) if carrier is not None else None
+    msgs = partial.get("messages") if isinstance(partial, dict) else None
+    return msgs if isinstance(msgs, list) else []
+
+
+def classify_agent_failure(
+    exc: BaseException, *, request_timeout_s: float, model_call_timeout_s: float
+) -> Tuple[str, str]:
+    """Map an agent-side failure onto its (failure_reason, human-readable why).
+
+    Both stages record the same failure_reason vocabulary, so the mapping lives here next
+    to the exceptions it dispatches on rather than being re-derived per stage -- the two
+    ladders this replaces disagreed, and a nested timeout was reported as model_call_timeout
+    by one stage and plain timeout by the other.
+    """
+    if find_nested(exc, lambda e: isinstance(e, RepeatedToolCallError)) is not None:
+        return "repeated_tool_call", str(exc)
+    if find_nested(exc, lambda e: isinstance(e, MalformedModelResponseError)) is not None:
+        return "malformed_model_response", (
+            "The model emitted a response the provider could not parse, so the run stopped "
+            "before reaching a final decision."
+        )
+    if find_nested(exc, lambda e: isinstance(e, ModelCallTimeout)) is not None:
+        return "model_call_timeout", (
+            f"A single model call exceeded {model_call_timeout_s:g}s, so the run stopped "
+            "before reaching a final decision."
+        )
+    if find_timeout_error(exc) is not None:
+        return "timeout", (
+            f"The run timed out after {request_timeout_s:g}s before reaching a final decision."
+        )
+    return "invoke_failed", "The run failed before reaching a final decision."
 
 
 def _find_provider_response_error(exc: BaseException) -> Optional[BaseException]:
@@ -122,9 +207,10 @@ def make_decision_tool(
     precondition: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
 ) -> Any:
     """ Build a single-shot deepagents tool: validates its arguments via normalize()
-        (which should return (payload, ok)), raising if invalid, and records the
-        normalized payload into final_holder["final"] so the caller can read it
-        back after the agent run completes. Each stage owns its own schema/normalize
+        (which should return (payload, ok)), and records the normalized payload into
+        final_holder["final"] so the caller can read it back after the agent run
+        completes. An unusable label is handed back to the model to retry rather than
+        raising, so a single malformed call does not cost the whole investigation. Each stage owns its own schema/normalize
         function -- this factory just wires the common "validate, record, confirm"
         pattern once instead of duplicating it per stage.
 
@@ -137,18 +223,22 @@ def make_decision_tool(
     @tool(tool_name, args_schema=schema_cls, description=doc, return_direct=True)
     def _submit(**kwargs: Any) -> str:
         final, ok = normalize(kwargs)
+        complaint: Optional[str] = None
         if not ok or final is None:
-            raise ValueError(f"invalid arguments for {tool_name}: {kwargs!r}")
-        if precondition is not None:
+            complaint = (
+                f"Rejected: {tool_name} requires a label of exactly \"safe\" or \"not_safe\", "
+                f"and was called with {kwargs!r}. Call it again with the label argument set."
+            )
+        elif precondition is not None:
             complaint = precondition(final)
-            if complaint:
-                # Reject without recording. A rejected submission must not end the run,
-                # but langchain's tools->model edge routes to the graph exit whenever every
-                # tool called in the turn has return_direct set, and it reads that flag off
-                # the tool object *after* the call. So clear it to send the complaint back
-                # to the model for another attempt.
-                _submit.return_direct = False
-                return complaint
+        if complaint:
+            # Reject without recording. A rejected submission must not end the run,
+            # but langchain's tools->model edge routes to the graph exit whenever every
+            # tool called in the turn has return_direct set, and it reads that flag off
+            # the tool object *after* the call. So clear it to send the complaint back
+            # to the model for another attempt.
+            _submit.return_direct = False
+            return complaint
         _submit.return_direct = True
         final_holder["final"] = final
         return f"recorded {final}"
@@ -192,13 +282,29 @@ class WallClockChatOllama(ChatOllama):
     """
 
     call_timeout_s: float = 0.0
+    # Ollama options ChatOllama exposes no field for (min_p, presence_penalty). _chat_params
+    # builds its options dict from named fields only, so these are merged in afterwards.
+    extra_options: Dict[str, Any] = Field(default_factory=dict)
+
+    def _chat_params(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        params = super()._chat_params(*args, **kwargs)
+        if self.extra_options:
+            options = dict(params.get("options") or {})
+            options.update(self.extra_options)
+            params["options"] = options
+        return params
 
     async def _agenerate(self, *args: Any, **kwargs: Any) -> Any:
         if self.call_timeout_s <= 0:
             return await super()._agenerate(*args, **kwargs)
-        return await asyncio.wait_for(
-            super()._agenerate(*args, **kwargs), self.call_timeout_s
-        )
+        try:
+            return await asyncio.wait_for(
+                super()._agenerate(*args, **kwargs), self.call_timeout_s
+            )
+        except asyncio.TimeoutError:
+            raise ModelCallTimeout(
+                f"model call exceeded {self.call_timeout_s:g}s"
+            ) from None
 
     async def _astream(self, *args: Any, **kwargs: Any) -> Any:
         if self.call_timeout_s <= 0:
@@ -213,7 +319,7 @@ class WallClockChatOllama(ChatOllama):
             while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    raise asyncio.TimeoutError(
+                    raise ModelCallTimeout(
                         f"model call exceeded {self.call_timeout_s:g}s"
                     )
                 try:
@@ -224,7 +330,7 @@ class WallClockChatOllama(ChatOllama):
                     return
                 except asyncio.TimeoutError:
                     # Name the cap that fired; the caller's run budget raises this too.
-                    raise asyncio.TimeoutError(
+                    raise ModelCallTimeout(
                         f"model call exceeded {self.call_timeout_s:g}s"
                     ) from None
                 yield chunk
@@ -241,14 +347,19 @@ def make_agent_model(
     *,
     request_timeout_s: float,
     base_url: Optional[str] = None,
-    temperature: float = 0.0,
-    seed: int = 1,
+    temperature: Optional[float] = None,
+    seed: Optional[int] = None,
+    top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
+    min_p: Optional[float] = None,
+    presence_penalty: Optional[float] = None,
+    repeat_penalty: Optional[float] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> ChatOllama:
-    """Build the stage's chat client with decoding pinned to greedy.
+    """Build the stage's chat client with the run's sampling configuration.
 
-    Only temperature and seed are set. Every other sampling and runtime option is left to
-    the model's own parameters and to Ollama's defaults, so an option absent here is absent
-    from the request too and the server decides it.
+    An option that is None here is absent from the request, so the model's own Modelfile
+    value stands. Anything passed pins that one option and nothing else.
     """
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -258,10 +369,30 @@ def make_agent_model(
         # the next call blocks on reloading tens of GB. That reload is counted against
         # call_timeout_s, so it surfaces as a model_call_timeout with no tokens.
         "keep_alive": -1,
+        # Sets deepagents' summarization threshold. Present, it triggers at a 0.85 fraction
+        # of this value and keeps 10% of history; absent, it triggers at 170000 tokens and
+        # keeps 6 messages. A turn may emit max_output_tokens, so the wider margin is what
+        # keeps a long investigation from having its history replaced by a summary the same
+        # model generates, which would also add tokens to the run's totals.
         "profile": {"max_input_tokens": 262144},
-        "temperature": temperature,
-        "seed": seed,
     }
+    for name, value, cast in (
+        ("temperature", temperature, float),
+        ("seed", seed, int),
+        ("top_p", top_p, float),
+        ("top_k", top_k, int),
+        ("repeat_penalty", repeat_penalty, float),
+        ("num_predict", max_output_tokens, int),
+    ):
+        if value is not None:
+            kwargs[name] = cast(value)
+    extra = {
+        name: float(value)
+        for name, value in (("min_p", min_p), ("presence_penalty", presence_penalty))
+        if value is not None
+    }
+    if extra:
+        kwargs["extra_options"] = extra
     if base_url:
         kwargs["base_url"] = base_url
     if request_timeout_s > 0:
@@ -276,6 +407,8 @@ def build_bounded_agent(
     file_mirror: Dict[str, str],
     decision_tool: Any,
     system_prompt: str,
+    final_holder: Optional[Dict[str, Any]] = None,
+    decision_tool_name: str = "submit_decision",
     extra_tools: Optional[list] = None,
     agent_name: str = "delt_agent",
 ) -> Any:
@@ -291,13 +424,20 @@ def build_bounded_agent(
     """
     return create_deep_agent(
         model=main_model,
+        # GuardedStateBackend below intercepts write and edit but not delete, so without
+        # this rule an agent can delete the evidence its investigation is scoped to. The
+        # framework classifies delete as a write, so one deny rule closes that path.
+        permissions=[
+            FilesystemPermission(operations=["write"], paths=["/inputs", "/inputs/**"], mode="deny")
+        ],
         tools=[decision_tool] + list(extra_tools or []),
         system_prompt=system_prompt,
-        checkpointer=MemorySaver(),
-        subagents=[],
-        middleware=[_ToolExclusionMiddleware(excluded=frozenset({"task"}))],
+        middleware=(
+            [_ToolExclusionMiddleware(excluded=frozenset({"task"}))]
+            + ([require_decision_middleware(final_holder, decision_tool_name)]
+               if final_holder is not None else [])
+        ),
         backend=GuardedStateBackend(mirror=file_mirror),
-        debug=False,
         name=agent_name,
     )
 
@@ -342,6 +482,10 @@ async def _stream_agent_core(
     accumulated: Dict[str, Any] = {"messages": []}
 
     async def _stream_then_collect_state() -> Any:
+        from oxide.modules.analyzers.delt_verification.pipeline.agents.telemetry.agent_trace import (
+            normalize_stream_item,
+        )
+
         last_tool_call_fp: Optional[str] = None
         repeated_tool_call_count = 0
 
@@ -353,39 +497,42 @@ async def _stream_agent_core(
             version="v2",
         ):
             elapsed_s = time.perf_counter() - started_at
+            # State collection and the repeat guard run whether or not tracing is on. They
+            # were once nested under the trace_logger check, which made token accounting and
+            # loop detection silently depend on logging being enabled.
+            chunk = normalize_stream_item(item)
             if trace_logger is not None:
-                from oxide.modules.analyzers.delt_verification.pipeline.agents.telemetry.agent_trace import normalize_stream_item
-
-                chunk = normalize_stream_item(item)
                 trace_logger.on_chunk(chunk, elapsed_s)
-                if chunk.get("type") == "updates":
-                    data = chunk.get("data")
-                    if isinstance(data, dict):
-                        for node_update in data.values():
-                            if not isinstance(node_update, dict):
-                                continue
-                            msgs = node_update.get("messages")
-                            if isinstance(msgs, list):
-                                accumulated["messages"] = accumulated["messages"] + msgs
-                                for msg in msgs:
-                                    for tool_call in (getattr(msg, "tool_calls", None) or []):
-                                        name = tool_call.get("name") if isinstance(tool_call, dict) else None
-                                        if not name:
-                                            continue
-                                        args = tool_call.get("args") if isinstance(tool_call, dict) else None
-                                        fp = json.dumps({"name": name, "args": args}, sort_keys=True, default=str)
-                                        if fp == last_tool_call_fp:
-                                            repeated_tool_call_count += 1
-                                        else:
-                                            last_tool_call_fp = fp
-                                            repeated_tool_call_count = 1
-                                        if repeated_tool_call_count >= max_consecutive_repeated_tool_calls:
-                                            if trace_logger is not None:
-                                                trace_logger.flush(elapsed_s)
-                                            raise RepeatedToolCallError(
-                                                f"Tool call {name!r} with identical arguments was repeated "
-                                                f"{repeated_tool_call_count} times consecutively; aborting."
-                                            )
+            if chunk.get("type") == "updates":
+                data = chunk.get("data")
+                if isinstance(data, dict):
+                    for node_update in data.values():
+                        if not isinstance(node_update, dict):
+                            continue
+                        msgs = node_update.get("messages")
+                        if not isinstance(msgs, list):
+                            continue
+                        accumulated["messages"].extend(msgs)
+                        for msg in msgs:
+                            for tool_call in (getattr(msg, "tool_calls", None) or []):
+                                name = tool_call.get("name") if isinstance(tool_call, dict) else None
+                                if not name:
+                                    continue
+                                args = tool_call.get("args") if isinstance(tool_call, dict) else None
+                                fp = json.dumps({"name": name, "args": args}, sort_keys=True, default=str)
+                                if fp == last_tool_call_fp:
+                                    repeated_tool_call_count += 1
+                                else:
+                                    last_tool_call_fp = fp
+                                    repeated_tool_call_count = 1
+                                if repeated_tool_call_count >= max_consecutive_repeated_tool_calls:
+                                    if trace_logger is not None:
+                                        trace_logger.flush(elapsed_s)
+                                    raise RepeatedToolCallError(
+                                        f"Tool call {name!r} with identical arguments was repeated "
+                                        f"{repeated_tool_call_count} times consecutively; aborting.",
+                                        partial=accumulated,
+                                    )
 
         if trace_logger is not None:
             trace_logger.flush(time.perf_counter() - started_at)
@@ -398,6 +545,13 @@ async def _stream_agent_core(
         except BaseException as exc:  # noqa: BLE001
             response_error = _find_provider_response_error(exc)
             if response_error is None:
+                timed_out = find_timeout_error(exc)
+                if timed_out is not None and not isinstance(exc, AgentRunTimeout):
+                    if trace_logger is not None:
+                        trace_logger.flush(time.perf_counter() - started_at)
+                    rewrapped = ModelCallTimeout if isinstance(timed_out, ModelCallTimeout) else AgentRunTimeout
+                    raise rewrapped(str(timed_out), partial=accumulated) from exc
+                attach_partial(exc, accumulated)
                 raise
             # The stream dies where it stands, so flush the trace here; otherwise
             # the log ends mid-run with no record of why.
@@ -409,76 +563,74 @@ async def _stream_agent_core(
             ) from exc
 
     if timeout_s > 0:
-        async with asyncio.timeout(timeout_s):
-            return await _stream_guarding_response_errors()
+        try:
+            async with asyncio.timeout(timeout_s):
+                return await _stream_guarding_response_errors()
+        except TimeoutError as exc:
+            if isinstance(exc, AgentRunTimeout):
+                attach_partial(exc, accumulated)
+                raise
+            raise AgentRunTimeout(
+                f"run exceeded {timeout_s:g}s", partial=accumulated
+            ) from exc
     return await _stream_guarding_response_errors()
 
 
-DECISION_NUDGE = (
-    "You have not recorded a decision yet. Call the {tool} tool now. Emit a real tool call, "
-    "not text that looks like one. Do not investigate further and do not restate your "
-    "analysis; your report is already written. Respond with the tool call and nothing else."
+def agent_messages(out: Any) -> list:
+    """The message list off an agent state, however the caller's version exposes it."""
+    msgs = out.get("messages") if isinstance(out, dict) else getattr(out, "messages", None)
+    return msgs if isinstance(msgs, list) else []
+
+
+DECISION_REQUIRED_CUT = (
+    "Your last turn was cut off at the output limit before you could act on it. Do not "
+    "restate that analysis. On the evidence you have already gathered, write your report to "
+    "/work/final.md if your verdict is not_safe, then call {tool}."
+)
+
+DECISION_REQUIRED_STOPPED = (
+    "You ended a turn without calling a tool, which ends the run. Do not open new lines of "
+    "inquiry. On the evidence you have already gathered, write your report to /work/final.md "
+    "if your verdict is not_safe, then call {tool}."
 )
 
 
-async def anudge_for_decision(
-    agent: Any,
-    *,
-    config: Dict[str, Any],
-    final_holder: Dict[str, Any],
-    tool_name: str,
-    deadline_s: float,
-    started_at: float,
-    trace_logger: Any = None,
-    attempts: int = 2,
-) -> Optional[Any]:
-    """Ask an agent that stopped without calling its decision tool to call it.
+def require_decision_middleware(
+    final_holder: Dict[str, Any], tool_name: str, *, max_prompts: int = 2
+) -> Any:
+    """after_model hook that sends a run back to the model when it ends undecided.
 
-    A long investigation sometimes ends with the model typing the call into its message
-    instead of emitting one. The analysis is finished and the report is already written, so
-    re-running the investigation spends another full budget to arrive back at the same
-    place. One more turn on the same thread recovers the verdict for a few hundred tokens.
+    An assistant message carrying no tool call ends the agent graph, which discards an
+    investigation that may already have reached a verdict. Two causes produce it, a turn cut
+    at the output cap and a turn the model completed while only describing its next step, and
+    both are recoverable from the state the run already holds. Recovering in the graph rather
+    than by a second invoke keeps every message in one run, so no checkpointer is needed and
+    token usage stays countable off the single message list.
 
-    Returns the last agent state, or None if no turn could be run. The agent keeps its
-    thread, so the returned state carries the whole conversation and usage totals stay
-    correct.
+    max_prompts bounds the loop. Past it the hook stops intervening and the run ends
+    undecided, which the stage records as missing_final_answer.
     """
-    out = None
-    for attempt in range(attempts):
-        remaining = deadline_s - (time.perf_counter() - started_at)
-        if remaining <= 10:
-            return out
-        payload = {"messages": [{"role": "user", "content": DECISION_NUDGE.format(tool=tool_name)}]}
-        try:
-            out = await _stream_agent_core(
-                agent, payload, config=config, timeout_s=remaining, trace_logger=trace_logger,
-            )
-        except Exception:  # noqa: BLE001 -- a failed nudge leaves the original failure standing
-            return out
+    prompts = {"n": 0}
+
+    def _hook(state: Any, runtime: Any) -> Optional[Dict[str, Any]]:
         if isinstance(final_holder.get("final"), dict):
-            return out
-    return out
+            return None
+        messages = state.get("messages") if isinstance(state, dict) else getattr(state, "messages", None)
+        if not messages:
+            return None
+        last = messages[-1]
+        if getattr(last, "tool_calls", None) or prompts["n"] >= max_prompts:
+            return None
+        prompts["n"] += 1
+        metadata = getattr(last, "response_metadata", None)
+        reason = metadata.get("done_reason") if isinstance(metadata, dict) else None
+        template = DECISION_REQUIRED_CUT if reason == "length" else DECISION_REQUIRED_STOPPED
+        return {
+            "messages": [HumanMessage(content=template.format(tool=tool_name))],
+            "jump_to": "model",
+        }
 
-
-def nudge_for_decision(
-    agent: Any,
-    *,
-    config: Dict[str, Any],
-    final_holder: Dict[str, Any],
-    tool_name: str,
-    deadline_s: float,
-    started_at: float,
-    trace_logger: Any = None,
-    attempts: int = 2,
-) -> Optional[Any]:
-    """Sync entry point for anudge_for_decision, for callers outside an event loop."""
-    return get_async_runner().run(
-        anudge_for_decision(
-            agent, config=config, final_holder=final_holder, tool_name=tool_name,
-            deadline_s=deadline_s, started_at=started_at, trace_logger=trace_logger,
-            attempts=attempts,
-        )
-    )
+    return after_model(_hook, can_jump_to=["model"], name="require_decision")
 
 
 def invoke_agent_with_timeout(

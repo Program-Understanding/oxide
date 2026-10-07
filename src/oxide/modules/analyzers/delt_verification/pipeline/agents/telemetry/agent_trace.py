@@ -139,7 +139,7 @@ class TraceLogger:
             for name, args in _tool_call_args(data):
                 append_trace_line(
                     self.trace_path,
-                    f"[{elapsed_s:7.2f}s] [{source}] tool args: {name}({preview_text(args, limit=400)})",
+                    f"[{elapsed_s:7.2f}s] [{source}] tool args: {name}({preview_text(args)})",
                 )
             append_trace_line(self.trace_path, f"[{elapsed_s:7.2f}s] [{source}] task event: {preview_text(data)}")
             return
@@ -163,11 +163,10 @@ class TraceLogger:
             if getattr(token, "type", "") == "tool":
                 tool_name = getattr(token, "name", "tool")
                 self._flush_source(source, elapsed_s, force=True)
+                result_preview = preview_text(getattr(token, "content", ""))
                 if source == "agent" and tool_name == "task":
-                    result_preview = preview_text(getattr(token, "content", ""), limit=300)
                     append_trace_line(self.trace_path, f"[{elapsed_s:7.2f}s] [subagent] result: {result_preview}")
                 else:
-                    result_preview = preview_text(getattr(token, "content", ""), limit=200)
                     append_trace_line(
                         self.trace_path,
                         f"[{elapsed_s:7.2f}s] [{source}] tool result [{tool_name}]: {result_preview}",

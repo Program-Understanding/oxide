@@ -1,7 +1,8 @@
 import logging
 import os
+import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from oxide.core import api
 
@@ -18,6 +19,7 @@ from oxide.modules.analyzers.delt_verification.pipeline.cache.artifacts import (
     restore_cached_unbounded_artifacts,
 )
 from oxide.modules.analyzers.delt_verification.pipeline.cache.store import (
+    is_cacheable,
     load_cached_stage_result,
     stage_cache_opts,
     store_cached_stage_result,
@@ -49,11 +51,51 @@ from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import 
     ascii_sanitize,
     ensure_decimal_str,
     normalize_filter_value,
+    read_json,
     write_json,
     write_text,
+    read_text,
 )
 
 logger = logging.getLogger(NAME)
+
+
+_TOOL_CALL_RE = re.compile(r"\[agent\] tool args: (\w+)\(")
+
+
+def _count_tool_calls(trace_path: str) -> Optional[Dict[str, Any]]:
+    if not trace_path or not os.path.exists(trace_path):
+        return None
+    counts: Dict[str, int] = {}
+    with open(trace_path, "r", encoding="utf-8", errors="replace") as handle:
+        for match in _TOOL_CALL_RE.finditer(handle.read()):
+            counts[match.group(1)] = counts.get(match.group(1), 0) + 1
+    return {"total": sum(counts.values()), "by_tool": dict(sorted(counts.items()))}
+
+
+def _write_tool_calls(json_path: str, tool_calls: Dict[str, Any]) -> None:
+    record = read_json(json_path) if os.path.exists(json_path) else {}
+    if not isinstance(record, dict):
+        record = {}
+    record["tool_calls"] = tool_calls
+    write_json(json_path, record)
+
+
+def _with_tool_calls(
+    cached: Optional[Dict[str, Any]],
+    trace_path: str,
+    target_oid: str,
+    cache_opts: Dict[str, Any],
+    cache_key: str,
+) -> Optional[Dict[str, Any]]:
+    if cached is None or "tool_calls" in cached:
+        return cached
+    counts = _count_tool_calls(trace_path)
+    if counts is None:
+        return None
+    cached = dict(cached, tool_calls=counts)
+    store_cached_stage_result(target_oid, cache_opts, cache_key, cached)
+    return cached
 
 
 def _normalize_run_opts(opts: Dict[str, Any]) -> Dict[str, Any]:
@@ -151,16 +193,6 @@ def normalize_function_decomp_diff_response(resp: Any) -> Dict[str, Any]:
     }
 
 
-def _read_text_file(path: str) -> str:
-    if not path or not os.path.isfile(path):
-        return ""
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return handle.read()
-    except OSError:
-        return ""
-
-
 def write_diff_artifacts(bounded_dir: str, unified: str, diff_meta: Dict[str, Any]) -> None:
     write_text(f"{bounded_dir}/diff.txt", unified or "")
     write_json(f"{bounded_dir}/diff_meta.json", diff_meta or {})
@@ -217,8 +249,6 @@ def analyze_function_pair(
     opts: Dict[str, Any],
     runtime: Any,
     bounded_fingerprint: str,
-    fp_total: int = 0,
-    func_total: int = 0,
     added_callee_index: Optional[AddedCalleeIndex] = None,
 ) -> AnalyzeFunctionResult:
     func_dir = _make_function_dir(outdir, fp_idx, func_idx, baddr, taddr)
@@ -316,6 +346,9 @@ def analyze_function_pair(
         None if skip_bounded
         else load_cached_stage_result(target_oid, bounded_cache_opts, bounded_cache_key)
     )
+    cached_bounded = _with_tool_calls(
+        cached_bounded, trace_path, target_oid, bounded_cache_opts, bounded_cache_key
+    )
     if cached_bounded is not None:
         restore_cached_bounded_artifacts(bounded_dir, cached_bounded)
         # The cached record holds the func_dir of whichever run first produced it. Later
@@ -323,6 +356,24 @@ def analyze_function_pair(
         # output root has to be re-stamped with its own directory or it writes its
         # artifacts back over the run that populated the cache.
         cached_bounded = dict(cached_bounded, func_dir=func_dir)
+        if not os.path.exists(analysis_path):
+            write_json(analysis_path, {
+                "label": cached_bounded.get("label"),
+                "why": cached_bounded.get("why"),
+                "flagged": cached_bounded.get("flagged"),
+                "verdict": cached_bounded.get("verdict"),
+                "bounded_ran": cached_bounded.get("bounded_ran"),
+                "failure_reason": cached_bounded.get("failure_reason"),
+                "failure_detail": cached_bounded.get("failure_detail"),
+                "callee_augmented": cached_bounded.get("callee_augmented"),
+                "cached": True,
+                "cost": {
+                    "llm_input_tokens": cached_bounded.get("llm_input_tokens"),
+                    "llm_output_tokens": cached_bounded.get("llm_output_tokens"),
+                    "llm_total_tokens": cached_bounded.get("llm_total_tokens"),
+                },
+            })
+        _write_tool_calls(analysis_path, cached_bounded.get("tool_calls") or {})
         return cached_bounded
 
     def _run_fresh() -> Dict[str, Any]:
@@ -444,7 +495,10 @@ def analyze_function_pair(
         )
         if os.path.exists(trace_path):
             write_trace_view(trace_path, os.path.join(bounded_dir, "trace_view.txt"))
-        store_cached_stage_result(target_oid, bounded_cache_opts, bounded_cache_key, result)
+        result["tool_calls"] = _count_tool_calls(trace_path) or {"total": 0, "by_tool": {}}
+        _write_tool_calls(analysis_path, result["tool_calls"])
+        if is_cacheable(result):
+            store_cached_stage_result(target_oid, bounded_cache_opts, bounded_cache_key, result)
         return result
 
     return _run_fresh()
@@ -456,7 +510,6 @@ def _run_function_pairs(
     baseline_oid: Any,
     target_oid: Any,
     fp_idx: int,
-    fp_total: int,
     outdir: str,
     opts: Dict[str, Any],
     runtime: Any,
@@ -484,7 +537,7 @@ def _run_function_pairs(
         target_addr = ensure_decimal_str(modified.get("target_func_addr"))
         result = analyze_function_pair(
             baseline_oid=baseline_oid, target_oid=target_oid, baddr=baseline_addr, taddr=target_addr,
-            fp_idx=fp_idx, fp_total=fp_total, func_idx=func_idx, func_total=func_total,
+            fp_idx=fp_idx, func_idx=func_idx,
             outdir=outdir, opts=opts, runtime=runtime, bounded_fingerprint=bounded_fingerprint,
             added_callee_index=added_callee_index,
         )
@@ -529,40 +582,25 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     filter_val = normalize_filter_value(opts.get("filter"))
     diff_mode = _coerce_str(opts.get("diff_mode")) or ("raw" if diff_raw_for_stats else "processed")
     filter_mode = _display_filter_mode(filter_val)
-    total_t0 = time.perf_counter()
 
-    drift_t0 = time.perf_counter()
     drift_json = build_drift_file_pairs(target, baseline, filter_val) or {}
-    drift_elapsed_s = time.perf_counter() - drift_t0
     write_json(os.path.join(outdir, "drift_raw.json"), drift_json)
 
     file_pairs: List[Dict[str, Any]] = drift_json.get("file_pairs", []) or []
 
-    report_lines: List[str] = ["# Firmware Two-Stage Report (binary suspicion)"]
     target_name = str(target)
     baseline_name = str(baseline)
 
-    report_lines.append(f"Target CID:   {target}")
     try:
-        target_name = api.get_colname_from_oid(target)
-        report_lines.append(f"Target Name:  {target_name}")
+        target_name = api.get_colname_from_oid(target) or str(target)
     except Exception:
-        report_lines.append("Target Name:  <unavailable>")
-    if not target_name:
         target_name = str(target)
 
-    report_lines.append(f"Baseline CID: {baseline}")
     try:
-        baseline_name = api.get_colname_from_oid(baseline)
-        report_lines.append(f"Baseline Name:{baseline_name}")
+        baseline_name = api.get_colname_from_oid(baseline) or str(baseline)
     except Exception:
-        report_lines.append("Baseline Name:<unavailable>")
-    if not baseline_name:
         baseline_name = str(baseline)
 
-    report_lines.append(f"Diff Mode:    {diff_mode}")
-    report_lines.append(f"Filter:       {filter_mode}")
-    report_lines.append("")
 
     # gt_only: restrict bounded to the ground-truth insertion function(s) so a
     # backdoor-recall check spends LLM budget only on the GT candidate. The full
@@ -587,7 +625,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         else:
             logger.info("gt_only: no ground truth for %s; triaging no functions", target_name)
 
-    bounded_index: List[Dict[str, Any]] = []
     per_function_results: List[Dict[str, Any]] = []
     unbounded_results: List[Dict[str, Any]] = []
 
@@ -614,10 +651,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
     unbounded_total_tokens = 0
 
     if not file_pairs:
-        report_lines.append("No file pairs or modifications were reported by drift.")
         logger.info("No file pairs or modifications were reported by drift.")
-    else:
-        report_lines.append(f"Found {len(file_pairs)} file pair(s).\n")
 
     for fp_idx, file_pair in enumerate(file_pairs, 1):
         baseline_oid = file_pair.get("baseline_oid")
@@ -633,17 +667,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         total_modified_filtered += len(filtered_mods)
         total_excluded_functions += len(excluded_mods)
 
-        report_lines.append(f"## File Pair {fp_idx}")
-        report_lines.append(f"- target_oid:   {target_oid}")
-        report_lines.append(f"- baseline_oid: {baseline_oid}")
-        report_lines.append(f"- Bounded candidate functions (filtered): {len(filtered_mods)}")
-        report_lines.append(f"- added functions: {len(added_funcs)}")
-        if excluded_mods:
-            try:
-                report_lines.append(f"- modified functions (excluded by filter): {len(excluded_mods)}")
-            except Exception:
-                report_lines.append("- modified functions (excluded by filter): <unknown>")
-        report_lines.append("")
 
         # Under gt_only, bounded only the ground-truth candidate(s); otherwise the whole
         # filtered set. filtered_mods stays intact above so the filter counts are unchanged.
@@ -659,10 +682,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                     gt_only_norm,
                 )
             ]
-            report_lines.append(
-                f"- gt_only: triaging {len(bounded_mods)} of {len(filtered_mods)} filtered function(s)"
-            )
-            report_lines.append("")
         else:
             bounded_mods = filtered_mods
 
@@ -676,12 +695,6 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         filepair_dir = os.path.join(outdir, f"filepair_{fp_idx:02d}")
         os.makedirs(filepair_dir, exist_ok=True)
         write_json(os.path.join(filepair_dir, "prewarm.json"), prewarm_summary)
-        report_lines.append(
-            f"- prewarm: {prewarm_summary['warmed']} artifact(s) in "
-            f"{prewarm_summary['elapsed_s']:.1f}s"
-            + (f", {prewarm_summary['failed']} failed" if prewarm_summary["failed"] else "")
-        )
-        report_lines.append("")
 
         added_callee_index: Optional[AddedCalleeIndex] = None
         if include_added_callees and added_funcs and bounded_mods:
@@ -699,7 +712,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
         function_results = _run_function_pairs(
             bounded_mods,
             baseline_oid=baseline_oid, target_oid=target_oid,
-            fp_idx=fp_idx, fp_total=len(file_pairs),
+            fp_idx=fp_idx,
             outdir=outdir, opts=opts, runtime=runtime, bounded_fingerprint=bounded_fingerprint,
             added_callee_index=added_callee_index,
             label=fp_label,
@@ -740,20 +753,10 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                 "failure_reason": result.get("failure_reason"),
                 "failure_detail": result.get("failure_detail", ""),
                 "callee_augmented": callee_augmented,
+                "tool_calls": result.get("tool_calls") or {},
             })
             if bounded_flagged:
                 flagged_filtered += 1
-                bounded_index.append({
-                    "filepair_index": fp_idx,
-                    "function_index": func_idx,
-                    "baseline_addr": baseline_addr,
-                    "target_addr": target_addr,
-                    "label": bounded_label,
-                    "verdict": result.get("verdict"),
-                    "dir": result.get("func_dir"),
-                    "baseline_oid": baseline_oid,
-                    "target_oid": target_oid,
-                })
             elif bounded_label == "failed":
                 failed_filtered += 1
             elif bounded_label == "skipped":
@@ -787,7 +790,7 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                 "label": bounded_label,
                 "final_md": (
                     "" if no_bounded_report
-                    else _coerce_str(result.get("bounded_final_md")) or _read_text_file(final_md_path)
+                    else _coerce_str(result.get("bounded_final_md")) or read_text(final_md_path)
                 ),
                 "final_md_path": final_md_path,
                 "diff_path": os.path.join(bounded_dir, "diff.txt"),
@@ -807,6 +810,11 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
             )
             unbounded_cache_opts = stage_cache_opts("unbounded_result", unbounded_fingerprint)
             unbounded_result = load_cached_stage_result(target_oid, unbounded_cache_opts, unbounded_cache_key)
+            unbounded_result = _with_tool_calls(
+                unbounded_result,
+                os.path.join(result.get("func_dir") or "", "unbounded", "agent_trace.log"),
+                target_oid, unbounded_cache_opts, unbounded_cache_key,
+            )
             if unbounded_result is None:
                 # Unbounded is the long pole, minutes per investigation against the
                 # whole binary. Log each one starting, or a running comparison looks hung.
@@ -822,9 +830,18 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
                     target_oid=target_oid,
                     local_report=local_report,
                 )
-                store_cached_stage_result(
-                    target_oid, unbounded_cache_opts, unbounded_cache_key, unbounded_result
-                )
+                unbounded_outdir = _coerce_str(unbounded_result.get("outdir"))
+                unbounded_result["tool_calls"] = _count_tool_calls(
+                    os.path.join(unbounded_outdir, "agent_trace.log")
+                ) or {"total": 0, "by_tool": {}}
+                if unbounded_outdir:
+                    _write_tool_calls(
+                        os.path.join(unbounded_outdir, "result.json"), unbounded_result["tool_calls"]
+                    )
+                if is_cacheable(unbounded_result):
+                    store_cached_stage_result(
+                        target_oid, unbounded_cache_opts, unbounded_cache_key, unbounded_result
+                    )
                 logger.info(
                     "%s: unbounded %d done in %.1fm -> %s%s",
                     fp_label, unbounded_ran_count + 1,
@@ -873,19 +890,9 @@ def run_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]
             row["unbounded_llm_input_tokens"] = int(unbounded_result.get("llm_input_tokens") or 0)
             row["unbounded_llm_output_tokens"] = int(unbounded_result.get("llm_output_tokens") or 0)
             row["unbounded_llm_total_tokens"] = int(unbounded_result.get("llm_total_tokens") or 0)
+            row["unbounded_tool_calls"] = unbounded_result.get("tool_calls") or {}
             _set_pipeline_outcome(row, pipeline_label)
 
-        if filepair_unbounded_results:
-            report_lines.append(f"- Unbounded investigations: {len(filepair_unbounded_results)}")
-            for unbounded_result in filepair_unbounded_results:
-                fn = int(unbounded_result.get("function_index") or 0)
-                report_lines.append(
-                    f"  - function {fn:02d}: {_coerce_str(unbounded_result.get('label')) or 'failed'}"
-                    f" - {_coerce_str(unbounded_result.get('summary'))}"
-                )
-            report_lines.append("")
-
-    elapsed_s = time.perf_counter() - total_t0
 
     gt = opts["_ground_truth"] if "_ground_truth" in opts else ground_truth.load_ground_truth_file(opts.get("ground_truth"))
     gt_norm = ground_truth.get_ground_truth_for_target(
