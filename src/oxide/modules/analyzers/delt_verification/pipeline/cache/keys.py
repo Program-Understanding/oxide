@@ -27,6 +27,8 @@ def _opts_fingerprint(
     raising.
     """
     tracked_opts = {key: opts.get(key) for key in opt_keys}
+    if int(opts.get("repeat_index") or 0):
+        tracked_opts["repeat_index"] = int(opts["repeat_index"])
     prompts = {}
     if prompt_bundle:
         for name in prompt_names:

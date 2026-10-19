@@ -73,6 +73,7 @@ opts_doc = {
     "outdir": {"type": str, "mangle": True, "default": ""},
     "ground_truth": {"type": str, "mangle": True, "default": ""},
     "gt_only": {"type": bool, "mangle": True, "default": False},
+    "repeat_index": {"type": int, "mangle": True, "default": 0},
     "_cache_kind": {"type": str, "mangle": True, "default": ""},
     "_cache_fingerprint": {"type": str, "mangle": True, "default": ""},
 }
