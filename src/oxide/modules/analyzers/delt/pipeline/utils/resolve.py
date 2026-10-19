@@ -7,6 +7,24 @@ from oxide.modules.analyzers.delt.config import NAME
 from oxide.modules.analyzers.delt.pipeline.utils.text_utils import comparison_dir_name
 
 
+def resolve_mcp_server_path() -> str:
+    """Absolute path to oxide_mcp_server.py, the stdio server backing Unbounded's tools.
+
+    Resolved by walking up from this file to the repository root rather than from
+    the caller's working directory, so Unbounded works the same under rshell, the
+    experiment plugin, and a bare python -c.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        candidate = os.path.join(here, "oxide_mcp_server.py")
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(here)
+        if parent == here:
+            return os.path.join(os.getcwd(), "oxide_mcp_server.py")
+        here = parent
+
+
 def resolve_collection_pair(oid_list: Iterable[str]) -> Tuple[str, str]:
     pair = list(oid_list)
     if len(pair) < 2:

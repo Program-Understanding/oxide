@@ -1,1 +1,0 @@
-NAME = "delt_verification"

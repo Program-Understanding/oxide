@@ -24,12 +24,12 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from oxide.core import oxide as oxide
 from oxide.core.oxide import api
 
-from oxide.modules.analyzers.delt_verification.pipeline.utils.ground_truth import (
+from oxide.modules.analyzers.delt.pipeline.utils.ground_truth import (
     get_ground_truth_for_target,
     gt_row_matches_any,
     load_ground_truth_file,
 )
-from oxide.modules.analyzers.delt_verification.pipeline.utils.text_utils import comparison_dir_name
+from oxide.modules.analyzers.delt.pipeline.utils.text_utils import comparison_dir_name
 
 NAME = "delt_verification_experiment"
 logger = logging.getLogger(NAME)
@@ -46,8 +46,8 @@ FP_BINS: Tuple[Tuple[str, int, Optional[int]], ...] = (
 
 
 EXPERIMENT_CONFIGS: Tuple[Tuple[str, str, Optional[str], Dict[str, Any]], ...] = (
+    # ("bounded_all", "processed", "none", {"skip_unbounded": True}),
     ("bounded", "processed", "Call_OR_Control_Modified", {"skip_unbounded": True}),
-    ("bounded_all", "processed", "none", {"skip_unbounded": True}),
     ("bounded_raw", "raw", "Call_OR_Control_Modified", {"skip_unbounded": True}),
     ("unbounded", "processed", "Call_OR_Control_Modified", {"skip_bounded": True}),
 )
@@ -151,7 +151,7 @@ def _resolve_model_specs(opts: Dict[str, Any]) -> Tuple[List[Tuple[str, int]], b
 def _run_one_comparison(target: str, baseline: str, outdir: str, opts: Dict[str, Any]) -> Dict[str, Any]:
     call_opts = dict(opts)
     call_opts["outdir"] = outdir
-    return api.retrieve("delt_verification", [target, baseline], call_opts) or {}
+    return api.retrieve("delt", [target, baseline], call_opts) or {}
 
 
 GT_ONLY_MARKER = "gt_only.marker"
@@ -1204,7 +1204,7 @@ def _prompt_provenance() -> Dict[str, Optional[str]]:
     """sha256 of every prompt template, so a reworded prompt is visible in the record."""
     prompt_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
-        "modules", "analyzers", "delt_verification", "pipeline", "prompts",
+        "modules", "analyzers", "delt", "pipeline", "prompts",
     )
     return {
         os.path.basename(path): _sha256_file(path)
@@ -1221,8 +1221,8 @@ def _resolved_analyzer_opts(base_opts: Dict[str, Any]) -> Dict[str, Any]:
     unset, which is how a run came to record a bounded budget it never used and an empty
     overridden_options while every sampling option was in fact pinned.
     """
-    from oxide.modules.analyzers.delt_verification import module_interface as delt_module
-    from oxide.modules.analyzers.delt_verification.pipeline.agents.runtime import (
+    from oxide.modules.analyzers.delt import module_interface as delt_module
+    from oxide.modules.analyzers.delt.pipeline.agents.runtime import (
         _resolve_runtime_opts,
     )
 
@@ -1243,7 +1243,7 @@ def _run_manifest(base_opts: Dict[str, Any], endpoints: List[str]) -> Dict[str, 
     """
     model = str(base_opts.get("model") or "")
     base_url = (endpoints or [DEFAULT_OLLAMA_URL])[0]
-    from oxide.modules.analyzers.delt_verification.pipeline.agents.runtime import SAMPLING_OPTS
+    from oxide.modules.analyzers.delt.pipeline.agents.runtime import SAMPLING_OPTS
 
     resolved = _resolved_analyzer_opts(base_opts)
     settings = {
@@ -1259,7 +1259,7 @@ def _run_manifest(base_opts: Dict[str, Any], endpoints: List[str]) -> Dict[str, 
             continue
         settings[key] = resolved[key]
         overridden.append(key)
-    from oxide.modules.analyzers.delt_verification.pipeline.tools import binary_pair
+    from oxide.modules.analyzers.delt.pipeline.tools import binary_pair
 
     return {
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -1272,6 +1272,7 @@ def _run_manifest(base_opts: Dict[str, Any], endpoints: List[str]) -> Dict[str, 
         "loaded": _loaded_models(base_url),
         "endpoints": list(endpoints),
         "context_length": int(base_opts.get("context_length") or DEFAULT_CONTEXT_LENGTH),
+        "repeat_index": int(base_opts.get("repeat_index") or 0),
         "configs": [
             {"arm": name, "diff_mode": diff, "filter": filt, "opts": overrides}
             for name, diff, filt, overrides in EXPERIMENT_CONFIGS
@@ -1295,7 +1296,7 @@ def _run_experiment_configs(
     """Run the LLM experiment configs for a single model into config_root. In dry_run mode
     only the `bounded` config runs, with bounded disabled, so each modified
     function gets its unified diff and agent inputs on disk but the agent never runs."""
-    from oxide.modules.analyzers.delt_verification.pipeline.agents.runtime import SAMPLING_OPTS
+    from oxide.modules.analyzers.delt.pipeline.agents.runtime import SAMPLING_OPTS
 
     SAMPLING_OPT_NAMES = set(SAMPLING_OPTS)
     resolved_opts = _resolved_analyzer_opts(base_opts)
@@ -1388,7 +1389,7 @@ def _run_experiment_configs(
 
 
 def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
-    """Run the experiment matrix using the `delt_verification` analyzer.
+    """Run the experiment matrix using the `delt` analyzer.
 
     One arm per entry in EXPERIMENT_CONFIGS, each run over the backdoored and safe pair
     sets, into outdir/<arm>/<category>/. Each category directory receives:
@@ -1411,7 +1412,7 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
       ground_truth -- ground-truth JSON for the backdoored pairs
 
     Model selection:
-      model        -- a single model tag passed through to the delt_verification analyzer
+      model        -- a single model tag passed through to the delt analyzer
       models       -- a models file (like models.txt); each line is
                       `model_tag [sample_workers]` (sample_workers defaults to 1).
                       Results for each model land under outdir/<model_slug>/.
@@ -1457,6 +1458,13 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
                       boundedd subset shrinks, so it runs much faster when you only need
                       to check whether the backdoor is detected. Forced off for the safe
                       pairs, which have no ground truth.
+      repeat       -- number of runs of the whole matrix, for measuring variance
+                      (default 1). With repeat > 1 run i lands in outdir/rep<i>/ (rep0 ..
+                      rep<N-1>), each laid out like a single run. Run i passes
+                      repeat_index=i to the analyzer, which gives every investigation in
+                      runs 1.. a fresh verdict-cache key, so candidates are re-investigated
+                      instead of replayed. Run 0 keeps the existing cache keys, so it
+                      replays any earlier single run of the same settings.
     """
     backdoored_path: Optional[str] = opts.get("backdoored")
     safe_path: Optional[str] = opts.get("safe")
@@ -1467,6 +1475,9 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("At least one of --backdoored or --safe must be provided.")
 
     model_specs, nested, dry_run = _resolve_model_specs(opts)
+    repeats = int(opts.get("repeat") or 1)
+    if repeats < 1:
+        raise ValueError(f"--repeat must be >= 1 (got {repeats}).")
 
     backdoored_pairs = _read_series_file(backdoored_path) if backdoored_path else []
     safe_pairs = _read_series_file(safe_path) if safe_path else []
@@ -1502,20 +1513,35 @@ def run_experiments(args: List[str], opts: Dict[str, Any]) -> Dict[str, Any]:
                 f"{len(endpoints)} endpoint(s)" if endpoints else "default endpoint",
             )
 
-        _write_json(
-            os.path.join(config_root, "run_manifest.json"),
-            _run_manifest(base_opts, list(base_opts.get("_endpoints") or [])),
-        )
-
+        base_opts.pop("repeat", None)
         try:
-            config_summaries = _run_experiment_configs(
-                base_opts,
-                config_root=config_root,
-                backdoored_pairs=backdoored_pairs,
-                safe_pairs=safe_pairs,
-                gt=gt,
-                gt_path=gt_path,
-                dry_run=dry_run,
+            repeat_summaries: Dict[str, Any] = {}
+            for repeat_index in range(repeats):
+                run_opts = dict(base_opts, repeat_index=repeat_index)
+                run_root = (
+                    os.path.join(config_root, f"rep{repeat_index}") if repeats > 1 else config_root
+                )
+                os.makedirs(run_root, exist_ok=True)
+                if repeats > 1:
+                    logger.info("repeat %d/%d into %s", repeat_index + 1, repeats, run_root)
+                _write_json(
+                    os.path.join(run_root, "run_manifest.json"),
+                    _run_manifest(run_opts, list(run_opts.get("_endpoints") or [])),
+                )
+                summaries = _run_experiment_configs(
+                    run_opts,
+                    config_root=run_root,
+                    backdoored_pairs=backdoored_pairs,
+                    safe_pairs=safe_pairs,
+                    gt=gt,
+                    gt_path=gt_path,
+                    dry_run=dry_run,
+                )
+                if repeats > 1:
+                    _write_json(os.path.join(run_root, "experiment_summary.json"), summaries)
+                repeat_summaries[f"rep{repeat_index}"] = summaries
+            config_summaries = (
+                repeat_summaries["rep0"] if repeats == 1 else {"repeats": repeat_summaries}
             )
         finally:
             if manager is not None:

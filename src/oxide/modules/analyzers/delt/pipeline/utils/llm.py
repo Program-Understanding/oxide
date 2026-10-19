@@ -33,17 +33,31 @@ def load_prompt_file(filename: str) -> Dict:
 
 
 @lru_cache(maxsize=None)
-def _load_prompt_bundle_cached(agent_file: str, agent_callee_file: str) -> Dict[str, Dict]:
+def _load_prompt_bundle_cached(
+    bounded_file: str,
+    bounded_with_callees_file: str,
+    unbounded_file: str,
+    unbounded_no_report_file: str,
+) -> Dict[str, Dict]:
     return {
-        "agent": load_prompt_file(agent_file),
-        "agent_callee": load_prompt_file(agent_callee_file),
+        "bounded": load_prompt_file(bounded_file),
+        "bounded_with_callees": load_prompt_file(bounded_with_callees_file),
+        "unbounded": load_prompt_file(unbounded_file),
+        "unbounded_no_report": load_prompt_file(unbounded_no_report_file),
     }
 
 
 def load_prompt_bundle(opts: Dict | None = None) -> Dict[str, Dict]:
     resolved_opts = dict(opts or {})
-    agent_file = str(resolved_opts.get("agent_prompt_file") or "agent.yaml")
-    agent_callee_file = str(
-        resolved_opts.get("agent_callee_prompt_file") or "agent_with_callees.yaml"
+    return _load_prompt_bundle_cached(
+        str(resolved_opts.get("bounded_prompt_file") or "bounded.yaml"),
+        str(
+            resolved_opts.get("bounded_with_callees_prompt_file")
+            or "bounded_with_callees.yaml"
+        ),
+        str(resolved_opts.get("unbounded_prompt_file") or "unbounded_agent.yaml"),
+        str(
+            resolved_opts.get("unbounded_no_report_prompt_file")
+            or "unbounded_no_report.yaml"
+        ),
     )
-    return _load_prompt_bundle_cached(agent_file, agent_callee_file)

@@ -16,16 +16,16 @@ _ASCII_MAP = {
 
 _EMPTY_DECOMP_FAILURE_MESSAGES: Dict[str, Dict[str, str]] = {
     "empty_baseline_decomp": {
-        "observation": "baseline decompilation was empty. Triage skipped and recorded as failed.",
-        "final_why": "The baseline decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because triage did not run, not because the agent identified a trigger.",
+        "observation": "baseline decompilation was empty. Bounded skipped and recorded as failed.",
+        "final_why": "The baseline decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because bounded did not run, not because the agent identified a trigger.",
     },
     "empty_target_decomp": {
-        "observation": "target decompilation was empty. Triage skipped and recorded as failed.",
-        "final_why": "The target decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because triage did not run, not because the agent identified a trigger.",
+        "observation": "target decompilation was empty. Bounded skipped and recorded as failed.",
+        "final_why": "The target decompilation was empty, so the system could not compute a two-sided function diff. The function was recorded as failed because bounded did not run, not because the agent identified a trigger.",
     },
     "empty_both_decomp": {
-        "observation": "baseline and target decompilations were empty. Triage skipped and recorded as failed.",
-        "final_why": "Both baseline and target decompilations were empty, so the system could not compute a two-sided function diff. The function was recorded as failed because triage did not run, not because the agent identified a trigger.",
+        "observation": "baseline and target decompilations were empty. Bounded skipped and recorded as failed.",
+        "final_why": "Both baseline and target decompilations were empty, so the system could not compute a two-sided function diff. The function was recorded as failed because bounded did not run, not because the agent identified a trigger.",
     },
 }
 
@@ -56,7 +56,7 @@ def _coerce_result_label(label: Any, failure_reason: Any = None) -> str:
     label_norm = _coerce_label(label)
     if label_norm == "error":
         return "failed"
-    if label_norm in {"safe", "not_safe", "failed"}:
+    if label_norm in {"safe", "not_safe", "failed", "skipped"}:
         return label_norm
     return "failed"
 
@@ -77,50 +77,6 @@ def ensure_decimal_str(addr: Any) -> Optional[str]:
         return text
 
 
-def _extract_first_balanced_json_object(text: str) -> Optional[dict]:
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    for index in range(start, len(text)):
-        char = text[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                blob = text[start : index + 1]
-                try:
-                    return json.loads(blob)
-                except Exception:
-                    return None
-    return None
-
-
-def parse_llm_json(text: str) -> Any:
-    text = text.strip()
-    for fence in ("```json", "```"):
-        if text.startswith(fence):
-            text = text[len(fence):].lstrip()
-            if text.endswith("```"):
-                text = text[:-3].rstrip()
-    try:
-        return json.loads(text)
-    except Exception:
-        return _extract_first_balanced_json_object(text)
-
-
-def coerce_json_like(value: Any) -> Optional[dict]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except Exception:
-            return _extract_first_balanced_json_object(value)
-    return None
-
-
 def normalize_filter_value(value: Any) -> Optional[str]:
     """ Map "and"/"or" shorthand to the drift analyzer's actual filter card names. """
     if value is None:
@@ -139,11 +95,9 @@ def normalize_filter_value(value: Any) -> Optional[str]:
     return value_str
 
 
-def preview_text(value: Any, limit: int = 160) -> str:
-    text = _coerce_str(value).replace("\n", " ").strip()
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)] + "..."
+def preview_text(value: Any) -> str:
+    """Flatten value onto a single line, whole."""
+    return _coerce_str(value).replace("\n", " ").strip()
 
 
 def comparison_dir_name(target_name: str, baseline_name: str) -> str:
@@ -154,6 +108,23 @@ def comparison_dir_name(target_name: str, baseline_name: str) -> str:
     if os.altsep:
         pair_dir_name = pair_dir_name.replace(os.altsep, "_")
     return pair_dir_name
+
+
+def read_text(path: str, *, tail_chars: int = 0) -> str:
+    """File contents, or "" if it cannot be read. tail_chars > 0 keeps only the last chars.
+
+    errors="replace" because callers include MCP subprocess stderr, where non-UTF-8 bytes
+    are likely and losing the whole tail to a decode error hides why a server died.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    if tail_chars <= 0:
+        return text
+    text = text.strip()
+    return text[-tail_chars:] if len(text) > tail_chars else text
 
 
 def read_json(path: str) -> Any:
