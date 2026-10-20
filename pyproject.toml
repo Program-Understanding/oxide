@@ -35,21 +35,14 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = [
-    "pyinstrument>=5.1.2",
-    "pytest>=8.4.2",
-    "ruff>=0.15.8"
-]
+dev = ["pyinstrument>=5.1.2", "pytest>=8.4.2", "ruff>=0.15.8"]
+ml = ["sentence-transformers>=5.1.2", "scikit-learn>=1.6.1"]
+blint = ["blint>=4.0.1", "nyxstone>=0.1.9"]
 
-ml = [
-    "sentence-transformers>=5.1.2",
-     "scikit-learn>=1.6.1",
-]
 [project.scripts]
 oxide = "oxide.shell:main"
 oxide-remote = "oxide.rshell:main"
 oxide-server = "oxide.server:main"
-
 [build-system]
 requires = ["uv_build>=0.11.0,<0.12.0"]
 build-backend = "uv_build"
