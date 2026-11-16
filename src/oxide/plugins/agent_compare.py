@@ -1,7 +1,7 @@
 
 '''
 Author: Nate Buck
-Last updated June 17th, 2026
+Last updated August 3rd, 2026
 '''
 import logging
 import os
@@ -338,6 +338,9 @@ def deep_agent_compare(args, opts):
     from langchain_ollama import ChatOllama
     from langchain_mcp_adapters.client import MultiServerMCPClient
     from langchain_core.messages import AIMessage, AIMessageChunk
+    import uuid
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langchain_core.utils.uuid import uuid7
     llm_responses = {}
     start_time = time.time()
     from oxide.core import api
@@ -400,25 +403,23 @@ def deep_agent_compare(args, opts):
         "e4": E4Decision,
     }
     SYSTEM_PROMPT = f"""
-                    You are an experienced binary reverse engineer. You have been given access to Oxide,
-                    a framework that is used for binary analysis, and all of its tools. 
-                    All tools are READ-ONLY, you cannot modify anything about the binaries.
-                    You can inspect them, decompile functions, search symbols and strings, and
-                    trace call graphs. Your goal is to determine if the binary being examined contains
-                    a backdoor. When determining it, you MUST use exactly 'safe' or 'backdoored' for the label field.
-                    You are evaluating based on the following strategy:
-                    {eval_strats[eval_strat]}
-                    When using pagination tools like 'get_function_list', 'get_strings', 'list_imports', 
-                    or 'list_exports', you MUST set a 'limit' argument to 30 or less. Do NOT try to 
-                    request large batches at once, or you may crash your session. If you need more
-                    data, page through it incrementally using the 'offset' parameter.
-                    As you are doing your analysis, don't abandon leads without following them to a
-                    function. Use 'list_xrefs' or 'read_bytes' to trace where any strange strings,
-                    symbols, or patterns are found.
-                    """
+        You are an experienced binary reverse engineer and malware analyst. You have been given access to Oxide,
+        a framework that is used for binary analysis, and all of its tools.
+        All tools are READ-ONLY, you cannot modify anything about the binaries.
+        You can inspect them, decompile functions, search symbols and strings, and
+        trace call graphs. Your goal is to determine if the binary being examined contains
+        a backdoor. When determining it, you MUST use exactly 'safe' or 'backdoored' for the label field.
+        When you have reached your conclusion, you MUST call either the E1Decision, E2Decision, E3Decision, or
+        E4Decision tool based on the evaluation strategy and fill in the label, condition, and why fields.
+        NEVER write your conclusion as plain text; always call the decision tool for your final answer.
+        You are evaluating based on the following strategy:
+        {eval_strats[eval_strat]}
+        When using any tool with a 'limit' parameter, you MUST set it to 30 or less.
+        If you need more data, page through it incrementally using the 'offset' parameter.
+        """
     # Async method for model since LangChain's agents use async methods in their own creation
     # and require multiple concurrent processes like token generation, tool executions, tool calling logs, etc.
-    async def run_analysis(agent, oid):
+    async def run_analysis(agent, oid, agent_config):
         
         file_name = os.path.basename(api.get_field("file_meta", oid, "names").pop())
         if oid in clean_oids:
@@ -437,7 +438,8 @@ def deep_agent_compare(args, opts):
         # information we want.
         async for mode, data in agent.astream(
             {"messages": [{"role": "user", "content": f"Is there a backdoor in this binary with the following oid in oxide: {oid}?"}]}, 
-            stream_mode=["updates"]
+            stream_mode=["updates"],
+            config=agent_config
         ):
             elapsed = time.time() - start_time
             # If any interrupts are encountered, log them
@@ -492,6 +494,7 @@ def deep_agent_compare(args, opts):
             print(f"No structured output for {file_name}. Here is what the LLM said most recently:\n{ai_message}")
             response = {"label": "unknown", "condition": "", "why":ai_message or "no response"}
         response["file_name"] = file_name
+        response["tool_calls"] = _summarize_tool_calls(transcript)
         response["transcript"] = transcript
         return response
     # Main method that actually creates the agent, gives it tools, and controls execution on binaries
@@ -512,11 +515,13 @@ def deep_agent_compare(args, opts):
             return
         tools = await client.get_tools()
         print("Tool options: \n", [tool for tool in tools])
+        checkpointer = InMemorySaver()
         agent = create_deep_agent(
             model=LLM,
             tools=tools,
             system_prompt=SYSTEM_PROMPT,
-            response_format=RESPONSE_SCHEMA[eval_strat]
+            response_format=RESPONSE_SCHEMA[eval_strat],
+            checkpointer=checkpointer
         )
         for oid in all_oids:
             file_name = os.path.basename(api.get_field("file_meta", oid, "names").pop())
@@ -532,9 +537,10 @@ def deep_agent_compare(args, opts):
                 print("\n" + "=" * width)
                 print(f"{file_name} run #{run + 1}")
                 print("=" * width)
+                # Creates a new thread_id to ensure agent does not use information from previous runs
+                agent_config = {"configurable": {"thread_id": str(uuid7())}}
                 # Uses await in order to work with agent implementation
-                result = await run_analysis(agent, oid)
-                result["tool_calls"] = _summarize_tool_calls(result["transcript"])
+                result = await run_analysis(agent, oid, agent_config)
                 llm_responses[file_label][f"Run {run + 1}"] = result
             
         _get_results(llm_responses, eval_strat, out_dir)
